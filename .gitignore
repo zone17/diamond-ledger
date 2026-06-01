@@ -1,0 +1,31 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+*.swp
+*~
+.idea/
+.vscode/
+
+# Logs & temp
+*.log
+tmp/
+*.tmp
+
+# Local agent session memory (also self-ignored via .remember/.gitignore)
+.remember/
+
+# Secrets / environment (never commit; see Article XXVI)
+.env
+.env.*
+!.env.example
+
+# Forward-looking build/runtime artifacts
+node_modules/
+dist/
+build/
+coverage/
+.cache/
+__pycache__/
+*.pyc

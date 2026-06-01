@@ -1,0 +1,72 @@
+name: CI
+
+# Advisory CI gate. On a private free-plan repo, server-side required status
+# checks are unavailable, so this pipeline informs review rather than hard-blocking
+# merges; branch/commit discipline is enforced by local hooks (see CONTRIBUTING.md
+# and DECISIONS.md ADR-0002). Each job maps to a row in the constitution's
+# Enforcement Matrix (.specify/memory/constitution.md).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Least privilege by default (Article XXVI).
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  governance:
+    name: Constitution & decisions integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Constitution present and well-formed (Articles XVI, XL)
+        run: |
+          set -euo pipefail
+          CON=.specify/memory/constitution.md
+          test -f "$CON" || { echo "::error::constitution missing at $CON"; exit 1; }
+          grep -Eq '^\*\*Version\*\*: [0-9]+\.[0-9]+\.[0-9]+' "$CON" \
+            || { echo "::error::constitution missing a semantic **Version**: X.Y.Z line"; exit 1; }
+          grep -q 'North Star' "$CON" \
+            || { echo "::error::constitution missing its North Star"; exit 1; }
+          echo "OK: $(grep -E '^\*\*Version\*\*:' "$CON")"
+      - name: DECISIONS.md present (Article XXXVIII)
+        run: test -f DECISIONS.md || { echo "::error::DECISIONS.md missing"; exit 1; }
+
+  branch-name:
+    name: Branch naming (Article XVIII)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate typed squad branch {type}/{squad}/{ticket}-{slug}
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          PATTERN='^(feat|fix|docs|refactor|chore|ci|test|perf|build|spike)/[a-z0-9-]+/[A-Z]+-[0-9]+-[a-z0-9-]+$'
+          if [[ "$BRANCH" =~ $PATTERN ]]; then
+            echo "OK: '$BRANCH' matches {type}/{squad}/{ticket}-{slug}"
+          else
+            echo "::error::Branch '$BRANCH' must match {type}/{squad}/{ticket}-{slug}," \
+                 "e.g. feat/platform/PLAT-142-record-pitch-tool"
+            exit 1
+          fi
+
+  secret-scan:
+    name: Secret scan (Articles XXVI, XXXVI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks (full history)
+        run: |
+          set -euo pipefail
+          docker run --rm -v "${PWD}:/repo" zricethezav/gitleaks:v8.18.4 \
+            detect --source=/repo --redact -v
