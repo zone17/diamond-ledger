@@ -6,6 +6,70 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0005 — Compound-Gate Recursion Backstop: Don't Resolve Volatile Context via a Racing Live Call
+
+- **Status:** Accepted
+- **Date:** 2026-06-01
+- **Owner:** Project lead (zone17)
+- **Review date:** 2026-09-01
+- **Amends:** ADR-0004 (compound-gate recursion fix)
+
+### Context
+
+ADR-0004 stopped `compound-flag.sh` from arming on `docs/*` merges (so the merge of the compound
+docs themselves wouldn't ask to "compound the compound step"). It resolved the merged PR's head
+branch with a **live `gh pr view <n> --json headRefName`** at hook time, and on any failure fell
+through and armed (safe default).
+
+Dogfooding exposed the gap: after `gh pr merge <n> --squash --delete-branch`, that live lookup
+**races the branch deletion / merge-API propagation**. In a real session the lookup returned empty
+for the just-merged compound-doc PR (a `docs/*` branch), so the `docs/*` skip never fired and the
+gate armed on the compound step's own merge — the exact recursion ADR-0004 set out to prevent. (The
+armed flag even read `merged_at=unknown`, since the hook ran under macOS bash 3.2, which lacks
+`EPOCHSECONDS`.) The general defect: **a hook that re-fetches volatile context via a network call
+races the very action that triggered it.**
+
+### Decision
+
+Three changes to `compound-flag.sh`, covered by 6 new assertions in `test-compound-hooks.sh`
+(21 total) and the CI `hooks-test` job:
+
+1. **No-network hint first.** Parse the head ref from the `tool_response` already in the payload
+   (`gh ... --delete-branch` prints `Deleted branch <ref>`) before any live lookup — it cannot race.
+2. **Live `gh` lookup demoted to a fallback** (kept for merges without `--delete-branch`).
+3. **One-shot recursion backstop.** When the ce-compound Skill clears the flag, drop a TTL-bounded
+   (`.claude/.compound-done`, 1h) marker. The next merge with an **unresolved** head ref consumes it
+   and skips arming once — robust even when ref resolution races. A *resolved* non-`docs/*` ref still
+   arms (safe default preserved); the marker is always consumed so it can't suppress a later
+   substantive merge.
+
+Also: timestamps now use `date +%s` (portable) instead of `EPOCHSECONDS`; the marker is git-ignored.
+
+### Alternatives Considered
+
+- **Retry the `gh` lookup with a sleep.** Rejected: adds latency to every merge and is still
+  probabilistic against the propagation race.
+- **Parse only `tool_response`.** Rejected as the sole fix: fragile — output can be piped/`tail`-ed
+  away by the caller (it was, in the triggering session), so a non-output-dependent backstop is needed.
+- **Broad time-window suppression after compound.** Rejected: a one-shot, ref-gated marker suppresses
+  *only* the unresolved next merge, not arbitrary merges in a window.
+
+### Consequences / Reversibility
+
+The compound gate stops self-triggering on its own documentation merge even under the lookup race;
+ordinary `docs/*` merges and substantive merges behave as before. High reversibility — revert the
+hook + test edits and delete the marker line from `.gitignore`. No data/schema impact.
+
+### Impact
+
+- **Operational:** removes a spurious post-merge compound reminder (the one that fired this session).
+- **Agent-native:** plain bash with `COMPOUND_TEST_HEAD_REF` + a `gh` PATH stub make every branch
+  exercisable offline; learning generalized in
+  `docs/solutions/best-practices/hook-command-string-matching-pitfalls.md`.
+- **Security:** no new authority; reads the hook payload, writes two local flag files.
+
+---
+
 ## ADR-0004 — Hook Hardening: Branch-Discipline Defense-in-Depth + Compound-Gate Recursion Fix
 
 - **Status:** Accepted

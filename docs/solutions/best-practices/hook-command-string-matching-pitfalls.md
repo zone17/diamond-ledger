@@ -1,12 +1,14 @@
 ---
 module: enforcement-hooks
 date: 2026-06-01
+last_updated: 2026-06-01
 problem_type: best_practice
 component: tooling
 severity: high
 applies_when:
   - "Writing a Claude Code hook that triggers on tool calls or git operations"
   - "An enforcement hook either fires when it should not, or fails to fire when it should"
+  - "A hook re-fetches state (a branch, a status) via a live call right after the action it gates"
 related_components:
   - development_workflow
 tags:
@@ -16,9 +18,10 @@ tags:
   - branch-discipline
   - tool-name
   - claude-code
+  - race-condition
 ---
 
-# Hooks that pattern-match command strings have two blind spots
+# Hooks that pattern-match command strings have three blind spots
 
 ## Context
 
@@ -51,6 +54,31 @@ vendored script that runs `git commit` internally (e.g. Spec Kit's `auto-commit.
 `bash auto-commit.sh` — the hook never sees `git commit`, so the guard is bypassed. Defense in depth:
 put the invariant where the action happens (a git `pre-commit`/`pre-push` hook, or a branch guard
 inside the script), not only at the command-string layer.
+
+**3. A hook that re-fetches volatile state via a live call races the action that triggered it.**
+A PostToolUse hook runs *after* the command, so any state the command changed may already be moving.
+The compound-loop gate (ADR-0004) skipped `docs/*` merges by resolving the PR's head branch with a
+live `gh pr view <n> --json headRefName` — but `gh pr merge <n> --delete-branch` deletes that branch,
+and the lookup **raced the deletion / API propagation** and returned empty, so the `docs/*` skip
+silently failed to its arm-default. The merge *was* the compound doc's own PR, so the gate then
+asked to compound the compound step — the recursion the skip existed to prevent. Fixes, in order of
+robustness: (a) read the value from the payload you were already handed (`tool_response` for a
+`--delete-branch` merge contains `Deleted branch <ref>`) instead of re-fetching it; (b) keep the
+live call only as a fallback; (c) add a non-fetch backstop for when resolution fails — here, a
+one-shot TTL-bounded marker written when the skill clears the gate, consumed by the next merge whose
+ref can't be resolved:
+
+```bash
+# clear path: drop a one-shot marker so the next (unresolvable) merge can't re-arm
+now_epoch() { date +%s 2>/dev/null || printf '%s' "${EPOCHSECONDS:-0}"; }  # bash 3.2 has no EPOCHSECONDS
+now_epoch > "$DONE"
+
+# arm path: head ref unresolved AND we just compounded -> skip exactly once
+if [ -z "$head_ref" ] && [ "$suppress" -eq 1 ]; then exit 0; fi
+```
+
+Also note: macOS ships bash 3.2, which lacks `EPOCHSECONDS` (it silently became the literal
+`unknown` in the flag file) — prefer `date +%s` for portable timestamps in hooks.
 
 ## Why This Matters
 
