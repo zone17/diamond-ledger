@@ -6,6 +6,80 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0003 — Compound-Loop Gate (Continuous Improvement Flywheel)
+
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Owner:** Project lead (zone17)
+- **Review date:** 2026-08-31
+
+### Context
+
+The constitution mandates a Continuous Improvement Flywheel (Article XXII) and that non-obvious
+knowledge be captured after work completes (Article XVI). Relying on instructions alone to "always
+run ce-compound" fails the moment agent context is compacted — the exact failure mode Article XXXIX
+addresses by requiring mechanical enforcement.
+
+### Problem
+
+Nothing in the repository ensured the compound step actually ran after a unit of work landed, so
+learnings risked being lost.
+
+### Decision
+
+Add a project-scoped, version-controlled hook pair that ties compounding to the natural milestone of
+a **merged pull request**:
+
+- `.claude/hooks/compound-flag.sh` (PostToolUse, all tools): arms `.claude/.needs-compound` after a
+  `gh pr merge`; clears it after the ce-compound skill runs.
+- `.claude/hooks/compound-reminder.sh` (Stop): if the flag is set, blocks the stop **once** and
+  instructs the agent to run `/ce-compound`. Loop-safe via `stop_hook_active`; bypass by deleting
+  the flag for genuinely trivial merges.
+- Wired in `.claude/settings.json`; flag is git-ignored (runtime state).
+
+Trigger chosen: **merge-triggered** (not every commit) — fires at a meaningful milestone and avoids
+nagging on intermediate commits. Scope: **project** — committed so it travels with every clone
+(Article XXXIX repository-managed equivalent).
+
+### Alternatives Considered
+
+- **Soft Stop reminder only.** Rejected: on `Stop` the agent has already decided to finish, so a
+  non-blocking message wouldn't reliably cause the loop to run.
+- **Hard gate on every commit.** Rejected: too noisy; most commits are intermediate.
+- **Global hook (~/.claude).** Rejected here: the user chose project scope so it's versioned with
+  Diamond Ledger; a global variant remains possible later.
+- **Instruction in CLAUDE.md.** Rejected: not mechanically enforceable (Article XXXIX).
+
+### Tradeoffs
+
+Blocking a stop is intrusive by design; mitigated by being one-shot per stop sequence, clearing
+automatically when ce-compound runs, and a documented one-file bypass. Detection is substring-based
+(no jq dependency) for portability, at the cost of theoretical false matches — acceptable for a
+local developer hook.
+
+### Consequences
+
+- After every merge, the session cannot quietly end without either compounding or an explicit skip.
+- Learnings accrue in `docs/solutions/` over time, feeding the flywheel.
+
+### Reversibility
+
+High. Remove the two hook entries from `.claude/settings.json` (or the scripts) to disable; downgrade
+to a soft reminder by changing the Stop hook's `decision: block` to a non-blocking message.
+
+### Impact
+
+- **Operational:** Adds a post-merge compound ritual.
+- **Agent-native:** Both hooks are plain bash any agent can read and reason about.
+- **Security:** No new authority; reads hook payloads, writes a single local flag file.
+
+### Follow-ups (deferred)
+
+- Consider extending the trigger to debugging/non-trivial non-PR work if learnings are being missed
+  (the merge-only trigger's known gap).
+
+---
+
 ## ADR-0002 — Software Factory: CI Enforcement + Hook-Based Branch Protection
 
 - **Status:** Accepted
