@@ -44,6 +44,22 @@ MUST be green before merge by convention. Jobs map to the constitution's Enforce
 
 After any push, PR update, or merge, run `/watch-ci` to monitor the pipeline.
 
+## Compound loop after merges (Articles XVI, XXII)
+
+A project hook closes the Continuous Improvement Flywheel. After a `gh pr merge`,
+`.claude/hooks/compound-flag.sh` arms `.claude/.needs-compound`; the `Stop` hook
+(`compound-reminder.sh`) then blocks the session from ending **once** until you run the compound
+step:
+
+```
+/ce-compound
+```
+
+Running it captures non-obvious learnings into `docs/solutions/` and auto-clears the gate. For a
+genuinely trivial merge, skip by deleting the flag: `rm .claude/.needs-compound`. See
+[`DECISIONS.md`](DECISIONS.md) ADR-0003. To disable entirely, remove the hook entries from
+`.claude/settings.json`.
+
 ## Architectural changes (Article XXXVIII)
 
 Any architectural change — new tools, endpoints, agents, skills, migrations, dependencies,
