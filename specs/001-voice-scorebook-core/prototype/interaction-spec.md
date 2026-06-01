@@ -40,6 +40,14 @@ attention, and it must be unmistakably different from card A.
 - It must be impossible to advance to the next play while a judgment is unresolved *without* an
   explicit choice (including the explicit "leave PENDING").
 
+## Selected judgment-card variant — V3 (glance) *(decided 2026-06-01)*
+
+The project lead selected **V3 (glance)** as the canonical Card-B pattern: the most minimal,
+largest-target, ≤5s-eyes-down version — the most faithful to the core thesis (eyes on the field,
+glanceable, one tap). **V3 is the pattern `/speckit.plan` and the v1 build carry forward.** V1
+(decision sheet) and V2 (inline toggle) remain in the prototype as references / A5 comparison arms
+but are not the build target.
+
 ## Correction flow (`correct_event`)
 
 - From any recorded card, **Correct** opens a quick amend: change the play, or step back to a prior
