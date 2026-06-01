@@ -6,6 +6,85 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0002 — Software Factory: CI Enforcement + Hook-Based Branch Protection
+
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Owner:** Project lead (zone17)
+- **Review date:** 2026-08-31 (revisit if repo goes public or upgrades to GitHub Pro)
+
+### Context
+
+Immediately after ratifying the constitution (ADR-0001), the repository needed its "software
+factory" — the enforcement infrastructure the constitution mandates (Articles XXXIV, XXXIX) — before
+feature work begins. The repo is **private on the GitHub free plan**, and the Spec Kit toolchain
+(extensions, git skills, scripts, workflows) was sitting uncommitted.
+
+### Problem
+
+1. Constitutional rules (branch discipline, no secrets, governance integrity) were enforced only by
+   local hooks on one machine, with nothing in the repository itself.
+2. GitHub server-side rulesets/branch protection returned `403 — Upgrade to GitHub Pro or make this
+   repository public` on the private free plan, so the planned `main` ruleset could not be created.
+3. The Spec Kit scaffolding was untracked, making the environment non-reproducible (Article XXXV).
+
+### Decision
+
+- **Commit the Spec Kit scaffolding** (`.specify/extensions*`, `.specify/workflows/`,
+  `.specify/init-options.json`, `.claude/skills/speckit-git-*`, executable-bit changes on
+  `.specify/scripts/*.sh`) so the toolchain is reproducible and version-controlled.
+- **Add `.github/workflows/ci.yml`** — an advisory CI pipeline whose jobs map directly to the
+  Enforcement Matrix: `governance` (constitution + DECISIONS integrity), `branch-name` (Article
+  XVIII naming), `secret-scan` (gitleaks, full history).
+- **Adopt hook-based branch protection** as the Article XXXIX "repository-managed equivalent":
+  local `branch-discipline.sh` + `security-gate-bash.sh` hard-block direct/force pushes to `main`.
+  Document the PR-only convention in `CONTRIBUTING.md`.
+- **Add a root `.gitignore`** (OS junk, secrets, local agent memory, forward-looking build
+  artifacts).
+
+### Alternatives Considered
+
+- **Make the repo public to unlock free rulesets.** Rejected by owner: keep private for now.
+- **Upgrade to GitHub Pro for private rulesets.** Rejected for now: not worth the cost at this
+  stage; revisit at the review date.
+- **Use the GitHub Actions `gitleaks-action`.** Rejected: it requests a license key for
+  organizations; the pinned `zricethezav/gitleaks` CLI image is free and reproducible.
+
+### Tradeoffs
+
+CI is **advisory, not blocking** — without server-side required status checks, a determined local
+actor could merge a red PR. Mitigated by: local hooks (the real hard gate today), `/watch-ci`
+discipline, and a documented upgrade path. Accepted as proportionate for a solo, pre-product repo.
+
+### Consequences
+
+- The toolchain and enforcement live in the repo and travel with every clone.
+- Every PR runs governance, branch-name, and secret-scan checks.
+- Future work: if the repo goes public or Pro, add a `main` ruleset and mark the CI checks
+  **required**.
+
+### Reversibility
+
+High. CI and `.gitignore` are editable; hook-only protection swaps cleanly to a server-side ruleset
+when the plan allows.
+
+### Impact
+
+- **Security:** Adds secret scanning and codifies destructive-op / branch hard-blocks.
+- **Operational:** Establishes `/watch-ci` as the post-push ritual.
+- **Reproducibility:** Scaffolding is now version-controlled.
+- **Agent-native:** CI checks are plain bash any agent can read, run, and reason about.
+
+### Follow-ups (deferred, not blocking)
+
+- Pin GitHub Actions to commit SHAs (currently major-version tags) — Article XXXVI.
+- Add markdown structural linting once a noise-free config is tuned.
+- Add a `DECISIONS.md`-changed-when-architectural-files-change check in CI (today enforced by the
+  local `decision-gate.sh` hook).
+- Promote CI checks to **required status checks** if the repo becomes public or Pro.
+
+---
+
 ## ADR-0001 — Ratify the Diamond Ledger Engineering Constitution
 
 - **Status:** Accepted
