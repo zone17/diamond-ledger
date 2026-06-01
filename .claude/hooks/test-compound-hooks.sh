@@ -16,8 +16,15 @@ reset(){ rm -f "$FLAG"; }
 
 # --- compound-flag.sh: arming ---
 reset
-printf '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 3 --squash"}}' | bash "$FLAG_SH"
-[ -f "$FLAG" ] && ok "arms on Bash gh pr merge" || bad "arms on Bash gh pr merge"
+COMPOUND_TEST_HEAD_REF="feat/platform/PLAT-999-x" \
+  printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 3 --squash"}}' | \
+  COMPOUND_TEST_HEAD_REF="feat/platform/PLAT-999-x" bash "$FLAG_SH"
+[ -f "$FLAG" ] && ok "arms on Bash gh pr merge (feat branch)" || bad "arms on Bash gh pr merge (feat branch)"
+
+reset
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 4 --squash"}}' | \
+  COMPOUND_TEST_HEAD_REF="docs/architecture/ARCH-002-x" bash "$FLAG_SH"
+[ -f "$FLAG" ] && bad "must NOT arm on docs/* branch merge" || ok "does NOT arm on docs/* branch merge"
 
 reset
 printf '{"tool_name":"Edit","tool_input":{"new_string":"Run gh pr merge --squash to land it"}}' | bash "$FLAG_SH"
@@ -53,6 +60,16 @@ OUT="$(printf '{"hook_event_name":"Stop","stop_hook_active":true}' | bash "$STOP
 reset
 OUT="$(printf '{"hook_event_name":"Stop","stop_hook_active":false}' | bash "$STOP_SH")"
 [ -z "$OUT" ] && ok "silent Stop when no flag" || bad "emitted output with no flag"
+
+# --- .githooks/pre-commit: default-branch guard (ADR-0004) ---
+PRECOMMIT="$CLAUDE_PROJECT_DIR/.githooks/pre-commit"
+if [ -f "$PRECOMMIT" ]; then
+  PRECOMMIT_TEST_BRANCH=main bash "$PRECOMMIT" >/dev/null 2>&1 && bad "pre-commit must block main" || ok "pre-commit blocks commits on main"
+  PRECOMMIT_TEST_BRANCH=master bash "$PRECOMMIT" >/dev/null 2>&1 && bad "pre-commit must block master" || ok "pre-commit blocks commits on master"
+  PRECOMMIT_TEST_BRANCH="feat/platform/PLAT-1-x" bash "$PRECOMMIT" >/dev/null 2>&1 && ok "pre-commit allows typed branch" || bad "pre-commit wrongly blocked a feature branch"
+else
+  bad ".githooks/pre-commit missing"
+fi
 
 reset
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

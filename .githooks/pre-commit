@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Repo-managed git pre-commit hook. Blocks direct commits to the default branch
+# from ANY path — manual, scripted, or vendored (constitution Article XVIII).
+# This catches the case the Bash-command-string hooks miss: git invoked inside a
+# script (see docs/solutions/best-practices/hook-command-string-matching-pitfalls.md).
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+# Test override:          PRECOMMIT_TEST_BRANCH=main bash .githooks/pre-commit
+set -euo pipefail
+
+branch="${PRECOMMIT_TEST_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)}"
+
+# During a rebase/am, HEAD is detached and abbrev-ref reports "HEAD". Recover the
+# branch actually being rebased so a rebase ON main is still caught (independent
+# review, ADR-0004). A real feature-branch rebase recovers its own name and passes.
+if [ "$branch" = "HEAD" ]; then
+  for _rel in rebase-merge/head-name rebase-apply/head-name; do
+    _p="$(git rev-parse --git-path "$_rel" 2>/dev/null || true)"
+    if [ -n "$_p" ] && [ -f "$_p" ]; then
+      branch="$(sed -E 's#^refs/heads/##' "$_p" 2>/dev/null || echo HEAD)"
+      break
+    fi
+  done
+fi
+
+case "$branch" in
+  main|master)
+    echo "BLOCKED: direct commits to '$branch' are prohibited (constitution Article XVIII)." >&2
+    echo "Use a typed branch and a PR:  git checkout -b {type}/{squad}/{TICKET}-{slug} main" >&2
+    echo "If you are mid-merge or mid-rebase on '$branch', recover with: git merge --abort / git rebase --abort" >&2
+    exit 1
+    ;;
+esac
+
+exit 0

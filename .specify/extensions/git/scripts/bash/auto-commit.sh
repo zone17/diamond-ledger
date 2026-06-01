@@ -117,6 +117,15 @@ if [ "$_enabled" != "true" ]; then
     exit 0
 fi
 
+# Branch-discipline guard (local hardening; constitution Article XVIII). This script wraps `git
+# commit`, so the command-string branch-discipline hook never sees it — never auto-commit onto the
+# default branch. Re-apply if Spec Kit overwrites this file on upgrade. See DECISIONS.md ADR-0004.
+_cur_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+if [ "$_cur_branch" = "main" ] || [ "$_cur_branch" = "master" ]; then
+    echo "[specify] Refusing to auto-commit on '$_cur_branch' (branch discipline); skipping." >&2
+    exit 0
+fi
+
 # Check if there are changes to commit
 if git diff --quiet HEAD 2>/dev/null && git diff --cached --quiet 2>/dev/null && [ -z "$(git ls-files --others --exclude-standard 2>/dev/null)" ]; then
     echo "[specify] No changes to commit after $EVENT_NAME" >&2
