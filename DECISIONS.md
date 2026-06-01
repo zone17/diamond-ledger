@@ -31,28 +31,36 @@ races the very action that triggered it.**
 
 ### Decision
 
-Three changes to `compound-flag.sh`, covered by 6 new assertions in `test-compound-hooks.sh`
-(21 total) and the CI `hooks-test` job:
+`compound-flag.sh` keeps the `docs/*` skip but makes resolution authoritative and adds an
+**identity** backstop, covered by 24 assertions in `test-compound-hooks.sh` and the CI `hooks-test`
+job:
 
-1. **No-network hint first.** Parse the head ref from the `tool_response` already in the payload
-   (`gh ... --delete-branch` prints `Deleted branch <ref>`) before any live lookup — it cannot race.
-2. **Live `gh` lookup demoted to a fallback** (kept for merges without `--delete-branch`).
-3. **One-shot recursion backstop.** When the ce-compound Skill clears the flag, drop a TTL-bounded
-   (`.claude/.compound-done`, 1h) marker. The next merge with an **unresolved** head ref consumes it
-   and skips arming once — robust even when ref resolution races. A *resolved* non-`docs/*` ref still
-   arms (safe default preserved); the marker is always consumed so it can't suppress a later
-   substantive merge.
+1. **`gh pr view` is authoritative** for the head ref (primary `docs/*` skip).
+2. **Anchored no-network fallback.** Only when `gh` is unavailable/empty, parse the head ref from
+   `tool_response`, anchored to gh's real success line `Deleted branch <ref> and switched to branch`
+   — so a stray `Deleted branch docs/x` substring elsewhere in the payload cannot fabricate a skip.
+3. **Identity backstop (not a clock).** When the ce-compound Skill clears the flag, write an
+   *await* marker (`.claude/.compound-done`). The compound doc's own `gh pr create` (while the
+   await marker is fresh, ≤1h) captures its **PR number** from the printed `.../pull/<n>` URL. The
+   merge of **exactly that PR number** is then skipped — robust even if `gh pr view` races to empty,
+   and it can never suppress a *different* (substantive) merge. Timestamps use portable `date +%s`.
 
-Also: timestamps now use `date +%s` (portable) instead of `EPOCHSECONDS`; the marker is git-ignored.
+**Note — the first attempt was caught by code review.** An initial version parsed `Deleted branch`
+from the *whole payload* with a bare substring grep and let it override the live lookup. The
+`ce-adversarial-reviewer` flagged (P2) that this **reintroduced ADR-0004's own documented pitfall #1**
+(scanning the whole payload for a trigger phrase causes false matches) — a `docs/*` mention anywhere
+could suppress a non-docs reminder — and that a time-window marker could suppress a legitimate
+substantive merge. Both were corrected to the authoritative + anchored + identity design above
+before merge. Independent verification (Article XX) earned its keep here.
 
 ### Alternatives Considered
 
-- **Retry the `gh` lookup with a sleep.** Rejected: adds latency to every merge and is still
-  probabilistic against the propagation race.
-- **Parse only `tool_response`.** Rejected as the sole fix: fragile — output can be piped/`tail`-ed
-  away by the caller (it was, in the triggering session), so a non-output-dependent backstop is needed.
-- **Broad time-window suppression after compound.** Rejected: a one-shot, ref-gated marker suppresses
-  *only* the unresolved next merge, not arbitrary merges in a window.
+- **Whole-payload `Deleted branch` grep overriding gh (first attempt).** Rejected after review:
+  reintroduced the false-match pitfall the change set out to document.
+- **Time-window suppression of the next unresolved merge.** Rejected: suppresses by clock, so a
+  real substantive merge with a transiently-unresolved ref in the window loses its reminder.
+  Identity (PR number) suppresses exactly the compound doc's merge and nothing else.
+- **Retry the `gh` lookup with a sleep.** Rejected: latency on every merge, still probabilistic.
 
 ### Consequences / Reversibility
 

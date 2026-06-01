@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression tests for the compound-loop hooks (ADR-0003).
+# Regression tests for the compound-loop hooks (ADR-0003, ADR-0005).
 # Run: bash .claude/hooks/test-compound-hooks.sh   (exits non-zero on any failure)
 set -uo pipefail
 
@@ -10,11 +10,11 @@ DONE="$CLAUDE_PROJECT_DIR/.claude/.compound-done"
 FLAG_SH="$DIR/compound-flag.sh"
 STOP_SH="$DIR/compound-reminder.sh"
 
-# Hermetic `gh` stub so head-ref resolution can be forced to "unresolved" without a
-# network call (mirrors the post-`--delete-branch` race in ADR-0004/0005). On PATH
-# only inside the tests that opt in via $GHSTUB_PATH.
+# Hermetic `gh` stub so head-ref resolution can be forced to "unresolved" (mirrors the
+# post-`--delete-branch` race ADR-0005 guards) without a network call. On PATH only for
+# tests that opt in via $GHSTUB_PATH.
 GHSTUB_DIR="$(mktemp -d)"
-printf '#!/usr/bin/env bash\nexit 1\n' > "$GHSTUB_DIR/gh"  # any gh call -> empty/failed
+printf '#!/usr/bin/env bash\nexit 1\n' > "$GHSTUB_DIR/gh"
 chmod +x "$GHSTUB_DIR/gh"
 GHSTUB_PATH="$GHSTUB_DIR:$PATH"
 trap 'rm -rf "$GHSTUB_DIR"' EXIT
@@ -23,11 +23,11 @@ pass=0; fail=0
 ok()   { printf '  PASS: %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  FAIL: %s\n' "$1"; fail=$((fail+1)); }
 reset(){ rm -f "$FLAG" "$DONE"; }
+fresh_await(){ printf 'await=%s\n' "$(date +%s 2>/dev/null || echo 0)" > "$DONE"; }
 
 # --- compound-flag.sh: arming ---
 reset
-COMPOUND_TEST_HEAD_REF="feat/platform/PLAT-999-x" \
-  printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 3 --squash"}}' | \
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 3 --squash"}}' | \
   COMPOUND_TEST_HEAD_REF="feat/platform/PLAT-999-x" bash "$FLAG_SH"
 [ -f "$FLAG" ] && ok "arms on Bash gh pr merge (feat branch)" || bad "arms on Bash gh pr merge (feat branch)"
 
@@ -40,15 +40,11 @@ reset
 printf '{"tool_name":"Edit","tool_input":{"new_string":"Run gh pr merge --squash to land it"}}' | bash "$FLAG_SH"
 [ -f "$FLAG" ] && bad "must NOT arm on Edit mentioning gh pr merge" || ok "ignores Edit mentioning gh pr merge"
 
-reset
-printf '{"tool_name":"Bash","tool_input":{"command":"git commit -m \\"docs: explain gh pr merge gate\\""}}' | bash "$FLAG_SH"
-# Known accepted edge: a Bash commit message containing the phrase still arms (low risk). Document, don't assert false.
-[ -f "$FLAG" ] && printf '  NOTE: Bash commit message containing the phrase arms (accepted low-risk edge)\n' || true
-
-# --- compound-flag.sh: clearing ---
+# --- compound-flag.sh: clearing + identity marker (ADR-0005) ---
 reset; : > "$FLAG"
 printf '{"tool_name":"Skill","tool_input":{"skill":"compound-engineering:ce-compound"}}' | bash "$FLAG_SH"
 [ -f "$FLAG" ] && bad "must clear on ce-compound Skill" || ok "clears on ce-compound Skill"
+grep -q '^await=' "$DONE" 2>/dev/null && ok "ce-compound writes an await marker (state A)" || bad "did not write await marker"
 
 reset; : > "$FLAG"
 printf '{"tool_name":"Read","tool_input":{"file_path":".claude/hooks/compound-flag.sh"}}' | bash "$FLAG_SH"
@@ -58,44 +54,62 @@ reset; : > "$FLAG"
 printf '{"tool_name":"Bash","tool_input":{"command":"grep -r compound-engineering ."}}' | bash "$FLAG_SH"
 [ -f "$FLAG" ] && ok "does NOT clear on Bash grep for compound-engineering" || bad "wrongly cleared on grep"
 
-# --- compound-flag.sh: recursion backstop (ADR-0005) ---
+# --- Identity capture at gh pr create (state A -> state B) ---
+reset; fresh_await
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr create --base main --title x"},"tool_response":"https://github.com/zone17/diamond-ledger/pull/42\n"}' | bash "$FLAG_SH"
+grep -q '^pr=42$' "$DONE" 2>/dev/null && ok "captures compound PR number at gh pr create (fresh await)" || bad "did not capture compound PR number"
 
-# Clearing on ce-compound also drops the one-shot just-compounded marker.
-reset; : > "$FLAG"
-printf '{"tool_name":"Skill","tool_input":{"skill":"compound-engineering:ce-compound"}}' | bash "$FLAG_SH"
-[ -f "$DONE" ] && ok "ce-compound writes the one-shot .compound-done marker" || bad "did not write .compound-done marker"
+reset   # no await marker present
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr create --base main"},"tool_response":"https://github.com/zone17/diamond-ledger/pull/99\n"}' | bash "$FLAG_SH"
+[ -f "$DONE" ] && bad "must NOT capture a PR with no await marker" || ok "does NOT capture PR without a fresh await marker"
 
-# No-network hint: a "Deleted branch docs/..." line in tool_response skips arming
-# even with no COMPOUND_TEST_HEAD_REF and no working gh (the race scenario).
+reset; printf 'await=1\n' > "$DONE"   # stale await (1970)
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr create"},"tool_response":"https://github.com/zone17/diamond-ledger/pull/7\n"}' | bash "$FLAG_SH"
+grep -q '^pr=' "$DONE" 2>/dev/null && bad "must NOT capture with a stale await marker (TTL)" || ok "does NOT capture with a stale await marker (TTL expired)"
+
+# --- Identity backstop at merge: skip exactly the captured compound PR, even unresolved ---
+reset; printf 'pr=8\n' > "$DONE"
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 8 --squash --delete-branch"}}' \
+  | PATH="$GHSTUB_PATH" bash "$FLAG_SH"
+[ -f "$FLAG" ] && bad "identity backstop must skip the captured compound PR" || ok "identity backstop skips the captured compound PR (gh unresolved)"
+[ -f "$DONE" ] && bad "marker must be cleared after its PR merges" || ok "marker cleared after the compound PR merges"
+
+# A DIFFERENT PR with an unresolved ref still arms (no clock-based over-suppression — fixes review P2 #2)
+reset; printf 'pr=8\n' > "$DONE"
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 9 --squash --delete-branch"}}' \
+  | PATH="$GHSTUB_PATH" bash "$FLAG_SH"
+[ -f "$FLAG" ] && ok "a substantive merge (different PR#) still arms despite a captured compound PR" || bad "wrongly suppressed a different PR's merge"
+
+# --- Anchored no-network hint (fallback only) ---
+# Positive: a NON-docs "Deleted branch <ref> and switched to branch" resolves and ARMS.
 reset
-printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 8 --squash --delete-branch"},"tool_response":"Deleted branch docs/product/PROD-002-x and switched to branch main"}' \
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 5 --squash --delete-branch"},"tool_response":"Deleted branch feat/platform/PLAT-9-x and switched to branch main\n"}' \
   | PATH="$GHSTUB_PATH" bash "$FLAG_SH"
-[ -f "$FLAG" ] && bad "must NOT arm when tool_response shows a docs/* Deleted branch" || ok "no-network hint skips arming on docs/* Deleted branch"
+[ -f "$FLAG" ] && ok "anchored hint resolves a non-docs ref and arms" || bad "anchored hint failed to arm on a non-docs ref"
 
-# Backstop: head ref unresolved (gh stubbed to fail) + fresh marker -> suppress once.
-reset; now_ts="$(date +%s 2>/dev/null || echo 0)"; printf '%s\n' "$now_ts" > "$DONE"
-printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 999 --squash --delete-branch"}}' \
+# A docs/* anchored line skips (no gh).
+reset
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 6 --squash --delete-branch"},"tool_response":"Deleted branch docs/product/PROD-2-x and switched to branch main\n"}' \
   | PATH="$GHSTUB_PATH" bash "$FLAG_SH"
-[ -f "$FLAG" ] && bad "backstop must suppress arm when ref unresolved + fresh marker" || ok "backstop suppresses recursion when ref unresolved + fresh marker"
-[ -f "$DONE" ] && bad "marker must be consumed (one-shot)" || ok "marker is consumed one-shot"
+[ -f "$FLAG" ] && bad "anchored docs/* hint must skip" || ok "anchored docs/* hint skips arming"
 
-# One-shot: a SECOND unresolved merge after the marker was consumed arms (safe default restored).
-printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 1000 --squash --delete-branch"}}' \
+# OVER-MATCH GUARD (fixes review P2 #1): a BARE "Deleted branch docs/x" (no "and switched
+# to branch") on a NON-docs merge must NOT fabricate a skip — it must ARM.
+reset
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 10 --squash"},"tool_response":"PR body mentioned: Deleted branch docs/evil earlier. Merged."}' \
   | PATH="$GHSTUB_PATH" bash "$FLAG_SH"
-[ -f "$FLAG" ] && ok "arms on next unresolved merge once marker is consumed (safe default)" || bad "failed to arm after marker consumed"
+[ -f "$FLAG" ] && ok "bare 'Deleted branch docs/x' substring does NOT falsely skip a non-docs merge" || bad "over-match: bare docs substring wrongly suppressed a non-docs merge"
 
-# A resolved NON-docs ref still arms even with a fresh marker (marker consumed, not applied).
-reset; printf '%s\n' "$(date +%s 2>/dev/null || echo 0)" > "$DONE"
-printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 5 --squash"}}' \
-  | COMPOUND_TEST_HEAD_REF="feat/platform/PLAT-7-x" bash "$FLAG_SH"
-[ -f "$FLAG" ] && ok "resolved feat ref still arms despite fresh marker" || bad "fresh marker wrongly suppressed a resolved feat merge"
-[ -f "$DONE" ] && bad "marker must be consumed even when not applied" || ok "marker consumed even when not applied to a resolved ref"
-
-# Stale marker (TTL expired) + unresolved ref -> arms (safe default).
-reset; printf '%s\n' "1" > "$DONE"   # epoch 1 = 1970, far older than SUPPRESS_TTL
-printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 1001 --squash --delete-branch"}}' \
+# --- Malformed marker safety ---
+reset; : > "$DONE"   # empty marker file
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 11 --squash --delete-branch"}}' \
   | PATH="$GHSTUB_PATH" bash "$FLAG_SH"
-[ -f "$FLAG" ] && ok "stale marker does not suppress (TTL expired)" || bad "stale marker wrongly suppressed arming"
+[ -f "$FLAG" ] && ok "empty marker file is safe (arms, no crash)" || bad "empty marker file mishandled"
+
+reset; printf 'garbage\n' > "$DONE"   # non-numeric / non-keyed marker
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 12 --squash --delete-branch"}}' \
+  | PATH="$GHSTUB_PATH" bash "$FLAG_SH"
+[ -f "$FLAG" ] && ok "garbage marker content is safe (arms, no crash)" || bad "garbage marker content mishandled"
 
 # --- compound-reminder.sh: Stop behavior ---
 reset; : > "$FLAG"
