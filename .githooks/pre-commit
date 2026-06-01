@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Repo-managed git pre-commit hook. Blocks direct commits to the default branch
+# from ANY path — manual, scripted, or vendored (constitution Article XVIII).
+# This catches the case the Bash-command-string hooks miss: git invoked inside a
+# script (see docs/solutions/best-practices/hook-command-string-matching-pitfalls.md).
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+# Test override:          PRECOMMIT_TEST_BRANCH=main bash .githooks/pre-commit
+set -euo pipefail
+
+branch="${PRECOMMIT_TEST_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)}"
+
+case "$branch" in
+  main|master)
+    echo "BLOCKED: direct commits to '$branch' are prohibited (constitution Article XVIII)." >&2
+    echo "Use a typed branch and a PR:  git checkout -b {type}/{squad}/{TICKET}-{slug} main" >&2
+    exit 1
+    ;;
+esac
+
+exit 0

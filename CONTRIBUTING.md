@@ -17,6 +17,15 @@ loop depth before implementing. ~80% of effort is planning, verification, and re
 - Allowed `type` values: `feat`, `fix`, `docs`, `refactor`, `chore`, `ci`, `test`, `perf`, `build`,
   `spike`.
 
+### One-time setup
+
+Enable the repo-managed git hooks (blocks direct commits to `main`/`master` from any path —
+ADR-0004):
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ### How `main` is protected
 
 This repository is **private on the GitHub free plan**, where server-side rulesets are unavailable

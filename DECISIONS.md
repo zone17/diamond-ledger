@@ -6,6 +6,77 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0004 — Hook Hardening: Branch-Discipline Defense-in-Depth + Compound-Gate Recursion Fix
+
+- **Status:** Accepted
+- **Date:** 2026-06-01
+- **Owner:** Project lead (zone17)
+- **Review date:** 2026-09-01
+
+### Context
+
+Two gaps surfaced via independent review (ADR-0002) and dogfooding (ADR-0003):
+
+1. The vendored `auto-commit.sh` wraps `git commit`, so the command-string `branch-discipline.sh`
+   hook can't see it — an auto-commit could land on `main` (Article XVIII bypass).
+2. The compound-loop gate (ADR-0003) re-arms on **any** `gh pr merge`, including the merge of the
+   compound docs themselves — asking to compound the compound step (a mild recursion).
+
+### Decision
+
+**Branch-discipline defense-in-depth (closes #1):**
+- Add a branch guard at the top of `auto-commit.sh` that refuses to commit on `main`/`master`
+  (zero-setup, closes the named bypass even if `core.hooksPath` is unset).
+- Add a repo-managed git hook `.githooks/pre-commit` that blocks commits to the default branch from
+  **any** path — the altitude-correct generalization ("put the invariant where the action happens,"
+  per `docs/solutions/best-practices/hook-command-string-matching-pitfalls.md`). Enabled per clone
+  with `git config core.hooksPath .githooks` (documented in `CONTRIBUTING.md`).
+
+**Compound-gate recursion fix (closes #2):**
+- `compound-flag.sh` no longer arms when the merged PR's head branch is `docs/*` (where compound
+  and other documentation land). Resolved via `gh pr view --json headRefName`; on any failure it
+  falls through and arms (safe default). Test override: `COMPOUND_TEST_HEAD_REF`.
+
+All paths covered by `.claude/hooks/test-compound-hooks.sh` (12 assertions) and the CI `hooks-test`
+job, including pre-commit block/allow and the docs/* skip.
+
+### Alternatives Considered
+
+- **Only edit auto-commit.sh.** Rejected as sole fix: doesn't generalize to other script-wrapped
+  git; the `pre-commit` hook covers all paths.
+- **Only add the pre-commit hook.** Rejected as sole fix: `core.hooksPath` is per-clone and easily
+  unset, so the in-script guard is the no-setup backstop.
+- **Skip-arm by changed paths (docs/solutions only).** Rejected: the real compound merge also edits
+  instruction files (e.g. CLAUDE.md), so a path filter misses it; the `docs/*` branch convention is
+  the cleaner, more robust signal.
+
+### Tradeoffs
+
+`core.hooksPath` must be set per clone (documented; the in-script guard backstops it). The `docs/*`
+skip may occasionally suppress a reminder for a docs branch that did contain a real learning —
+acceptable, since compounding can always be run manually, and the alternative (recursion) is worse.
+The editing of a vendored file (`auto-commit.sh`) must be re-applied if Spec Kit overwrites it on
+upgrade (noted in an inline comment).
+
+### Consequences
+
+- `main` is protected from direct commits via any path on clones that ran the one-time setup, and
+  the specific auto-commit bypass is closed unconditionally.
+- The compound gate stops nagging after documentation merges.
+
+### Reversibility
+
+High. Remove `.githooks/pre-commit` + unset `core.hooksPath`; revert the two hook edits. No data or
+schema impact.
+
+### Impact
+
+- **Security:** Strengthens branch-discipline enforcement (Articles XVIII, XXVI, XXXIX).
+- **Operational:** Adds a one-time `git config core.hooksPath .githooks` to onboarding.
+- **Agent-native:** All guards are plain bash with test overrides any agent can exercise.
+
+---
+
 ## ADR-0003 — Compound-Loop Gate (Continuous Improvement Flywheel)
 
 - **Status:** Accepted

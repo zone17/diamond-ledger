@@ -33,6 +33,19 @@ fi
 # Arm only when an actual `gh pr merge` ran as a Bash command.
 if [ "$tool_name" = "Bash" ] \
   && printf '%s' "$payload" | grep -Eq 'gh[[:space:]]+pr[[:space:]]+merge'; then
+  # Don't arm on a docs/* branch merge: those are documentation (incl. the compound
+  # docs themselves), so arming would ask to compound the compound step (ADR-0004).
+  # Resolve the merged PR's head branch via gh; on any failure, fall through and arm
+  # (safe default — better an extra reminder than a missed one). Test override:
+  # COMPOUND_TEST_HEAD_REF.
+  pr_num="$(printf '%s' "$payload" | grep -oE 'merge[[:space:]]+[0-9]+' | grep -oE '[0-9]+' | head -n1 || true)"
+  head_ref="${COMPOUND_TEST_HEAD_REF:-}"
+  if [ -z "$head_ref" ] && [ -n "$pr_num" ] && command -v gh >/dev/null 2>&1; then
+    head_ref="$(gh pr view "$pr_num" --json headRefName --jq .headRefName 2>/dev/null || true)"
+  fi
+  case "$head_ref" in
+    docs/*) exit 0 ;;
+  esac
   printf 'merged_at=%s\n' "${EPOCHSECONDS:-unknown}" > "$FLAG"
   exit 0
 fi
