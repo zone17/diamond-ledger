@@ -1,0 +1,41 @@
+{
+  "_comment": "Wizard-of-Oz stimulus + demo script. A real top-of-1st half-inning plus the start of the bottom. The facilitator taps the matching entry when the test scorer speaks the play. 'card' = which UI card renders. Deterministic plays = card A; judgment plays = card B (never auto-resolved). Notation is Reisner/Retrosheet-style. No fabricated stats — this is a constructed but rules-valid sequence for testing the interaction only.",
+  "game": {
+    "home": "Riverside",
+    "away": "Oakmont",
+    "context": "14U travel, scrimmage — neutral teams, illustrative only"
+  },
+  "plays": [
+    { "id": "v1", "half": "top1", "spoken_example": "ground ball to short, threw him out at first",
+      "card": "A", "summary": "Ground out, short to first", "notation": "6-3", "state": "1 out" },
+    { "id": "v2", "half": "top1", "spoken_example": "swinging strikeout",
+      "card": "A", "summary": "Strikeout swinging", "notation": "K", "state": "2 outs" },
+    { "id": "v3", "half": "top1", "spoken_example": "line drive single to left",
+      "card": "A", "summary": "Single to left", "notation": "S7", "state": "runner on 1st, 2 outs" },
+    { "id": "v4", "half": "top1", "spoken_example": "grounder to short, he bobbled it, runner safe at first",
+      "card": "B", "judgment": "hit_vs_error", "question": "Hit or error?",
+      "recommendation": { "call": "Error", "why": "Routine grounder misplayed by the shortstop — E6" },
+      "alternatives": ["Hit", "Error"], "on_error_notation": "E6", "on_hit_notation": "S6",
+      "state_if_error": "runners on 1st & 2nd, 2 outs" },
+    { "id": "v5", "half": "top1", "spoken_example": "fly ball to center, caught",
+      "card": "A", "summary": "Flyout to center", "notation": "8", "state": "3 outs — side retired" },
+
+    { "id": "h1", "half": "bot1", "spoken_example": "walk",
+      "card": "A", "summary": "Walk", "notation": "W", "state": "runner on 1st, 0 out" },
+    { "id": "h2", "half": "bot1", "spoken_example": "double down the line, runner to third",
+      "card": "A", "summary": "Double, runner to 3rd", "notation": "D7.1-3", "state": "runners on 2nd & 3rd, 0 out" },
+    { "id": "h3", "half": "bot1", "spoken_example": "throwing error by the third baseman, a run scores",
+      "card": "B", "judgment": "earned_vs_unearned", "question": "That run — earned or unearned?",
+      "recommendation": { "call": "Leave PENDING", "why": "A run scored in an inning with an error — earned/unearned can't be settled until the inning ends (Rule 9.16 deferred)" },
+      "alternatives": ["Earned", "Unearned", "Leave PENDING"], "notation": "E5.3-H",
+      "note": "This is the FR-010a case: attach earned_unearned=PENDING; never auto-tag." },
+    { "id": "h4", "half": "bot1", "spoken_example": "fielder's choice, they got the lead runner at home",
+      "card": "B", "judgment": "contested_credit", "question": "Who's credited — confirm the play?",
+      "recommendation": { "call": "FC, out at home 2-... confirm fielders", "why": "Fielder's choice; putout/assist credit depends on who covered" },
+      "alternatives": ["Confirm 2 unassisted", "Edit fielders"], "notation": "FC2" },
+
+    { "id": "amb1", "half": "any", "spoken_example": "(mumbled / crowd noise)",
+      "card": "ambiguous", "prompt": "Didn't catch that — say the play again, or tap to enter it.",
+      "note": "Facilitator triggers this to test FR-008: clarify, never guess." }
+  ]
+}
