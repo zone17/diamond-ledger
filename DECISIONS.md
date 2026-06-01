@@ -6,6 +6,78 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0005 — Compound-Gate Recursion Backstop: Don't Resolve Volatile Context via a Racing Live Call
+
+- **Status:** Accepted
+- **Date:** 2026-06-01
+- **Owner:** Project lead (zone17)
+- **Review date:** 2026-09-01
+- **Amends:** ADR-0004 (compound-gate recursion fix)
+
+### Context
+
+ADR-0004 stopped `compound-flag.sh` from arming on `docs/*` merges (so the merge of the compound
+docs themselves wouldn't ask to "compound the compound step"). It resolved the merged PR's head
+branch with a **live `gh pr view <n> --json headRefName`** at hook time, and on any failure fell
+through and armed (safe default).
+
+Dogfooding exposed the gap: after `gh pr merge <n> --squash --delete-branch`, that live lookup
+**races the branch deletion / merge-API propagation**. In a real session the lookup returned empty
+for the just-merged compound-doc PR (a `docs/*` branch), so the `docs/*` skip never fired and the
+gate armed on the compound step's own merge — the exact recursion ADR-0004 set out to prevent. (The
+armed flag even read `merged_at=unknown`, since the hook ran under macOS bash 3.2, which lacks
+`EPOCHSECONDS`.) The general defect: **a hook that re-fetches volatile context via a network call
+races the very action that triggered it.**
+
+### Decision
+
+`compound-flag.sh` keeps the `docs/*` skip but makes resolution authoritative and adds an
+**identity** backstop, covered by 24 assertions in `test-compound-hooks.sh` and the CI `hooks-test`
+job:
+
+1. **`gh pr view` is authoritative** for the head ref (primary `docs/*` skip).
+2. **Anchored no-network fallback.** Only when `gh` is unavailable/empty, parse the head ref from
+   `tool_response`, anchored to gh's real success line `Deleted branch <ref> and switched to branch`
+   — so a stray `Deleted branch docs/x` substring elsewhere in the payload cannot fabricate a skip.
+3. **Identity backstop (not a clock).** When the ce-compound Skill clears the flag, write an
+   *await* marker (`.claude/.compound-done`). The compound doc's own `gh pr create` (while the
+   await marker is fresh, ≤1h) captures its **PR number** from the printed `.../pull/<n>` URL. The
+   merge of **exactly that PR number** is then skipped — robust even if `gh pr view` races to empty,
+   and it can never suppress a *different* (substantive) merge. Timestamps use portable `date +%s`.
+
+**Note — the first attempt was caught by code review.** An initial version parsed `Deleted branch`
+from the *whole payload* with a bare substring grep and let it override the live lookup. The
+`ce-adversarial-reviewer` flagged (P2) that this **reintroduced ADR-0004's own documented pitfall #1**
+(scanning the whole payload for a trigger phrase causes false matches) — a `docs/*` mention anywhere
+could suppress a non-docs reminder — and that a time-window marker could suppress a legitimate
+substantive merge. Both were corrected to the authoritative + anchored + identity design above
+before merge. Independent verification (Article XX) earned its keep here.
+
+### Alternatives Considered
+
+- **Whole-payload `Deleted branch` grep overriding gh (first attempt).** Rejected after review:
+  reintroduced the false-match pitfall the change set out to document.
+- **Time-window suppression of the next unresolved merge.** Rejected: suppresses by clock, so a
+  real substantive merge with a transiently-unresolved ref in the window loses its reminder.
+  Identity (PR number) suppresses exactly the compound doc's merge and nothing else.
+- **Retry the `gh` lookup with a sleep.** Rejected: latency on every merge, still probabilistic.
+
+### Consequences / Reversibility
+
+The compound gate stops self-triggering on its own documentation merge even under the lookup race;
+ordinary `docs/*` merges and substantive merges behave as before. High reversibility — revert the
+hook + test edits and delete the marker line from `.gitignore`. No data/schema impact.
+
+### Impact
+
+- **Operational:** removes a spurious post-merge compound reminder (the one that fired this session).
+- **Agent-native:** plain bash with `COMPOUND_TEST_HEAD_REF` + a `gh` PATH stub make every branch
+  exercisable offline; learning generalized in
+  `docs/solutions/best-practices/hook-command-string-matching-pitfalls.md`.
+- **Security:** no new authority; reads the hook payload, writes two local flag files.
+
+---
+
 ## ADR-0004 — Hook Hardening: Branch-Discipline Defense-in-Depth + Compound-Gate Recursion Fix
 
 - **Status:** Accepted

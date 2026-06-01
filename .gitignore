@@ -13,8 +13,9 @@ Thumbs.db
 tmp/
 *.tmp
 
-# Transient compound-loop gate flag (runtime state, not source)
+# Transient compound-loop gate state (runtime, not source)
 .claude/.needs-compound
+.claude/.compound-done
 
 # Local agent session memory (also self-ignored via .remember/.gitignore)
 .remember/

@@ -1,12 +1,14 @@
 ---
 module: enforcement-hooks
 date: 2026-06-01
+last_updated: 2026-06-01
 problem_type: best_practice
 component: tooling
 severity: high
 applies_when:
   - "Writing a Claude Code hook that triggers on tool calls or git operations"
   - "An enforcement hook either fires when it should not, or fails to fire when it should"
+  - "A hook re-fetches state (a branch, a status) via a live call right after the action it gates"
 related_components:
   - development_workflow
 tags:
@@ -16,9 +18,10 @@ tags:
   - branch-discipline
   - tool-name
   - claude-code
+  - race-condition
 ---
 
-# Hooks that pattern-match command strings have two blind spots
+# Hooks that pattern-match command strings have three blind spots
 
 ## Context
 
@@ -51,6 +54,44 @@ vendored script that runs `git commit` internally (e.g. Spec Kit's `auto-commit.
 `bash auto-commit.sh` — the hook never sees `git commit`, so the guard is bypassed. Defense in depth:
 put the invariant where the action happens (a git `pre-commit`/`pre-push` hook, or a branch guard
 inside the script), not only at the command-string layer.
+
+**3. A hook that re-fetches volatile state via a live call races the action that triggered it —
+and the "read it from the payload instead" fix walks straight back into pitfall #1.**
+A PostToolUse hook runs *after* the command, so state the command changed may already be moving.
+The compound-loop gate (ADR-0004) skipped `docs/*` merges by resolving the PR head branch with a
+live `gh pr view <n>` — but `gh pr merge <n> --delete-branch` deletes that branch, the lookup
+**raced the deletion / API propagation** and returned empty, the `docs/*` skip fell through to its
+arm-default, and the gate armed on the compound doc's own merge (the recursion it existed to
+prevent).
+
+The instructive part is the *first fix* (ADR-0005, caught in code review before merge): "don't
+re-fetch — read `Deleted branch <ref>` from the payload." Done naively that greps the **whole
+payload** for the phrase and lets it override the lookup — which is **pitfall #1 all over again**:
+any `Deleted branch docs/x` substring in a PR body, commit message, or unrelated output fabricates a
+false `docs/*` skip and silently drops a real reminder. The author's happy-path tests passed; an
+adversarial reviewer caught it. Lesson: re-read this file's own pitfall #1 whenever you reach for a
+payload string.
+
+The robust resolution that survived review:
+- **Keep the authoritative lookup primary** (`gh pr view` does return the ref reliably post-merge in
+  practice; the race is transient and narrow).
+- **If you use a payload hint, anchor it to the tool's *real* output line, as a fallback only** —
+  here `Deleted branch <ref> and switched to branch`, never a bare `Deleted branch <ref>` substring.
+- **For a non-fetch backstop, key on identity, not a clock.** Capture the compound PR's *number*
+  from its `gh pr create` (`.../pull/<n>`) and skip exactly that one merge — so a transient race
+  never suppresses a *different*, substantive merge:
+
+```bash
+# capture identity at create-time (state A -> state B), not a timestamp window
+new_pr="$(printf '%s' "$payload" | grep -oE 'pull/[0-9]+' | head -n1 | grep -oE '[0-9]+')"
+[ -n "$new_pr" ] && printf 'pr=%s\n' "$new_pr" > "$DONE"
+
+# at merge: skip ONLY the captured PR, even if the live ref lookup raced to empty
+[ -n "$pr_num" ] && [ "$compound_pr" = "$pr_num" ] && { rm -f "$DONE"; exit 0; }
+```
+
+Also: macOS ships bash 3.2, which lacks `EPOCHSECONDS` (it silently became the literal `unknown` in
+the flag file) — prefer `date +%s` for portable timestamps in hooks.
 
 ## Why This Matters
 
