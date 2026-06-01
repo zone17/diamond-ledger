@@ -40,6 +40,8 @@ First clone? run `git config core.hooksPath .githooks` (ADR-0004). Full workflow
 - `.specify/templates/` — Spec Kit templates (spec, plan, tasks, checklist, constitution).
 - `.specify/scripts/` — workflow scripts the speckit commands call.
 - `.specify/workflows/`, `.specify/extensions/` — Spec Kit workflow registry + git extension.
+- `docs/PROJECT_CONTEXT.md` — fast-orientation single source: current status, intended architecture,
+  decisions index, critical invariants, learnings/anti-pattern index. Load this first to get current.
 - `DECISIONS.md` — architectural decision records (ADRs). Updated for every architectural change
   (Article XXXVIII).
 - `CONTRIBUTING.md` — workflow, branch discipline, CI, compound-loop gate, one-time hook setup.
