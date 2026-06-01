@@ -30,7 +30,8 @@ Two gaps surfaced via independent review (ADR-0002) and dogfooding (ADR-0003):
 - Add a repo-managed git hook `.githooks/pre-commit` that blocks commits to the default branch from
   **any** path — the altitude-correct generalization ("put the invariant where the action happens,"
   per `docs/solutions/best-practices/hook-command-string-matching-pitfalls.md`). Enabled per clone
-  with `git config core.hooksPath .githooks` (documented in `CONTRIBUTING.md`).
+  with `git config core.hooksPath .githooks` (documented in `CONTRIBUTING.md`). It recovers the
+  underlying branch during a rebase (detached HEAD) so a rebase *on* `main` is also caught.
 
 **Compound-gate recursion fix (closes #2):**
 - `compound-flag.sh` no longer arms when the merged PR's head branch is `docs/*` (where compound
