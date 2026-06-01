@@ -14,11 +14,13 @@
 > contract-first atomic primitives (Art. I, XI), deterministic policy at tool boundaries (Art. VII),
 > the read-verify-correct loop and honest uncertainty (Art. VI), and risk-tiered autonomy (Art. XXV).
 >
-> **Validation-gate note (honesty, Art. VI).** Discovery's verdict was *REFINE, then test before
-> build*. This spec is being written **ahead of** the A1/A3 demand falsification gate
-> (≥8% commitment by 2026-07-31; see `docs/product/experiments/`). It is the *specification* of the
-> first capability; the **decision to build it remains gated** on that experiment unless the project
-> lead explicitly overrides. Recorded here so the dependency is not silently lost.
+> **Build-authorization note (honesty, Art. VI).** Discovery's verdict was *REFINE, then test before
+> build*, gating the build on the A1/A3 demand experiment (≥8% commitment by 2026-07-31). **The
+> project lead has overridden that gate — see [ADR-0006](../../DECISIONS.md): the v1 build is
+> authorized to proceed ahead of A1/A3.** The experiment is **not** cancelled — it is reframed as a
+> **parallel instrument** run alongside the build, with pre-committed **tripwires** (ADR-0006). The
+> accepted risk: engineering may precede validation of the riskiest (confidence-L) assumption —
+> paying-beachhead adoption. Recorded so the decision is auditable, not silent.
 
 ## Clarifications
 
@@ -484,10 +486,11 @@ wearables/sensor hardware, and no full earned-run counterfactual reconstruction.
 
 ## Dependencies
 
-- **Validation gate (process dependency)**: Discovery directs that the A1/A3 demand smoke-test clear
-  its falsification threshold (≥8% commitment by 2026-07-31; `docs/product/experiments/`) before
-  engineering the rules engine. This specification may precede that gate, but the build decision
-  remains subject to it unless explicitly overridden by the project lead.
+- **Demand instrument (process, [ADR-0006](../../DECISIONS.md))**: The A1/A3 demand smoke-test
+  (≥8% commitment by 2026-07-31; `docs/product/experiments/`) is **no longer a hard build gate** — the
+  project lead authorized the build ahead of it (ADR-0006). A1/A3 runs **in parallel** as a monitored
+  instrument with pre-committed tripwires; a trip triggers an explicit continue/redirect/pause
+  decision, not an automatic stop.
 - A reliable **on-device** speech-to-text capability (offline-capable on iOS at launch).
 - A complete, tested encoding of the official baseball scoring rules, the **Reisner** notation/scoring
   conventions (`reisnerscorekeeping.com/how`), and the **Retrosheet** specification.
