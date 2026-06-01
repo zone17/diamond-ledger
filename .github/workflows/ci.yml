@@ -70,3 +70,11 @@ jobs:
           set -euo pipefail
           docker run --rm -v "${PWD}:/repo" zricethezav/gitleaks:v8.18.4 \
             detect --source=/repo --redact -v
+
+  hooks-test:
+    name: Compound-loop hooks (ADR-0003)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run compound-hook regression tests
+        run: bash .claude/hooks/test-compound-hooks.sh
