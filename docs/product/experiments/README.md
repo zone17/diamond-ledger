@@ -4,9 +4,17 @@
 pre-registered designs + assets; execution requires real customers (recruiting, ad spend, a hosted
 page, a Stripe deposit). Pre-registration date: 2026-06-01.*
 
-These experiments test the discovery bet *before* any engine is built (`docs/product/discovery/`).
-Pass/fail thresholds are registered **here, before running** — do not move the goalposts after
-seeing data (the cardinal experiment anti-pattern).
+These experiments test the discovery bet (`docs/product/discovery/`). Pass/fail thresholds are
+registered **here, before running** — do not move the goalposts after seeing data (the cardinal
+experiment anti-pattern).
+
+> **Status change — these are now a PARALLEL INSTRUMENT, not a hard build gate ([ADR-0006](../../../DECISIONS.md)).**
+> Originally A1/A3 gated the build. The project lead overrode that gate (founder-conviction bet +
+> fake-door false-negative risk): the v1 build is authorized to proceed **ahead of** these results.
+> The experiments still run **in parallel** as a monitored instrument with **pre-committed tripwires**
+> — a threshold miss triggers an explicit *continue / redirect / pause* decision (per ADR-0006), not an
+> automatic stop. Running them remains worthwhile: willful blindness is strictly worse than parallel
+> measurement, and the demoable build slice is itself a stronger demand signal than the fake-door.
 
 ## What we're testing & why
 
@@ -24,12 +32,17 @@ use this?" A5 measures **observed behavior** (taps, eyes-on-screen seconds) in a
 > serious-scorer visitors converts **< 8%** to a real commitment signal **AND** **fewer than 8 of
 > 20** Mom-Test-interviewed scorers show a commitment signal.
 
-## Run order
+## Run order (revised per ADR-0006 — instrument, not gate)
 
-1. **Start both in parallel.** A5 (Wizard-of-Oz, ~2 wks) and A1/A3 (smoke-test, ~6–8 wks).
-2. **Gate the engineering spike (A6/A7) on A1/A3.** If A1/A3 fails its threshold, **stop** — do not
-   spend engineering on the rules engine. Pivot or kill per the brief.
-3. If A1/A3 passes, proceed to `/speckit.specify` for the first capability.
+1. **Start both in parallel** *while the build proceeds*: A5 (Wizard-of-Oz, ~2 wks) and A1/A3
+   (smoke-test, ~6–8 wks).
+2. **A1/A3 no longer hard-gates engineering** (ADR-0006). Instead, evaluate results against the
+   **tripwires**: a threshold miss (<8% commitment AND <8/20 interviews) → **pause net-new engine
+   investment beyond the demoable slice** and weigh re-segmenting or the discovery-named pivot
+   (archivist score-from-video) — an explicit decision, not an automatic stop.
+3. The spec already exists (`specs/001-voice-scorebook-core/`); the build is authorized. Proceed to
+   `/speckit.plan` and sequence the first artifact to be **demoable to ~20 real serious scorers** so
+   the build doubles as a demand signal.
 
 ## Files
 

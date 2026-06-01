@@ -6,6 +6,87 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0006 — Build Authorized Ahead of the A1/A3 Demand Gate (Override → Parallel Instrument + Tripwires)
+
+- **Status:** Accepted
+- **Date:** 2026-06-01
+- **Owner:** Project lead (zone17)
+- **Review date:** 2026-07-31 (the original A1/A3 falsification deadline — first tripwire review)
+- **Relates to:** `specs/001-voice-scorebook-core/` (spec + `probe-report.md`); discovery
+  (`docs/product/discovery/`); experiments (`docs/product/experiments/`)
+
+### Context
+
+Discovery set a falsification **gate**: building the rules engine was to wait on the A1/A3 demand
+smoke-test clearing **≥8% commitment by 2026-07-31**. The riskiest assumption — serious/official
+scorekeepers will *switch to and pay for* voice→Retrosheet scoring, and Retrosheet export is valued
+beyond the SABR niche — is rated **importance-high / evidence-low (confidence L)**. The
+spec-coherence probe (`probe-report.md`) separately de-risked **feasibility** (the deterministic
+core is buildable). The project lead has decided to **build regardless of the A1/A3 outcome** — a
+founder-conviction bet grounded in lived domain pain (scored own child's games tee-ball→college) and
+the judgment that a fake-door landing page under-measures a novel "feel-it-to-get-it" voice product
+(genuine false-negative risk).
+
+### Decision
+
+Authorize the v1 build to proceed **ahead of, and independent of,** the A1/A3 demand gate. The gate
+is **not removed** — it is **reframed from a hard go/no-go into a parallel instrument** run alongside
+the build, with **pre-committed tripwires** (defined below, before data arrives) so any
+course-correction stays evidence-driven rather than goalpost-moving.
+
+**Risk explicitly accepted (Art. VI):** engineering the rules engine + mobile app (the main upfront
+investment per the PR/FAQ) may be spent before the riskiest, confidence-L assumption
+(paying-beachhead adoption) is validated. A correct engine with weak adoption is the accepted
+downside; building does not, by itself, move adoption.
+
+**Mitigations adopted ("decouple, don't override"):**
+1. **Run A1/A3 in parallel anyway** (cheap: ~$1–3k + ~30 hrs) — keep the demand instrument live; do
+   not go blind.
+2. **Sequence the build so the first shippable artifact is demoable to ~20 real serious scorers** —
+   turning the build into a stronger demand signal than the fake-door (directly tests the
+   false-negative hypothesis).
+3. **Keep the most expensive engine work deferred** (full Rule 9.16 earned-run reconstruction —
+   already out of v1 scope) until early adoption signal exists.
+
+### Tripwires (pre-committed 2026-06-01; reviewed 2026-07-31)
+
+- **Demand:** if by 2026-07-31 A1/A3 commitment is **<8% AND <8/20** interviewed scorers show a
+  commitment signal → **pause net-new engine investment beyond the demoable slice**; re-segment or
+  evaluate the discovery-named pivot (archivist score-from-video) before committing further months.
+- **Distribution:** if **~20 real serious scorers cannot be put in front of the demoable slice**
+  within the build window → treat as an access/GTM red flag and reassess go-to-market before scaling.
+- **Usability:** if the demoable slice's per-game correction rate is high enough that test scorers
+  abandon (fails the SC-005 attention bar / SC-010 retention intent) → stop and fix the loop before
+  building further (the A5 concern).
+- Any tripwire trip triggers an **explicit, documented continue / redirect / pause decision** — never
+  silent continuation.
+
+### Alternatives Considered
+
+- **Honor the gate (build only if A1/A3 passes).** Rejected by the project lead: founder conviction +
+  fake-door false-negative risk for a novel voice product.
+- **Drop A1/A3 entirely.** Rejected: discards a cheap behavioral signal for no benefit; willful
+  blindness is strictly worse than parallel measurement.
+- **Build the full engine first (incl. Rule 9.16) before any demand signal.** Rejected: maximizes
+  sunk cost on the least-validated bet.
+
+### Consequences / Reversibility
+
+Planning (`/speckit.plan`) and the v1 build are unblocked now. **Reversible at the tripwire reviews**
+— the parallel instrument + tripwires preserve the ability to pivot on evidence rather than lock in
+sunk cost. No code/schema impact (governance decision).
+
+### Impact
+
+- **Process:** converts a hard gate into a monitored, tripwired parallel instrument; preserves the
+  constitution's *test-before-build* intent in spirit (the test continues; the build no longer blocks
+  on it) while honoring an explicit, auditable founder-conviction override (Articles VI, IX, XXV,
+  XXXVIII).
+- **Honesty (Art. VI):** the accepted risk and the false-negative rationale are recorded, not hidden.
+- **Cost:** engineering spend begins before demand validation — the accepted risk.
+
+---
+
 ## ADR-0005 — Compound-Gate Recursion Backstop: Don't Resolve Volatile Context via a Racing Live Call
 
 - **Status:** Accepted
