@@ -44,6 +44,7 @@ function App() {
   const [taps, setTaps] = useState(0);
   const [flash, setFlash] = useState(false);
   const [correcting, setCorrecting] = useState(null); // recorded-array position being corrected
+  const [events, setEvents] = useState([]); // facilitator observations (e.g. "Edit fielders" taps)
   const shownAt = useRef(0);
   const procTimer = useRef(null);
 
@@ -54,6 +55,8 @@ function App() {
 
   const gs = replay(recorded);
   const uidRef = useRef(1);
+
+  const logEvent = (label) => setEvents((e) => [...e, { label, at: Date.now() }]);
 
   const flashRecompute = () => { setFlash(true); setTimeout(() => setFlash(false), 900); };
 
@@ -142,7 +145,7 @@ function App() {
 
   const reset = () => {
     setRecorded([]); setPending(null); setTalkState('idle'); setScriptIndex(0);
-    setLog([]); setTaps(0); setCorrecting(null); setWozOpen(false);
+    setLog([]); setTaps(0); setCorrecting(null); setWozOpen(false); setEvents([]);
   };
 
   // --- derived display ---
@@ -208,7 +211,7 @@ function App() {
               )}
               {pending && !pending.kind && pending.play.card === 'B' && (
                 <CardB play={pending.play} variant={variant} correcting={!!pending.correcting}
-                  onResolve={handleResolveB} onCorrect={dismiss} />
+                  onResolve={handleResolveB} onCorrect={dismiss} onLog={logEvent} />
               )}
             </div>
           </div>
@@ -228,6 +231,7 @@ function App() {
               doneIds={recorded.map((r) => DL.plays[r.index].id)}
               variant={variant}
               log={log}
+              events={events}
               totalTaps={taps}
               onSetVariant={setVariant}
               onPlay={(i) => { showPlay(i); setWozOpen(false); }}

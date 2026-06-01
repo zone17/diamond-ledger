@@ -1,4 +1,4 @@
-# Chat
+# Minimal picker + prototype scope
 
 _Started 2026-06-01 16:13 UTC_
 
@@ -487,4 +487,43 @@ The verifier confirmed the full interaction flow works — Card A confirm, the W
 The prototype is ready to click through. It opens on the top of the 1st, due-up batter, 0 out — hold the talk button to walk the scripted half-inning, or use the right-edge handle (or long-press the HUD) to open the facilitator drawer and switch judgment variants.
 
 My one open question still stands: keep the **"Edit fielders"** picker minimal as-is, or expand it into a fuller fielder-sequence editor?
+
+## User
+
+keep the minimal picker as-is for the prototype. Reasoning, grounded in what this
+  artifact is for:
+
+  1. It's off the critical path of the hypothesis. The prototype exists to test one thing — does the
+  confirm/correct + judgment loop stay attention-free (≤3s eyes-down, one-tap). "Which fielder gets the
+  assist" is a real scoring detail but not what makes-or-breaks the A5 result. Adding a full editor spends
+  design surface where there's no open risk.
+  2. A fuller editor is exactly the failure mode you're testing against. A multi-step fielder-sequence editor
+  is heads-down, multi-tap, read-the-screen interaction — the precise "stop watching the game" problem.
+  Building it into the prototype would quietly contradict the prototype's own thesis.
+  3. YAGNI for a throwaway rig. The full editor is a real v1 feature — but it belongs in the plan/build,
+  designed from what you observe scorers reaching for when they hit "Edit fielders" in the sessions. Let the
+  prototype generate that evidence rather than guess at it now.
+
+  So: leave it minimal, and if anything, instrument it — note when testers tap "Edit fielders" and what they
+  expected — so the real editor later is designed from observed behavior, not assumption.
+
+## Assistant
+
+_[tool: str_replace_edit]_
+
+Good call — that's the right scope discipline for a throwaway rig, and the instrumentation idea is sharp. Let me wire a lightweight observation log: when a tester taps "Edit fielders," it records the event into the WoZ session log so the real editor can be designed from observed behavior.Now wire the events state in App and pass it through.
+
+_[tool: str_replace_edit]_
+
+Now surface the observations in the WoZ drawer's session log.
+
+_[tool: str_replace_edit]_
+
+_[tool: show_html]_
+
+_[tool: get_webview_logs]_
+
+Clean. Done — the "Edit fielders" picker stays minimal, and tapping it now drops a timestamped observation into the WoZ session log (under "Observations · design the real editor from these"), cleared on reset and kept out of the resolve-time stats.
+
+That keeps the prototype honest to its own thesis: the heads-down fielder-sequence editor is left for the build, to be designed from what testers actually reach for rather than guessed at now.
 

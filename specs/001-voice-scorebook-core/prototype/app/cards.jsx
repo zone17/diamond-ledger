@@ -102,7 +102,7 @@ function FielderEdit({ onPick, onCancel }) {
 }
 
 /* ---------- Card B — scorer judgment ---------- */
-function CardB({ play, variant, correcting, onResolve, onCorrect }) {
+function CardB({ play, variant, correcting, onResolve, onCorrect, onLog }) {
   const main = play.options.filter((o) => !o.pending);
   const pending = play.options.find((o) => o.pending);
   const recKey = (play.options.find((o) => o.recommended) || {}).key;
@@ -110,7 +110,13 @@ function CardB({ play, variant, correcting, onResolve, onCorrect }) {
   const [editing, setEditing] = useState(false);
 
   const commit = (opt, customNotation) => {
-    if (opt.edit && !customNotation) { setEditing(true); return; }
+    if (opt.edit && !customNotation) {
+      // Instrument: tester reached for fielder credit. Captured so the real
+      // editor is designed from observed behavior, not assumption.
+      onLog && onLog('Tapped “Edit fielders” — note what credit they expected');
+      setEditing(true);
+      return;
+    }
     onResolve(play, opt, customNotation);
   };
 

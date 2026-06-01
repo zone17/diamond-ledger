@@ -10,7 +10,7 @@ function median(arr) {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-function WozDrawer({ plays, currentIndex, doneIds, variant, log, totalTaps, onSetVariant, onPlay, onAmbiguous, onReset, onClose }) {
+function WozDrawer({ plays, currentIndex, doneIds, variant, log, events, totalTaps, onSetVariant, onPlay, onAmbiguous, onReset, onClose }) {
   const variants = [
     { k: 'V1', n: 'V1 · Sheet', d: 'Bottom decision sheet' },
     { k: 'V2', n: 'V2 · Inline', d: 'Two-tap armed toggle' },
@@ -97,6 +97,20 @@ function WozDrawer({ plays, currentIndex, doneIds, variant, log, totalTaps, onSe
               </div>
             )}
           </div>
+
+          {events && events.length > 0 && (
+            <React.Fragment>
+              <div className="woz-sec">Observations · design the real editor from these</div>
+              <div className="woz-log">
+                {events.slice(-6).map((e, i) => (
+                  <div className="lrow" key={i} style={i === 0 ? { borderTop: 'none' } : null}>
+                    <span style={{ color: 'var(--amber)' }}>{e.label}</span>
+                  </div>
+                ))}
+              </div>
+            </React.Fragment>
+          )}
+
           <button className="woz-reset" onClick={onReset}>Reset session</button>
         </div>
       </div>
