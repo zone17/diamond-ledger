@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Diamond Ledger — Speak the game. Capture every play.</title>
+<meta name="description" content="Voice-driven baseball scoring that produces an official, Retrosheet-exportable scorebook. Keep the official book without taking your eyes off the field." />
+<!--
+  SMOKE-TEST LANDING PAGE (Experiment A1/A3). Status: NOT live until you:
+    1) Replace STRIPE_PAYMENT_LINK with a real refundable $10 deposit link.
+    2) Add an analytics snippet (Plausible/GA) and confirm the funnel events below fire.
+    3) Wire the email + pilot forms to a real endpoint (Formspark/Tally/Sheets).
+  Positioning reflects the discovery REFINE: beachhead = serious/official scorekeeper.
+-->
+<style>
+  :root{
+    --ink:#0f1720; --muted:#5b6b7a; --line:#e3e8ee; --bg:#ffffff;
+    --field:#0a6b3f; --field2:#0c8a51; --chalk:#f6f8fa; --accent:#b4451f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:17px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:var(--bg)}
+  .wrap{max-width:760px;margin:0 auto;padding:0 22px}
+  header{background:linear-gradient(160deg,var(--field),var(--field2));color:#fff;padding:64px 0 56px;text-align:center}
+  .brand{font-weight:700;letter-spacing:.02em;text-transform:uppercase;font-size:14px;opacity:.85}
+  h1{font-size:40px;line-height:1.12;margin:14px 0 8px;font-weight:800}
+  .tag{font-size:20px;opacity:.95;margin:0 0 6px;font-weight:600}
+  .sub{font-size:18px;opacity:.92;max-width:580px;margin:14px auto 0}
+  .cta{display:inline-block;margin:26px 8px 0;padding:15px 26px;border-radius:10px;font-weight:700;text-decoration:none;font-size:17px}
+  .cta-primary{background:#fff;color:var(--field)}
+  .cta-secondary{background:transparent;color:#fff;border:1.5px solid rgba(255,255,255,.7)}
+  section{padding:46px 0;border-bottom:1px solid var(--line)}
+  h2{font-size:24px;margin:0 0 14px}
+  .lead{color:var(--muted);font-size:18px}
+  ul.clean{list-style:none;padding:0;margin:18px 0}
+  ul.clean li{padding:12px 0 12px 30px;position:relative;border-top:1px solid var(--line)}
+  ul.clean li:before{content:"●";color:var(--field);position:absolute;left:6px;top:12px;font-size:12px}
+  .who{background:var(--chalk);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:18px 0}
+  .who b{color:var(--accent)}
+  .quote{font-size:19px;line-height:1.5;font-style:italic;color:var(--ink);border-left:3px solid var(--field);padding:6px 0 6px 18px;margin:18px 0}
+  .quote span{display:block;font-style:normal;font-size:15px;color:var(--muted);margin-top:8px}
+  form{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+  input,select{flex:1;min-width:180px;padding:13px 14px;border:1px solid var(--line);border-radius:9px;font-size:16px}
+  button{padding:13px 22px;border:0;border-radius:9px;background:var(--field);color:#fff;font-weight:700;font-size:16px;cursor:pointer}
+  .fine{font-size:14px;color:var(--muted);margin-top:10px}
+  footer{padding:34px 0 60px;text-align:center;color:var(--muted);font-size:14px}
+  .pill{display:inline-block;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.35);color:#fff;padding:4px 10px;border-radius:999px;font-size:13px;margin-top:14px}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="brand">Diamond Ledger</div>
+    <h1>Keep the official book<br>without looking down.</h1>
+    <p class="tag">Speak the game. Capture every play.</p>
+    <p class="sub">Voice-driven baseball scoring that produces a complete, accurate scorebook —
+      and exports a clean, industry-standard <b>Retrosheet</b> file. Built first for the people who
+      keep the strictest books.</p>
+    <div>
+      <!-- FUNNEL EVENT: cta_deposit_click -->
+      <a class="cta cta-primary" href="STRIPE_PAYMENT_LINK" data-evt="cta_deposit_click">Reserve founding-scorer access — $10 (refundable)</a>
+      <!-- FUNNEL EVENT: cta_pilot_click -->
+      <a class="cta cta-secondary" href="#pilot" data-evt="cta_pilot_click">Request a league / program pilot</a>
+    </div>
+    <div class="pill">For travel · high-school · college scorers · official scorers · Retrosheet archivists</div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>The trade every scorekeeper makes</h2>
+    <p class="lead">Every app wants your thumbs on the screen for every pitch — so you score the
+      game instead of watching it. And when it's done, the data is trapped: no app exports the
+      Retrosheet format the rest of baseball actually uses.</p>
+    <ul class="clean">
+      <li><b>Tap, tap, tap.</b> Per-pitch screen interaction pulls your eyes off the field.</li>
+      <li><b>Not really official.</b> Volunteer-kept stats get discounted; there's no clean export.</li>
+      <li><b>Locked in.</b> The dominant app has no public API and no Retrosheet event-file export.</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Diamond Ledger removes the screen from the moment</h2>
+    <p class="lead">Watch the play. Say what you saw —
+      <em>"ground ball to short, threw him out at first."</em> A deterministic scoring engine
+      applies the official rules, renders standard notation, and exports a Retrosheet-compatible
+      file. Judgment calls (hit vs. error, earned vs. unearned) stop and ask you — one tap.</p>
+    <div class="who">
+      <p><b>Who this is for first.</b> Travel, high-school, and college scorers and statisticians,
+      official scorers, and Retrosheet/SABR archivists — the people who need the book to be
+      <b>right</b> and <b>exportable</b>. (Parents and casual fans: you're next — join the list.)</p>
+    </div>
+    <p class="quote">"For the first time I'm watching the game I'm scoring — and I export a clean
+      Retrosheet file in one tap."
+      <span>— what we're betting a serious scorer will say. Tell us if we're wrong.</span></p>
+  </div>
+</section>
+
+<section id="reserve">
+  <div class="wrap">
+    <h2>Be a founding scorer</h2>
+    <p class="lead">A <b>$10 refundable deposit</b> reserves early access and a founding-scorer
+      price. We only build this if scorers like you actually want it — your deposit is the signal.</p>
+    <div>
+      <a class="cta cta-primary" href="STRIPE_PAYMENT_LINK" data-evt="cta_deposit_click" style="background:var(--field);color:#fff;margin-left:0">Reserve for $10 (refundable)</a>
+    </div>
+    <p class="fine">Refundable any time before launch. We'll never charge more without asking.</p>
+
+    <h2 style="margin-top:38px">Not ready? Join the list.</h2>
+    <!-- FUNNEL EVENT: email_submit — wire action to Formspark/Tally/Sheets -->
+    <form action="REPLACE_EMAIL_ENDPOINT" method="post" data-evt="email_submit">
+      <input type="email" name="email" placeholder="you@email.com" required />
+      <select name="role" required>
+        <option value="" disabled selected>What do you score?</option>
+        <option>HS / college official scorer or statistician</option>
+        <option>Travel / select team scorer or coach</option>
+        <option>Retrosheet / SABR archivist</option>
+        <option>Youth / rec parent</option>
+        <option>Other</option>
+      </select>
+      <button type="submit">Keep me posted</button>
+    </form>
+  </div>
+</section>
+
+<section id="pilot">
+  <div class="wrap">
+    <h2>Run a pilot for your league or program</h2>
+    <p class="lead">Athletic departments, leagues, and tournament operators: tell us about your
+      program and we'll set up a pilot for your scorers.</p>
+    <!-- FUNNEL EVENT: pilot_submit -->
+    <form action="REPLACE_PILOT_ENDPOINT" method="post" data-evt="pilot_submit">
+      <input type="text" name="org" placeholder="League / school / program" required />
+      <input type="email" name="email" placeholder="Contact email" required />
+      <button type="submit">Request a pilot</button>
+    </form>
+    <p class="fine">A pilot request is one of the commitment signals we're measuring (A1/A3).</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    Diamond Ledger · Speak the game. Capture every play.<br>
+    Smoke-test page for product discovery — not a live product yet.
+  </div>
+</footer>
+
+<!--
+  ANALYTICS / EVENT WIRING (add before going live):
+  Track unique visitors + these funnel events (the denominator/numerators in results-tracker.md):
+    cta_deposit_click, cta_pilot_click, email_submit, pilot_submit, and the Stripe "payment succeeded" webhook.
+  Commitment rate = (paid deposits + pilot_submit + signed LOIs) / unique visitors.  PASS ≥ 8%.
+-->
+</body>
+</html>
