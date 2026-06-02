@@ -69,7 +69,7 @@ struct ClarifyCandidate: Sendable, Identifiable {
 
 @MainActor
 @Observable
-final class AppState {
+public final class AppState {
 
     // MARK: Auth
 
@@ -115,7 +115,7 @@ final class AppState {
 
     // MARK: Init
 
-    init(core: any CoreClient) {
+    public init(core: any CoreClient) {
         self.core = core
     }
 

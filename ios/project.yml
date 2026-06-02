@@ -1,0 +1,34 @@
+# XcodeGen spec for the runnable Diamond Ledger iOS app target (DL-133).
+# The app code + tests live in the SwiftPM package (Package.swift); this generates a thin
+# iOS app target that depends on the package's DiamondLedgerLib product and provides @main.
+#
+# Regenerate after editing:  cd ios && xcodegen generate
+# Then open DiamondLedger.xcodeproj (NOT Package.swift) in Xcode, or build via xcodebuild.
+name: DiamondLedger
+options:
+  bundleIdPrefix: app.diamondledger
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+packages:
+  LedgerPkg:
+    path: .
+targets:
+  DiamondLedger:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - App
+    dependencies:
+      - package: LedgerPkg
+        product: DiamondLedgerLib
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.diamondledger.DiamondLedger
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "6.0"
+        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "1.0"
