@@ -6,6 +6,86 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0007 — v1 Technical Architecture: Rust Deterministic Core + UniFFI Parity, Two-Engine ASR, Pinned Chadwick `cwevent`
+
+- **Status:** Accepted
+- **Date:** 2026-06-01
+- **Owner:** Project lead (zone17)
+- **Review date:** 2026-09-30 (revisit after the first headless core + Phase B slice exist)
+- **Relates to:** `specs/001-voice-scorebook-core/plan.md` + `research.md` (decisions D1–D8); founder
+  confirmation 2026-06-01 (core language = Rust; ASR = two-engine; first slice = US1+US2+US3).
+
+### Context
+
+`/speckit-plan` had to settle the v1 technical architecture for the voice-scorebook core. Three forks were
+surfaced to the founder for explicit decision (not silently chosen, Art. VI), grounded in four sourced
+research streams (`research.md`): the shared-core implementation language, the on-device ASR strategy, and
+the first shippable slice. The constitution requires the platform-independent deterministic core
+(Art. VII) with agent-native parity (Art. II), byte-identical determinism (FR-003/I6), and the pinned
+Retrosheet acceptance gate (FR-016/SC-004). The core-language choice is a foundational architectural
+decision and therefore requires this ADR before core implementation begins.
+
+### Decision
+
+1. **Core language = Rust + UniFFI.** A single Rust crate (pinned toolchain, **integer/fixed-point only,
+   no `f32`/`f64` — CI-linted**) implements the rules engine, the **fact-derived** judgment classifier,
+   the Reisner renderer + proof-box, the reduced-Retrosheet emitter, and the append-only event log. The
+   *same compiled artifact* is exposed via UniFFI to Swift (iOS, XCFramework→SwiftPM), Kotlin (Android
+   fast-follow), a native CLI, and a native/WASM agent/API surface — so Art. II parity holds by
+   construction. The FFI boundary is kept to the four primitives + plain owned types + a typed error enum.
+2. **ASR = two-engine, behind one `Transcriber` protocol.** Apple `SpeechAnalyzer`/`DictationTranscriber`
+   (iOS 26+, free, phrase-biased) primary on iOS; **sherpa-onnx/Parakeet** as the portable Android +
+   fallback engine. The Android fast-follow swaps one adapter, not the app. v1 structured parse is a
+   deterministic grammar-constrained parser (no LLM); FunctionGemma-270M+XGrammar is a documented v2 path.
+3. **Retrosheet acceptance = pinned Chadwick `cwevent` v0.10.0**, validated by a **stderr-driven** 3-layer
+   CI gate (proof-box → `cwevent` parse-success → golden diff). Exit-code-only is vacuous (`cwevent`
+   returns 0 on malformed plays) — same failure class as the dead SC-003 counter the probe caught.
+4. **Storage = event-sourced SQLite/GRDB on iOS; sync = CloudKit private DB, last-write-wins, NO CRDTs**
+   (single-writer-per-game; CRDTs would be scale theater, Art. XXXVII).
+5. **First shippable slice = US1 + US2 + US3 (export).** Founder chose to include the Retrosheet **export
+   UI** in the first artifact demoed to ~20 serious scorers (stronger official-artifact story), broader
+   than the planner's US1+US2 recommendation. US4 (correction UI) + sync follow; full Rule 9.16 earned-run
+   reconstruction remains deferred (earned/unearned = `PENDING`).
+
+### Alternatives Considered
+
+- **Kotlin Multiplatform** (core language) — strong runner-up; rejected for an iOS-first product because
+  determinism would span three runtimes and the Kotlin→Swift interop friction lands on the iOS side. The
+  sanctioned fallback had team Rust proficiency been low.
+- **TypeScript/JS core** — rejected: no integer type, byte-identity across three JS engines, runtime weight.
+- **Swift-shared core** — rejected: official Swift-for-Android is preview (Swift 6.3, Mar 2026).
+- **Single ASR engine everywhere** — simpler to maintain but forfeits Apple-native's free first-party iOS
+  accuracy/privacy win; rejected in favor of the thin two-engine abstraction.
+- **CRDT sync** — rejected as unjustified for single-writer-per-game data.
+
+### Tradeoffs / Risks (accepted)
+
+- **Rust learning curve** for a small team — accepted; the core is bounded, mostly-integer, pure-logic
+  (no async/unsafe), near the safe end for learning Rust. UniFFI is pre-1.0 (keep the boundary small);
+  Android binding uses JNA (the synchronous core sidesteps the async-crash class). Cross-compile matrix is
+  larger CI but well-trodden (Mozilla `application-services` reference).
+- **Min iOS = 26** (SpeechAnalyzer) — pre-26 needs the `SFSpeechRecognizer`/sherpa fallback.
+- **Crowd-noise WER on short baseball phrases is unproven in public benchmarks** — must be field-tested
+  before committing accuracy claims (ties to A5/SC-005). The biggest real technical risk.
+- Including US3 export in the first slice adds the emitter's UI surface earlier — acceptable; the emitter
+  itself is core work needed for the `cwevent` gate regardless.
+
+### Consequences / Reversibility
+
+Core implementation (Phase A) is unblocked. The deterministic core, the CLI/agent parity surface, and the
+`evals/` gates are buildable headless before any UI. **Moderately reversible:** the language choice is the
+stickiest (rewriting the core), but the small FFI surface + the deferred Android/agent adapters limit blast
+radius; ASR/storage/sync choices are behind thin protocols and swappable. No production data yet.
+
+### Impact
+
+- **Agent-native (Art. II):** parity is structural — one artifact, four surfaces.
+- **Security/privacy:** on-device, process-don't-store enforced in code; COPPA path (FR-029) preserved.
+- **Reproducibility (Art. XXXV):** pinned Rust toolchain, `cwevent` v0.10.0 (SHA-pinned), pinned model assets.
+- **Cost:** engineering begins (per ADR-0006 the build is authorized ahead of the A1/A3 demand instrument).
+
+---
+
 ## ADR-0006 — Build Authorized Ahead of the A1/A3 Demand Gate (Override → Parallel Instrument + Tripwires)
 
 - **Status:** Accepted

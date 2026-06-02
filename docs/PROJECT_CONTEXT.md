@@ -2,7 +2,7 @@
 
 > **Fast-orientation single source.** Load this to get current. The binding authority is the
 > constitution (`.specify/memory/constitution.md`); this file is the map + index, kept in sync with
-> `DECISIONS.md` and `docs/solutions/`. Last updated 2026-06-01.
+> `DECISIONS.md` and `docs/solutions/`. Last updated 2026-06-01 (plan 001 + ADR-0007).
 
 ## 1. What this is
 
@@ -28,7 +28,8 @@ archivist). The rec parent is *expansion*, not the v1 target.
 | **Spec 001** (voice-scorebook core) | ✅ specified → clarified ×2 → **probe-hardened** → merged |
 | **Prototype** (judgment loop, Wizard-of-Oz) | ✅ merged; **V3 (glance)** chosen |
 | **Build authorization** | ✅ **authorized ahead of A1/A3** (ADR-0006) |
-| **Plan / tasks / implement** | ⏳ next — `/speckit-plan` |
+| **Plan 001** (tech design + Phase 0/1 artifacts) | ✅ `plan.md` + research/data-model/contracts/quickstart; stack confirmed (ADR-0007) |
+| **Tasks / implement** | ⏳ next — `/speckit-tasks` |
 
 **Demand validation is a parallel instrument, not a gate** (ADR-0006). Build proceeds; A1/A3 runs
 alongside with tripwires (review 2026-07-31). Riskiest assumption (paying-beachhead adoption;
@@ -46,6 +47,10 @@ Retrosheet valued beyond SABR) is **confidence-L, untested**.
   authoritative gate = **Chadwick `cwevent`** pinned.
 - **Canonical interaction:** **V3 glance** judgment card (glanceable, one-tap, ≤5s eyes-down).
 - **Spec:** `specs/001-voice-scorebook-core/spec.md` (32 FRs, 11 SCs).
+- **Confirmed stack (ADR-0007):** **Rust** core (integer-only, no-float) + **UniFFI** → iOS/Android/CLI/
+  agent from one artifact; ASR = Apple `SpeechAnalyzer` + sherpa-onnx/Parakeet (two-engine); grammar parse
+  (no LLM v1); **`cwevent` v0.10.0** pinned (stderr-driven 3-layer gate); event-sourced SQLite/GRDB +
+  CloudKit (no CRDTs). Plan + Phase 0/1 artifacts in `specs/001-voice-scorebook-core/`.
 
 ## 4. Decisions index (`DECISIONS.md`)
 
@@ -57,6 +62,7 @@ Retrosheet valued beyond SABR) is **confidence-L, untested**.
 | 0004 | Hook hardening: branch-discipline defense-in-depth + compound-gate recursion fix |
 | 0005 | Compound-gate recursion backstop (don't resolve volatile context via a racing live call) |
 | **0006** | **Build authorized ahead of the A1/A3 demand gate → parallel instrument + tripwires** |
+| **0007** | **v1 tech architecture: Rust core + UniFFI parity · two-engine ASR · pinned `cwevent` v0.10.0 · event-sourced SQLite/CloudKit · first slice US1+US2+US3** |
 
 ## 5. Critical invariants (spec 001 — the probe broke these once; keep them)
 
