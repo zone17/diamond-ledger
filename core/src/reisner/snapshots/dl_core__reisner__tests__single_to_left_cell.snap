@@ -1,0 +1,10 @@
+---
+source: core/src/reisner/mod.rs
+expression: cell
+---
+{
+  "situation_diamond": "--- 0",
+  "catalyst_symbols": "1B-7",
+  "pitch_marks": [],
+  "runner_fate": "left_on_base"
+}
