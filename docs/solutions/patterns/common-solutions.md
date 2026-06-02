@@ -33,6 +33,7 @@ the fast path. Add a row when a new P2/P3 learning is compounded.
 | 7 | Private-repo branch-protection fallback (hooks, not rulesets) | P3 | [conventions/private-repo-branch-protection-fallback](../conventions/private-repo-branch-protection-fallback.md) |
 | 8 | Verify generated code with the real toolchain (not static review); Cargo workspace + advisory-CI gotchas | P2 | [best-practices/verify-generated-code-with-real-toolchain](../best-practices/verify-generated-code-with-real-toolchain.md) |
 | 9 | Parallel-squad integration: advisory CI masks merge failures · worktrees outside the repo · gate the cardinal invariant not a proxy | P2 | [workflow-issues/parallel-squad-integration](../workflow-issues/parallel-squad-integration.md) |
+| 10 | SwiftUI swipe-dismissible `.sheet` must reconcile owner state in `onDismiss` (button handlers don't run on gesture-dismiss) | P2 | [ui-bugs/swiftui-sheet-ondismiss-state-reconciliation](../ui-bugs/swiftui-sheet-ondismiss-state-reconciliation.md) |
 
 ## Checklists (fast path)
 
