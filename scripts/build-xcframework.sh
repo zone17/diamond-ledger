@@ -62,7 +62,10 @@ done
 CRATE="dl-core"
 LIB_BASENAME="libdl_core"           # cdylib/staticlib name (lib name = dl_core)
 FRAMEWORK_NAME="DiamondLedgerCore"
-FFI_MODULE="DiamondLedgerCoreFFI"
+# UniFFI 0.28 names the FFI module + header from the crate LIB name (dl_core → dl_coreFFI),
+# NOT the framework name. The generated dl_core.swift does `import dl_coreFFI`, so the modulemap
+# must name the clang module `dl_coreFFI` and the header is `dl_coreFFI.h` (not libdl_coreFFI.h).
+FFI_MODULE="dl_coreFFI"
 
 # iOS triples: device (arm64) + simulator (arm64 + x86_64).
 IOS_DEVICE_TARGET="aarch64-apple-ios"
@@ -129,11 +132,11 @@ fi
 # ── Step 4: assemble headers + modulemap for the XCFramework ──────────────────
 HEADERS_DIR="${GEN_TMP}/headers"
 mkdir -p "${HEADERS_DIR}"
-cp "${GEN_TMP}/${LIB_BASENAME}FFI.h" "${HEADERS_DIR}/"
+cp "${GEN_TMP}/${FFI_MODULE}.h" "${HEADERS_DIR}/"
 # A clean module.modulemap naming the FFI module the Swift bindings `import`.
 cat > "${HEADERS_DIR}/module.modulemap" <<EOF
 module ${FFI_MODULE} {
-    header "${LIB_BASENAME}FFI.h"
+    header "${FFI_MODULE}.h"
     export *
 }
 EOF

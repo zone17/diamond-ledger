@@ -34,6 +34,7 @@ the fast path. Add a row when a new P2/P3 learning is compounded.
 | 8 | Verify generated code with the real toolchain (not static review); Cargo workspace + advisory-CI gotchas | P2 | [best-practices/verify-generated-code-with-real-toolchain](../best-practices/verify-generated-code-with-real-toolchain.md) |
 | 9 | Parallel-squad integration: advisory CI masks merge failures · worktrees outside the repo (+ `git -C` space-path footgun) · gate the cardinal invariant not a proxy · **green CI ≠ correct — the review gate catches real P1s on every PR** · ADR-number collision (renumber the later merger) · board reconciliation (`Closes #NN`) | P2 | [workflow-issues/parallel-squad-integration](../workflow-issues/parallel-squad-integration.md) |
 | 10 | SwiftUI swipe-dismissible `.sheet` must reconcile owner state in `onDismiss` (button handlers don't run on gesture-dismiss) | P2 | [ui-bugs/swiftui-sheet-ondismiss-state-reconciliation](../ui-bugs/swiftui-sheet-ondismiss-state-reconciliation.md) |
+| 11 | Real-stateful-core-for-stateless-mock swap surfaces a class of bugs (fact-schema mismatch, pending orphaning, stricter invariants); test the REAL input path not idealized proxies; a "never silently X" gate must be instrumented on every path or it passes vacuously | P1 | [integration-issues/mock-to-real-stateful-core-swap](../integration-issues/mock-to-real-stateful-core-swap.md) |
 
 ## Checklists (fast path)
 
