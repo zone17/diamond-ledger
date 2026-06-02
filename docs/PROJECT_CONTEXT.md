@@ -89,6 +89,7 @@ the underlying detail docs.
 | Discovery relocates the beachhead | `design-patterns/discovery-relocates-the-beachhead.md` |
 | **Shell portability in agent batch automation** (zsh/BSD; spot-check before batching) + gh native sub-issues | `best-practices/shell-portability-in-agent-batch-automation.md` |
 | **Verify generated code with the real toolchain** (not static review/advisory CI) + Cargo workspace gotchas | `best-practices/verify-generated-code-with-real-toolchain.md` |
+| **Parallel-squad integration** (advisory CI masks merge failures · worktrees outside the repo · gate the cardinal invariant) | `workflow-issues/parallel-squad-integration.md` |
 | Spec Kit + CI/merge-gate gotchas | `conventions/speckit-branch-naming-and-merge-gotchas.md` |
 | Hook command-string matching pitfalls | `best-practices/hook-command-string-matching-pitfalls.md` |
 | `/watch-ci` gate choreography (+ `skipped`≠`failure`) | `workflow-issues/watch-ci-gate-choreography.md` |
