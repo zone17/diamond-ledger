@@ -52,7 +52,9 @@ public struct ExportView: View {
         case idle
         case finalizing
         case ready(FinalizedScorebook)
-        case failed(String)
+        /// `reason` is the underlying `CoreError` (nil for unexpected non-core errors) so the view
+        /// can decide whether "Try again" makes sense and whether to offer "Exit without saving".
+        case failed(message: String, reason: CoreError?)
     }
 
     @State private var phase: ExportPhase = .idle
@@ -75,8 +77,8 @@ public struct ExportView: View {
                     finalizingSpinner
                 case .ready(let book):
                     scorebookReadyView(book: book)
-                case .failed(let message):
-                    errorView(message: message)
+                case .failed(let message, let reason):
+                    errorView(message: message, reason: reason)
                 }
             }
             .navigationTitle(navigationTitle)
@@ -327,13 +329,25 @@ public struct ExportView: View {
         .padding(.bottom, 16)
     }
 
-    private func errorView(message: String) -> some View {
-        VStack(spacing: 20) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 48))
-                .foregroundStyle(.red)
+    /// The game can't be finalized yet because there are outstanding scoring items (an in-progress
+    /// half-inning, an open judgment, or an unconfirmed play). For these, "Try again" alone is a
+    /// dead end — the user must go back and resolve the item, or exit without saving. We detect that
+    /// class from the carried `CoreError` and offer the right choices.
+    private func isIncompleteGame(_ reason: CoreError?) -> Bool {
+        switch reason {
+        case .proofBoxImbalance, .judgmentRequired, .invalidState: return true
+        default: return false
+        }
+    }
 
-            Text("Export failed")
+    private func errorView(message: String, reason: CoreError?) -> some View {
+        let incomplete = isIncompleteGame(reason)
+        return VStack(spacing: 20) {
+            Image(systemName: incomplete ? "exclamationmark.circle.fill" : "exclamationmark.triangle.fill")
+                .font(.system(size: 48))
+                .foregroundStyle(incomplete ? .orange : .red)
+
+            Text(incomplete ? "Game not finished" : "Export failed")
                 .font(.title3.weight(.bold))
 
             Text(message)
@@ -342,10 +356,32 @@ public struct ExportView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
 
-            Button("Try again") {
-                Task { await finalizeScorecard() }
+            VStack(spacing: 12) {
+                if incomplete {
+                    // Primary: go back and resolve the outstanding item (the card / next play).
+                    Button("Back to game") { dismiss() }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityLabel("Back to the game to resolve the outstanding play")
+
+                    // Secondary, destructive: leave without producing an official record.
+                    Button(role: .destructive) {
+                        appState.exitGameWithoutFinalizing()
+                        dismiss()
+                    } label: {
+                        Text("Exit without saving")
+                    }
+                    .accessibilityLabel("Exit the game without finalizing or exporting")
+                } else {
+                    // Transient/auth/internal failures: retrying may succeed.
+                    Button("Try again") {
+                        Task { await finalizeScorecard() }
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("Back to game") { dismiss() }
+                        .accessibilityLabel("Close the export view")
+                }
             }
-            .buttonStyle(.borderedProminent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -355,7 +391,7 @@ public struct ExportView: View {
     private func finalizeScorecard() async {
         guard let game = appState.activeGame,
               let ownerId = appState.session?.ownerId, !ownerId.isEmpty else {
-            phase = .failed("Sign in before exporting the scorecard.")
+            phase = .failed(message: "Sign in before exporting the scorecard.", reason: nil)
             return
         }
 
@@ -368,16 +404,34 @@ public struct ExportView: View {
                 correlationId: UUID().uuidString
             )
             phase = .ready(book)
-        } catch CoreError.proofBoxImbalance(let detail) {
-            phase = .failed("Proof-box doesn't balance: \(detail)\n\nCheck that all plate appearances and putouts add up correctly before exporting.")
-        } catch CoreError.judgmentRequired(let detail) {
-            phase = .failed("One or more judgment plays are still unresolved: \(detail)\n\nResolve all open calls before finalizing the game.")
-        } catch CoreError.unauthorized(let detail) {
-            phase = .failed("Authorization error: \(detail)")
+        } catch let coreError as CoreError {
+            // Map each real-core reason to a clear, actionable message — never a generic
+            // "something went wrong" that hides the cause (DL-35). The carried message is the
+            // real core's own text (CoreError: LocalizedError), so the reason is always legible.
+            phase = .failed(message: Self.finalizeFailureMessage(for: coreError), reason: coreError)
         } catch {
-            // Don't leak raw engine/error text to the scorer — show a generic, actionable message.
-            // (The underlying error is still available to logs/observability via T023.)
-            phase = .failed("Something went wrong while generating your scorecard. Please try again.")
+            // Truly unexpected (non-CoreError) — still surface the real description, not a placeholder.
+            phase = .failed(message: "Couldn't finalize the scorecard: \(error.localizedDescription)", reason: nil)
+        }
+    }
+
+    /// Map a `CoreError` from finalize to a clear, actionable scorer-facing message. Each carries the
+    /// real core reason; the user is told exactly what to do (resolve, finish the inning, or exit).
+    static func finalizeFailureMessage(for error: CoreError) -> String {
+        switch error {
+        case .proofBoxImbalance(let detail):
+            return "The current half-inning isn't complete yet, so the scorebook can't be balanced and finalized.\n\nFinish the half-inning (3 outs) before ending the game — or exit without saving.\n\nDetails: \(detail)"
+        case .judgmentRequired(let detail):
+            return "One or more judgment calls are still open. Resolve every open call (Hit vs Error, etc.) before ending the game.\n\nDetails: \(detail)"
+        case .invalidState(let detail):
+            // FR-007: a recorded-but-unconfirmed play blocks finalize.
+            return "There's a play that hasn't been confirmed yet. Confirm (or resolve) it, then end the game.\n\nDetails: \(detail)"
+        case .unauthorized(let detail):
+            return "You're not authorized to finalize this game.\n\nDetails: \(detail)"
+        case .notFound(let detail):
+            return "This game couldn't be found in the scoring core.\n\nDetails: \(detail)"
+        case .internalError(let detail):
+            return "The scoring core hit an unexpected error finalizing the game.\n\nDetails: \(detail)"
         }
     }
 

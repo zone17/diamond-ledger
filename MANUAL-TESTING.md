@@ -99,9 +99,14 @@ cd ios && xcodegen generate    # regenerate the app project after the binary tar
 5. Dev Sign-In. Tap New Game. Hold the push-to-talk mic. Long-press the status text (~1.5s) to
    reveal the Wizard-of-Oz panel → pick "Ground out 6-3" (Card A → Confirm) or "Misplayed grounder"
    (Card B → "Hit or Error?").
-6. Verify Card B cannot be dismissed without an explicit choice (or "Leave PENDING"), and
-   that you cannot record the next play while a judgment is unresolved (the I2 invariant) — now
-   enforced by the REAL core (returns JUDGMENT_REQUIRED on a premature confirm).
+6. Verify **both** Card A and Card B cannot be swiped away — they require an explicit action
+   (Confirm / Resolve), because the real core holds the unconfirmed play and has no discard. You
+   cannot record the next play while one is pending; a mic press REOPENS the pending card. Card B
+   cannot resolve without an explicit choice (or "Leave PENDING"); a premature confirm returns the
+   real core's JUDGMENT_REQUIRED (I2). "Correct" on Card A explains amend lands post-confirm.
+7. **End Game** on an incomplete game (a pending play, an open judgment, or a mid-half-inning)
+   surfaces the REAL core reason and offers "Back to game" or "Exit without saving" — never a
+   generic "Something went wrong". A completed/empty half-inning exports normally.
 ```
 
 Headless build/test (what CI-equivalent verification looks like):
@@ -112,22 +117,46 @@ cd ios && xcodegen generate && cd ..
 xcodebuild -project ios/DiamondLedger.xcodeproj -scheme DiamondLedger \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build   # the app (real core linked)
 xcodebuild -project ios/DiamondLedger.xcodeproj -scheme DiamondLedgerTests \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test    # 55 tests
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test    # 63 tests
 ```
 
 > **Status (DL-35 / H1):** the app **builds clean and launches in the iOS 26 simulator with the
-> REAL Rust core injected** (`DiamondCoreClient`), and the full XCTest suite passes (**55/55**,
-> incl. 6 new `RealCoreIntegrationTests` that drive the full Card A → confirm → Card B → resolve →
-> finalize loop against the real `DiamondCoreClient` and assert I2/SC-003, FR-007, owner-as-decider,
-> and SC-011 against the real core). Verified via `xcodebuild`. The `ios-build` CI job remains advisory.
+> REAL Rust core injected** (`DiamondCoreClient`), and the full XCTest suite passes (**63/63**,
+> incl. 6 `RealCoreIntegrationTests` + 8 `RealPathRegressionTests` that drive the full Card A →
+> confirm → Card B → resolve → finalize loop against the real core and assert I2/SC-003, FR-007,
+> owner-as-decider, and SC-011). Verified via `xcodebuild`. The `ios-build` CI job remains advisory.
 >
 > **Real-core vs MockCore behavior parity (verified):** the loop behaves identically to MockCore for
 > the demo scripts — clean 6-3 → Card A/confirm; misplayed grounder → Card B/open HitVsError, never
-> auto-resolved. One **intended divergence** surfaced: `finalizeScorecard` on the real core actually
-> computes the half-inning proof box and **enforces SC-011**, so finalizing a *still-in-progress*
-> half-inning is rejected with `proofBoxImbalance` (MockCore always returned a canned balanced book).
-> A completed/empty half-inning finalizes fine. This is the real core enforcing an invariant the mock
-> faked — captured in `test_finalize_midHalfInning_surfacesProofBoxImbalance_realCoreStricterThanMock`.
+> auto-resolved. One **intended divergence**: `finalizeScorecard` on the real core actually computes
+> the half-inning proof box and **enforces SC-011**, so finalizing a *still-in-progress* half-inning
+> is rejected with `proofBoxImbalance` (MockCore always returned a canned balanced book). A completed/
+> empty half-inning finalizes fine.
+>
+> **Stateful-core reconciliation (DL-35 H1-completion — the live-on-sim fixes):** the iOS UX was
+> built against the *stateless* MockCore, so flows that assumed "the core tracks no state" broke
+> against the real *stateful* core. Reconciled:
+>   - **The real core has NO discard/cancel/replace primitive for a pending play.** The event log is
+>     append-only; the only way to clear a recorded-but-unconfirmed play is `confirm_play` (or
+>     resolving its open judgment, then confirming). Verified by reading `core/src/primitives/mod.rs`
+>     + the FFI surface — there is no `ffi_discard`/`ffi_cancel`.
+>   - **Card A can no longer be swiped away** (`interactiveDismissDisabled`, like Card B). Swiping it
+>     used to orphan the play: the UI forgot it while the core still held it, so the next mic press
+>     hit FR-007 "A prior play is unconfirmed" with no recovery. `handleSheetDismiss` no longer drops
+>     `pendingResult`; a mic press with a pending play **reopens the pending card** so the user can
+>     Confirm/Resolve it. "Correct" keeps the card up and explains that amend lands post-confirm
+>     (`correct_event` is post-MVP) — it never replaces facts pre-confirm (the core can't).
+>   - **End Game no longer blind-calls finalize.** `AppState.endGame()` pre-checks the locally-known
+>     blocker (a pending play) → clear message + reopen the card. Anything only the core knows
+>     (proof-box balance, open judgments) is surfaced by `ExportView` from the real `CoreError`
+>     message — never a generic "Something went wrong". The error screen offers **Back to game**
+>     (resolve the item) or **Exit without saving** (discard, no finalize) for an incomplete game.
+>   - **Real-path verification gap closed.** `RealPathRegressionTests` drive the ACTUAL UI path
+>     (`StubTranscriber → GrammarParser → FactBridge → real DiamondCore`), not idealized facts — the
+>     gap that let the live bugs through. Incl. the `parseFielders("63") == [6,3]` bug-class guard
+>     (the concatenated grammar chain that earlier produced an out-of-range `Position(63)` → the
+>     user-facing "CoreError 4" on a plain mic press) and a fact-derived Card B from a real
+>     "reached on error" transcript with **no** WoZ `"script"` marker.
 >
 > **What's real:** the `AppleTranscriber` adapter shape, protocol conformance, contextual biasing,
 > the `EngineSelector` runtime seam, `ExportView` UI, `FinalizedScorebook` round-trip, and the
@@ -173,8 +202,8 @@ golden diff. A malformed fixture (`evals/retrosheet-fixtures/malformed/`) must *
 |---|---|---|
 | Deterministic core (engine, judgment, Reisner, Retrosheet emit) | `cargo test` (54), clippy, SC-003 gate — **run in CI as hard gates** | nothing (headless) |
 | Retrosheet export conformance | pinned `cwevent` 3-layer gate — **hard in CI** | `cwevent` locally (optional) |
-| iOS V3 glance app + ASR adapters + Export UI | `xcodebuild test` **55/55** — **build + test pass on Mac** | **your Mac + Xcode + iOS 26 sim** |
-| Real UniFFI core swap (H1 / DL-35) | `make xcframework` + `xcodebuild test` — app **launches with `DiamondCoreClient`** + 6 `RealCoreIntegrationTests` drive the full loop against the real core (I2/SC-003/FR-007/SC-011) | **your Mac + Xcode + iOS 26 sim** |
+| iOS V3 glance app + ASR adapters + Export UI | `xcodebuild test` **63/63** — **build + test pass on Mac** | **your Mac + Xcode + iOS 26 sim** |
+| Real UniFFI core swap (H1 / DL-35) | `make xcframework` + `xcodebuild test` — app **launches with `DiamondCoreClient`** + 6 `RealCoreIntegrationTests` + 8 `RealPathRegressionTests` drive the full loop AND the real UI fact path (StubTranscriber→GrammarParser→FactBridge→core) + the stateful-core reconciliations (Card-A dismiss, End Game) | **your Mac + Xcode + iOS 26 sim** |
 | Apple ASR on-device accuracy (mic → transcript; legacy SFSpeechRecognizer today) | not testable in sim | **physical iPhone 26+ + mic + iOS 26** |
 | Real SpeechAnalyzer + AssetInventory preload (FR-021) | not implemented (legacy SFSpeechRecognizer; `preloadAssets` = auth only) | on-device handoff — see `#warning` / ADR-0010 |
 | sherpa-onnx real decode (Parakeet model) | stub path tested; real decode needs framework binary | XCFramework download + model asset |

@@ -475,6 +475,17 @@ enum FactBridge {
             return misplayedGrounder()
         }
 
+        // Card B (REAL grammar path, DL-35): the grammar parser's `tryError` production emits
+        // `["batter_result": "reached_on_error", "error_position": "6"]` for "reached on error /
+        // error by short". A ball a fielder touched/misplayed that the batter reached on is exactly
+        // a hit-vs-error JUDGMENT (I1) — so we build the misplay FACT pattern (FieldedOut + the
+        // fielder under touched_or_misplayed_by + batter advancing to first). The core then derives
+        // Card B from FACTS — no `"script"` marker. This is what makes the live mic Card B reachable.
+        if facts["batter_result"] == "reached_on_error" {
+            let pos = parseFielders(facts["error_position"])?.first ?? Position(6)
+            return misplayedGrounder(at: pos)
+        }
+
         // Card A: a clean ground out. The grammar parser emits e.g.
         // ["batter_result": "groundout", "fielders": "6-3", "outs_recorded": "1"].
         let fielders = parseFielders(facts["fielders"]) ?? [Position(6), Position(3)]
@@ -493,7 +504,10 @@ enum FactBridge {
     /// `-`/space alone produced `Position(63)` for `"63"` — an out-of-range position the real core
     /// rejects (the H1 root cause of `CoreError 4`). Treat every digit as one fielder instead.
     /// Returns nil on empty/garbage so the caller can fall back to a sensible default chain.
-    private static func parseFielders(_ s: String?) -> [Position]? {
+    ///
+    /// Internal (not private) so the real-path regression tests can assert the bug-class fix
+    /// directly (`FactBridge.parseFielders("63") == [Position(6), Position(3)]`).
+    static func parseFielders(_ s: String?) -> [Position]? {
         guard let s, !s.isEmpty else { return nil }
         let positions = s.compactMap { $0.wholeNumberValue }   // each digit char → a position
             .filter { (0...9).contains($0) }                    // valid baseball positions only
@@ -526,9 +540,10 @@ enum FactBridge {
 
     /// A misplayed grounder the batter reached on — the FACT pattern the core's classifier reads
     /// as `Judgment(HitVsError)` (`Needs.judgment`, Card B). Mirrors the `judgment_play` fixture
-    /// in `core/src/primitives/mod.rs`: fielded-out batter_event, SS in the chain, the batter
-    /// advancing to first, and SS recorded under `touched_or_misplayed_by`.
-    private static func misplayedGrounder() -> NormalizedPlay {
+    /// in `core/src/primitives/mod.rs`: fielded-out batter_event, the fielder in the chain, the
+    /// batter advancing to first, and that fielder recorded under `touched_or_misplayed_by`.
+    /// `at` is the fielder charged (defaults to SS — position 6 — the WoZ demo's case).
+    private static func misplayedGrounder(at fielder: Position = Position(6)) -> NormalizedPlay {
         NormalizedPlay(
             situation: SituationDiamond(
                 runners: Runners(first: nil, second: nil, third: nil),
@@ -538,12 +553,12 @@ enum FactBridge {
             ),
             catalyst: Catalyst(
                 batterEvent: .fieldedOut,
-                fielders: [Position(6)],
+                fielders: [fielder],
                 ballType: .ground,
                 advances: [
                     Advance(runner: RunnerId(1), from: .home, to: .base(.first), byError: nil)
                 ],
-                touchedOrMisplayedBy: [Position(6)]
+                touchedOrMisplayedBy: [fielder]
             ),
             auditLabel: nil
         )

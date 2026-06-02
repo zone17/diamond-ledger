@@ -56,7 +56,13 @@ struct CardAView: View {
             }
         }
         .presentationBackground(.regularMaterial)
-        .presentationDragIndicator(.visible)
+        // H1 reconciliation (DL-35): Card A must require an explicit action. The real core holds the
+        // recorded-but-unconfirmed play and has no discard primitive — swiping the card away used to
+        // orphan it (UI forgot it, core kept it), so the next mic press hit FR-007 with no recovery.
+        // Block interactive dismissal (like Card B) and hide the drag indicator; the user Confirms
+        // (advance) or taps Correct (explained: confirm first, amend later).
+        .presentationDragIndicator(.hidden)
+        .interactiveDismissDisabled(true)
     }
 
     // MARK: - Play card
@@ -118,7 +124,8 @@ struct CardAView: View {
 
     private var actionRow: some View {
         HStack(spacing: 16) {
-            // Correct — secondary, smaller.
+            // Correct — secondary. Keeps the card up and explains that amend lands post-confirm
+            // (the real core has no pre-confirm replace; see AppState.correctPendingEntry, DL-35).
             Button("Correct") {
                 appState.correctPendingEntry()
             }
@@ -126,7 +133,8 @@ struct CardAView: View {
             .frame(maxWidth: .infinity, minHeight: 52)
             .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
             .foregroundStyle(.secondary)
-            .accessibilityLabel("Correct this play — re-record before confirming")
+            .accessibilityLabel("Correct this play")
+            .accessibilityHint("Editing a recorded play lands in a later update; confirm it for now")
 
             // Confirm — primary, large, thumb-reachable.
             Button {

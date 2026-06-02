@@ -122,15 +122,33 @@ public final class AppState {
         self.core = core
     }
 
-    /// Called when a presented sheet is dismissed (including a Card A swipe-away). Unsticks the
-    /// push-to-talk loop: if a result card was dismissed without an explicit Confirm/Correct/
-    /// Resolve, return to idle and discard the unconfirmed entry (safe — FR-007: state is never
-    /// advanced on an unconfirmed play). No-op when already idle (e.g. right after a confirm/resolve).
+    /// Called when a presented sheet is dismissed. Unsticks the push-to-talk loop so the mic
+    /// button is never left disabled after a sheet closes.
+    ///
+    /// ## H1 reconciliation (DL-35): do NOT blindly drop `pendingResult` here.
+    ///
+    /// Against the **stateful real core** a recorded-but-unconfirmed play lives in the append-only
+    /// event log; the core has **no discard/cancel primitive** (verified — see ADR / MANUAL-TESTING).
+    /// The ONLY way to clear it is `confirmPlay` (or resolving its open judgment then confirming).
+    /// The old behaviour — `activeGame?.pendingResult = nil` on every dismiss — orphaned the play:
+    /// the UI forgot it while the core still held it, so the next mic press hit the real core's
+    /// FR-007 `PendingConfirmation` guard with no way for the user to recover.
+    ///
+    /// Card A and Card B are now non-dismissible by swipe (`interactiveDismissDisabled`), so this
+    /// runs only for sheets that legitimately have no pending play (newGame / export / clarify /
+    /// manualEntry) — for those it is correct to return to idle. If a `pendingResult` somehow
+    /// survives (defensive), we KEEP it and surface a banner rather than silently orphaning it.
     func handleSheetDismiss() {
         if pttState == .result {
             pttState = .idle
         }
-        activeGame?.pendingResult = nil
+        // Backstop only: a pending play should not reach here (cards block interactive dismissal).
+        // If one does, keep it and tell the user how to clear it — never silently drop it.
+        if activeGame?.pendingResult != nil {
+            presentedError = AppError(
+                message: "There's still an unconfirmed play. Press the mic to reopen it, then Confirm it."
+            )
+        }
     }
 
     // MARK: - Auth actions
@@ -177,16 +195,28 @@ public final class AppState {
         }
     }
 
+    /// Re-present the card for the still-pending play (Card A or Card B), so a user who dismissed it
+    /// can get back to the Confirm / Resolve action. The real core still holds this unconfirmed play
+    /// (it has no discard primitive), so reopening the card is the ONLY way to clear it forward.
+    func reopenPendingCard() {
+        guard let pending = activeGame?.pendingResult else { return }
+        pttState = .result
+        switch pending.needs {
+        case .judgment: presentedSheet = .cardB(pending)
+        default:        presentedSheet = .cardA(pending)
+        }
+    }
+
     /// Called by PushToTalk after parse produces normalized facts.
     func recordPlay(facts: [String: String]) async {
         guard let game = activeGame,
               let ownerId = session?.ownerId, !ownerId.isEmpty else { return }
 
-        // Guard: do not record a new play while a pending entry awaits confirm/judgment.
+        // Guard: a play is already pending in the (stateful) core. Don't try to record a new one —
+        // the real core would reject it (FR-007 PendingConfirmation). Instead REOPEN the pending
+        // card so the user can Confirm / Resolve it; that's the only way to clear it forward.
         if game.pendingResult != nil {
-            presentedError = AppError(
-                message: "Confirm or correct the previous play before recording a new one."
-            )
+            reopenPendingCard()
             return
         }
 
@@ -244,15 +274,27 @@ public final class AppState {
         }
     }
 
-    /// Called by Card A "Correct" tap — re-opens PTT for re-entry of the pending play only.
-    /// MVP scope: amends only the *pending unconfirmed* entry (re-record before confirm).
-    /// Prior-play amend requires correct_event (US4/post-MVP) and is gated OFF here.
-    func correctPendingEntry() {
-        guard let game = activeGame else { return }
-        // Clear the pending result so the next PTT invocation re-records.
-        game.pendingResult = nil
-        presentedSheet = nil
-        pttState = .idle
+    /// Called by Card A "Correct" tap.
+    ///
+    /// ## H1 reconciliation (DL-35): "Correct" cannot replace a pending play's facts.
+    ///
+    /// The real core has **no discard/replace primitive** for a recorded-but-unconfirmed play
+    /// (verified — append-only log, only `confirm_play` transitions it). The old behaviour cleared
+    /// `pendingResult` and dropped the sheet, which orphaned the core's row (UI forgot it, core kept
+    /// it) — the exact bug this pass fixes. Amending a play is `correct_event`, which the core only
+    /// allows AFTER confirm and which is post-MVP (US4, gated off).
+    ///
+    /// So "Correct" keeps the pending play and the card intact, and surfaces a clear explanation:
+    /// confirm the play first; amending lands post-MVP. This keeps the UI and the core consistent —
+    /// no orphaned pending. Returns `false` (no state change) so callers/tests can assert it.
+    @discardableResult
+    func correctPendingEntry() -> Bool {
+        guard activeGame?.pendingResult != nil else { return false }
+        presentedError = AppError(
+            message: "Confirm this play to record it. Editing a recorded play comes in a later update — for now the facts can't be changed before confirming."
+        )
+        // Keep pendingResult + the card up: do NOT orphan the core's unconfirmed play.
+        return false
     }
 
     /// Called by Card B tap (one of the alternatives / recommendation).
@@ -275,6 +317,45 @@ public final class AppState {
         } catch {
             presentedError = AppError(message: "Could not record your call: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - End Game
+
+    /// Whether a play is recorded-but-unconfirmed in the (stateful) core. End Game must not try to
+    /// finalize while this holds — the real core rejects finalize with FR-007 PendingConfirmation.
+    var hasPendingPlay: Bool { activeGame?.pendingResult != nil }
+
+    /// Called by the toolbar "End Game" button.
+    ///
+    /// ## H1 reconciliation (DL-35): don't blind-call finalize on an incomplete game.
+    ///
+    /// The real core refuses to finalize a game that still has an unconfirmed play (FR-007) or an
+    /// unbalanced / in-progress half-inning (SC-011). Pre-check the cheap, known-locally condition
+    /// (a pending play) and surface a clear, actionable message + reopen the pending card rather than
+    /// dropping the user into the export sheet only to fail. Anything the core alone knows (proof-box
+    /// balance, open judgments) is surfaced by `ExportView` from the real `CoreError` message — never
+    /// a generic "something went wrong".
+    func endGame() {
+        guard activeGame != nil else { return }
+        if hasPendingPlay {
+            presentedError = AppError(
+                message: "Finish the current play first — Confirm or resolve it, then End Game."
+            )
+            reopenPendingCard()
+            return
+        }
+        // No locally-known blocker: open Export, which calls finalize and surfaces the real core
+        // reason (proof-box / open judgment) if the core still refuses.
+        presentedSheet = .export
+    }
+
+    /// Exit the game without finalizing/exporting (the "discard / leave" choice on an incomplete
+    /// game). The real core keeps its append-only log, but the iOS session forgets the game — the
+    /// user explicitly chose not to produce an official record. No finalize is attempted.
+    func exitGameWithoutFinalizing() {
+        activeGame = nil
+        presentedSheet = nil
+        pttState = .idle
     }
 
     /// Called by Card B "Leave PENDING" tap (FR-010a — explicit deferred, first-class).
