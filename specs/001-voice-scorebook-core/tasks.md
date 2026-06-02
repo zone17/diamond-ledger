@@ -175,6 +175,11 @@ export all pass; parity holds. Ready for B integration (H1) and C validation (H2
 > Independent test: run the app against the **mock core** (T008) end-to-end — push-to-talk → V3 card →
 > confirm/judgment → export — then swap in the real core (H1) with no behavior change.
 
+### Story B0 — Account & sign-in (email+social), private-by-default  *(US1 · FR-028/020/023)* 🎯  *(added: analysis remediation G1/G2)*
+
+- [ ] T081 [B][US1] Implement **email + social sign-in** + a **private-by-default account/owner identity** in `ios/Sources/Auth/` (FR-028) — this provides the authenticated **owner** that the owner-as-decider authority assertion (T036 / FR-020 / I5) binds to. The demo MUST establish a real owner identity (a minimal sign-in is acceptable for MVP), **not** an anonymous stub, before any authority/privacy claim holds.
+- [ ] T082 [B] Explicit **share-link** action — a scorebook is private by default and shared only by explicit owner action (FR-023) in `ios/Sources/UI/Share/`. *(post-MVP — tracked, not in the first demo slice; private-by-default itself is covered by T055/T081)*
+
 ### Story B1 — App scaffold + core wrapper  *(US1 · FR-024)* 🎯
 
 - [ ] T044 [B][US1] SwiftPM wrapper package around the UniFFI XCFramework with a `CoreClient` protocol in `ios/Sources/Core/` (backed by MockCore until H1; pitfalls: modulemap rename, XCFramework cache)
@@ -198,7 +203,7 @@ export all pass; parity holds. Ready for B integration (H1) and C validation (H2
 
 ### Story B5 — Card A (deterministic confirm) + read-verify loop  *(US1 · FR-007)* 🎯
 
-- [ ] T053 [B][US1] Card A (plain-language restatement + secondary Reisner token + state delta + one-tap Confirm/Correct), auto-advance on confirm, in `ios/Sources/UI/CardA/`
+- [ ] T053 [B][US1] Card A (plain-language restatement + secondary Reisner token + state delta + one-tap Confirm/Correct), auto-advance on confirm, in `ios/Sources/UI/CardA/`. **MVP scope (remediation I1): "Correct" amends only the *pending unconfirmed* entry (re-record before confirm, US1); amending a *prior applied* play requires `correct_event` (US4, post-MVP) and is gated OFF in the first slice — do not surface a prior-play amend path that has no backing primitive.**
 
 ### Story B6 — Card B (judgment) one-tap resolve  *(US2 · FR-010/011)* 🎯
 
@@ -270,7 +275,7 @@ hard-fails wired. A's emitter (H2) and accuracy SCs (H3) now have authoritative 
 - [ ] T071 [A][B] **H1 integration**: replace MockCore with the real UniFFI core in iOS; rerun the full loop; assert no behavior change
 - [ ] T072 [A][C] **H2 integration**: run A's emitter output through C's pinned `cwevent` gate end-to-end (SC-004 zero errors)
 - [ ] T073 [A][C] **H3 integration**: run A's accuracy runner against C's real gold game (SC-001/SC-002 now field-credible)
-- [ ] T074 [A][B][C] End-to-end slice on real device: speak → score → judgment → confirm → finalize → `cwevent`-clean export; build the demo for the ~20-scorer cohort (ADR-0006 artifact)
+- [ ] T074 [A][B][C] End-to-end slice on real device: speak → score → judgment → confirm → finalize → `cwevent`-clean export; build the demo for the ~20-scorer cohort (ADR-0006 artifact). **Remediation E1: measure the SC-005 attention bar during the demo (≥80% of plays ≤1 phrase + ≤1 tap; median eyes-on-screen ≤3s) as the ADR-0006 usability-tripwire input — do NOT defer this measurement to Polish/T076.**
 
 ## Phase Final-2: Polish & Cross-Cutting
 
@@ -299,6 +304,7 @@ A story/task is **Done** only when (subset of the constitution's 25-point DoD, A
 - [ ] Observability: important actions emit a `CapabilityInvocation` audit record (Art. XXIII).
 - [ ] Independent verification where warranted (Art. XX); CI watched via `/watch-ci` after push/PR/merge.
 - [ ] Docs updated; non-obvious learning compounded; `DECISIONS.md`/ADR updated for architectural change.
+- [ ] No feature gating / paywall introduced during the validation period (FR-027) — core scoring, judgment controls, and Retrosheet export stay open (so monetization can't distort the A1/A3 demand signal).
 - [ ] Reviewed via `/ce:review` before merge.
 
 ### Per-story acceptance criteria (Gherkin) — the GitHub-issue ACs
@@ -542,7 +548,7 @@ Scenario: Squads unblock without blocking each other
 - **Phase 1 Setup** → **Phase 2 Foundational** (front-loads H1/H2/H3 interfaces) → **Epics A/B/C in
   PARALLEL** → **Integration (T071–T074)** → **Polish**.
 - Within squads: model/schema → rules/services → primitives → adapters/UI → eval.
-- **US4 (`correct_event`, T032–T033) + sync (T058)** are post-MVP — not in the first demo slice.
+- **US4 (`correct_event`, T032–T033) + sync (T058) + sharing (T082)** are post-MVP — not in the first demo slice.
 - **Rule 9.16** earned-run reconstruction is **out of v1** (earned/unearned = PENDING).
 
 ### Parallel opportunities
@@ -557,7 +563,8 @@ Scenario: Squads unblock without blocking each other
 
 | Story | Squad A | Squad B | Squad C | MVP? |
 |-------|---------|---------|---------|------|
-| **US1** speak→score→Reisner→confirm | T013–T020, T026–T028 | T044–T056 | T064–T065 | 🎯 |
+| **US1** speak→score→Reisner→confirm | T013–T020, T026–T028 | T044–T056, **T081** (sign-in) | T064–T065 | 🎯 |
+| Accounts/sharing (FR-028/023) | — | **T081** 🎯 · T082 (share, post-MVP) | — | partial |
 | **US2** judgment loop (never silent) | T021–T025 | T054 | T063 | 🎯 |
 | **US3** Retrosheet export | T029–T031, T034–T035 | T057 | T059–T062 | 🎯 |
 | **US4** correction (history) | T032–T033 | (UI later) | — | post-MVP |
@@ -573,7 +580,7 @@ T041 (runner) — wired CI hard-fail.
 ## GitHub Epic → Story → Subtask mapping (for `/speckit-taskstoissues`)
 
 - **Epic A — Deterministic Scoring Core & Agent Parity** → Stories A2–A9 (above) → subtasks = their T-IDs.
-- **Epic B — iOS Voice Client & Judgment UI** → Stories B1–B9 → subtasks = their T-IDs.
+- **Epic B — iOS Voice Client & Judgment UI** → Stories B0–B9 → subtasks = their T-IDs.
 - **Epic C — Standards, Eval Data & Software Factory** → Stories C1–C7 → subtasks = their T-IDs.
 - **Epic Foundations** (cross-squad) → Phase 1 Setup + Phase 2 Foundational (T001–T012) + Integration
   (T071–T074) → owned jointly, the synchronization points.

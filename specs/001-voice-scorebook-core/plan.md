@@ -68,9 +68,9 @@ Android fast-follow; the core also runs as a host CLI + server/WASM for agent pa
 **Project Type**: Mobile app (iOS-first) **+ portable core library + CLI/agent adapter** (multi-surface,
 one core).
 
-**Performance Goals**: Push-to-talk round-trip (speak→rendered card) target **≤ a few seconds** eyes-down
-(SC-005 median eyes-on-screen ≤3 s; ≥80% plays ≤1 phrase + ≤1 tap). Core scoring is integer/discrete →
-sub-millisecond; latency budget is dominated by ASR.
+**Performance Goals**: Push-to-talk round-trip (speak→rendered card) bounded by the measurable SC-005 bar:
+**median eyes-on-screen ≤3 s per play, ≥80% of plays ≤1 phrase + ≤1 tap**. Core scoring is
+integer/discrete → sub-millisecond; the latency budget is dominated by ASR.
 
 **Constraints**: Fully **offline** for an 80–300-play game with **no data loss** (FR-021/SC-006);
 **deterministic** byte-identical output (FR-003/I6); **COPPA process-don't-store** (FR-022/FR-029);
