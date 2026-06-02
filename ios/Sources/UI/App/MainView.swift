@@ -45,7 +45,10 @@ struct MainView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     if appState.activeGame != nil {
                         Button("End Game") {
-                            appState.presentedSheet = .export
+                            // Pre-checks an incomplete game (pending play) and surfaces a clear,
+                            // actionable path instead of dropping into a finalize that the real
+                            // core would reject (FR-007). See AppState.endGame (DL-35).
+                            appState.endGame()
                         }
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.red)
