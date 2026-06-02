@@ -88,6 +88,7 @@ the underlying detail docs.
 | **Spec-coherence probe** — throwaway agent build to break a spec before production code | `design-patterns/spec-coherence-probe.md` |
 | Discovery relocates the beachhead | `design-patterns/discovery-relocates-the-beachhead.md` |
 | **Shell portability in agent batch automation** (zsh/BSD; spot-check before batching) + gh native sub-issues | `best-practices/shell-portability-in-agent-batch-automation.md` |
+| **Verify generated code with the real toolchain** (not static review/advisory CI) + Cargo workspace gotchas | `best-practices/verify-generated-code-with-real-toolchain.md` |
 | Spec Kit + CI/merge-gate gotchas | `conventions/speckit-branch-naming-and-merge-gotchas.md` |
 | Hook command-string matching pitfalls | `best-practices/hook-command-string-matching-pitfalls.md` |
 | `/watch-ci` gate choreography (+ `skipped`≠`failure`) | `workflow-issues/watch-ci-gate-choreography.md` |

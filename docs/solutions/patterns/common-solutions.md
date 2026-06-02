@@ -31,6 +31,7 @@ the fast path. Add a row when a new P2/P3 learning is compounded.
 | 5 | Enforcement-hook command-string matching pitfalls | P2 | [best-practices/hook-command-string-matching-pitfalls](../best-practices/hook-command-string-matching-pitfalls.md) |
 | 6 | Spec-coherence probe (break a spec before building) | P2 | [design-patterns/spec-coherence-probe](../design-patterns/spec-coherence-probe.md) |
 | 7 | Private-repo branch-protection fallback (hooks, not rulesets) | P3 | [conventions/private-repo-branch-protection-fallback](../conventions/private-repo-branch-protection-fallback.md) |
+| 8 | Verify generated code with the real toolchain (not static review); Cargo workspace + advisory-CI gotchas | P2 | [best-practices/verify-generated-code-with-real-toolchain](../best-practices/verify-generated-code-with-real-toolchain.md) |
 
 ## Checklists (fast path)
 
@@ -45,7 +46,13 @@ epic-per-squad → stories → subtasks; labels + milestone carry cross-cutting 
 
 **#3 watch-ci:** clear the gate with `gh run list --limit 3`; read run-level `.conclusion` AND literal
 per-job conclusions — `skipped` is fine (e.g. a `pull_request`-only job on a `main` push), only
-`failure`/`cancelled`/`timed_out` matter; never auto-fix a `main` failure.
+`failure`/`cancelled`/`timed_out` matter; never auto-fix a `main` failure. **A `continue-on-error` job
+fails while the run stays green — always read per-job.**
+
+**#8 Verify generated code:** install the real toolchain locally (`rustup` ~2 min) and run
+`cargo check --workspace --all-targets` + `cargo clippy -- -D clippy::float_arithmetic` before merging —
+don't trust an agent's static review or an advisory CI job. Cargo workspace root must sit ABOVE its
+members (repo-root `/Cargo.toml` when members are siblings); pin a toolchain that builds dev-deps too.
 
 **#4 Branches:** never `NNN-feature` (fails the Article XVIII CI regex) — use
 `{type}/{squad}/{TICKET}-{slug}`; `docs/*` auto-bypasses the CE-review merge gate; bypass for

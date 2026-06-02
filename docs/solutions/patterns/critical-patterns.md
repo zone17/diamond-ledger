@@ -36,6 +36,11 @@ guards is broken. Three instances of the same shape have already bitten this pro
 - **Batch-automation success log** — a `gh issue create` loop printed green while writing 18 malformed
   issues; the log was a proxy, the read-back was the signal
   ([shell-portability-in-agent-batch-automation](../best-practices/shell-portability-in-agent-batch-automation.md)).
+- **Agent static review vs compilation** — a workflow's validation agent reported "workspace coherent,
+  no compile errors"; the real `cargo check` found a workspace-hierarchy error + 2 derive mismatches. A
+  static read is a proxy; the compiler is the signal. Worse, an advisory `continue-on-error` CI job
+  showed the run green while the build failed — read the per-*job* conclusion
+  ([verify-generated-code-with-real-toolchain](../best-practices/verify-generated-code-with-real-toolchain.md)).
 
 **Detection:** a "pass" condition no code path can make fail; an exit-code/HTTP-200 check on a tool
 that succeeds on bad input; a loop trusted by its log rather than verified by reading its output.
