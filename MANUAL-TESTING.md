@@ -75,27 +75,40 @@ parsing lives in the iOS adapter, not the core).
 
 ## 4. The iOS app (V3 glance loop) — Xcode, iOS 26
 
-The voice client (`ios/`) is a SwiftPM package built against `MockCore` (the real Rust core
-swaps in later at handoff H1). It implements the make-or-break interaction: push-to-talk →
-**Card A** (deterministic confirm) / **Card B** (judgment — *your call*).
+The voice client lives in `ios/`: the app **logic + views are a SwiftPM package**
+(`Package.swift`, fully testable) wrapped by a thin **iOS app target** (`DiamondLedger.xcodeproj`,
+generated from `project.yml` via XcodeGen). It runs against `MockCore` (the real Rust core swaps in
+at handoff H1) and implements the make-or-break interaction: push-to-talk → **Card A** (deterministic
+confirm) / **Card B** (judgment — *your call*).
 
 ```
 1. Accept the Xcode license once if you haven't:  sudo xcodebuild -license accept
-2. Open the package in Xcode 16+:  open ios/Package.swift
-3. Select an iOS 26 simulator (e.g. iPhone 16) and Run.
-4. Sign in (a #if DEBUG dev fast-path is wired for iteration), tap New Game.
-5. Hold the push-to-talk button. A Wizard-of-Oz panel (long-press to reveal) lets you pick
-   a scripted play — choose a deterministic play (Card A → one-tap Confirm) and the
-   "misplayed grounder" script (Card B → "Your call: Hit or Error?").
+2. Open the APP project (NOT Package.swift):  open ios/DiamondLedger.xcodeproj
+   (regenerate it after changing targets:  cd ios && xcodegen generate)
+3. Pick a destination: click "My Mac" in the top toolbar → choose an iOS Simulator
+   (e.g. iPhone 17 Pro). Building for "My Mac" fails — it's an iOS-only app.
+4. Press ▶ (Run / ⌘R). The simulator boots and the app launches (~30s first time).
+5. Tap New Game. Hold the push-to-talk mic. Long-press the status text (~1.5s) to reveal
+   the Wizard-of-Oz panel → pick "Ground out 6-3" (Card A → Confirm) or "Misplayed grounder"
+   (Card B → "Hit or Error?").
 6. Verify Card B cannot be dismissed without an explicit choice (or "Leave PENDING"), and
    that you cannot record the next play while a judgment is unresolved (the I2 invariant).
 ```
 
-> ⚠️ **Honest caveat:** this Swift was authored without a local Xcode/Swift toolchain
-> (none was available in the build environment), so it is **compile-verified only by your
-> Xcode build** — not by CI (the `ios-build` CI job is advisory). One compile error was
-> already fixed in review; the first real Xcode build may surface a few more nits. Paste any
-> build errors back and they'll be fixed quickly — your Xcode build is the authoritative gate.
+Headless build/test (what CI-equivalent verification looks like):
+```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+xcodebuild -project ios/DiamondLedger.xcodeproj -scheme DiamondLedger \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build   # the app
+xcodebuild -scheme DiamondLedger -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test  # 30 tests
+```
+
+> **Status:** the app **builds clean and runs in the iOS 26 simulator**, and the full XCTest
+> suite passes (**30/30**, incl. the I2 "Card B never auto-resolves" + I5 "unauthorized"
+> invariants), verified via `xcodebuild`. The `ios-build` CI job remains advisory (CI runners
+> would need Xcode + an iOS runtime to make it a hard gate). What's still **stubbed** for this
+> increment: real ASR (a Wizard-of-Oz stub stands in), GRDB-backed persistence (in-memory for
+> now), and the real UniFFI core (MockCore until H1).
 
 ---
 

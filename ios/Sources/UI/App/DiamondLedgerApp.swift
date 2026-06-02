@@ -18,31 +18,19 @@
 /// - SeeAlso: `ios/Sources/UI/PushToTalk/PushToTalkView.swift` (T052)
 
 import SwiftUI
-import Auth
-import Core
-
-// MARK: - App entry
-
-@main
-struct DiamondLedgerApp: App {
-
-    @State private var appState = AppState(core: MockCore())
-
-    var body: some Scene {
-        WindowGroup {
-            RootView()
-                .environment(appState)
-        }
-    }
-}
 
 // MARK: - RootView
+//
+// The `@main` app entry lives in the app target (App/DiamondLedgerApp.swift), which wraps
+// this library. `RootView` is the public root the app target renders.
 
 /// Gating router: shows SignInView when unauthenticated, MainView when signed in.
-struct RootView: View {
+public struct RootView: View {
     @Environment(AppState.self) private var appState
 
-    var body: some View {
+    public init() {}
+
+    public var body: some View {
         Group {
             if appState.session != nil {
                 MainView()
