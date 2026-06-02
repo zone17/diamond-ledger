@@ -97,22 +97,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
-        # Reads the channel from core/rust-toolchain.toml once that file lands.
-        # Until then the step is a no-op placeholder.
+        # Reads the channel from the repo-root rust-toolchain.toml (workspace root).
         run: |
-          if [ -f core/rust-toolchain.toml ]; then
+          if [ -f rust-toolchain.toml ]; then
             rustup show
           else
-            echo "core/rust-toolchain.toml not yet present — skipping toolchain install (placeholder)"
+            echo "rust-toolchain.toml not yet present — skipping toolchain install (placeholder)"
           fi
       - name: cargo check (integer/fixed-point core, no f32/f64)
-        # Final intent: `cargo check --manifest-path core/Cargo.toml`
-        # plus the no-float CI lint (deny(f32, f64) in core/).
+        # Checks the whole workspace (core + adapters) from the repo-root Cargo.toml.
         run: |
-          if [ -f core/Cargo.toml ]; then
-            cargo check --manifest-path core/Cargo.toml
+          if [ -f Cargo.toml ]; then
+            cargo check --workspace
           else
-            echo "core/Cargo.toml not yet present — skipping cargo check (placeholder)"
+            echo "Cargo.toml (workspace root) not yet present — skipping cargo check (placeholder)"
           fi
 
   core-eval:

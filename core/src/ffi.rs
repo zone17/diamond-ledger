@@ -206,9 +206,10 @@ pub enum Needs {
 }
 
 /// Which half of the inning is in progress.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Enum)]
 pub enum Half {
+    #[default]
     Top,
     Bottom,
 }
@@ -536,7 +537,7 @@ pub struct AdvanceDelta {
 }
 
 /// Request for [`CoreApi::advance_runner`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
 pub struct AdvanceRunnerRequest {
     pub game_id: GameId,

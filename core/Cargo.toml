@@ -1,11 +1,4 @@
-[workspace]
-resolver = "2"
-members = [
-    ".",
-    "../adapters/cli",
-    "../adapters/agent",
-]
-
+# Package only — the workspace root is /Cargo.toml at the repo root (see PLAT-009).
 [package]
 name        = "dl-core"
 version     = "0.1.0"
