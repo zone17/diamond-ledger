@@ -61,8 +61,9 @@ been the backbone of Retrosheet's data contributions for decades.
 The app works like this: a scorer speaks plays aloud ("ground ball to short, threw him out at first"),
 and the system produces deterministic Reisner notation and exports a Retrosheet-compatible event file
 (`.EVN` format, validated against Chadwick `cwevent` v0.10.0). Judgment calls (hit vs. error, etc.)
-are surfaced explicitly — never silently decided — as a one-tap scorer decision. The v1 grammar covers
-approximately 95% of plays in a typical amateur/college game.
+are surfaced explicitly — never silently decided — as a one-tap scorer decision. The v1 grammar is
+*designed* to cover roughly 95% of plays in a typical amateur/college game — a design target we have
+not yet validated against a real game corpus, which is exactly where your help would matter.
 
 I'm writing for three reasons:
 
@@ -120,7 +121,7 @@ The SABR Official Scoring Research Committee (sabrgroups.org/g/official-scoring)
 within the Society for American Baseball Research focused on official scoring decisions, rule
 interpretations, and historical scoring records. Members include:
 
-- Active MLB official scorers (the ~100 MLB-credentialed official scorers)
+- Active MLB official scorers (the community of MLB-credentialed official scorers — roughly two to three on rotation per club)
 - College and minor league official scorers
 - Baseball researchers and statisticians with deep scoring expertise
 
@@ -152,8 +153,8 @@ levels.
 system produces Reisner notation and exports a Retrosheet-compatible event file, validated against
 pinned Chadwick `cwevent` v0.10.0. Judgment calls (hit vs. error, earned vs. unearned, contested
 credit, ambiguous advance) are surfaced to the scorer as an explicit one-tap decision — the system
-never silently decides a scoring judgment. The v1 scope covers approximately 95% of plays in a
-typical amateur/college game using the Retrosheet reduced grammar.
+never silently decides a scoring judgment. The v1 scope is designed to cover roughly 95% of plays in a
+typical amateur/college game using the Retrosheet reduced grammar (a design target, not yet field-validated).
 
 **Why I'm writing to this committee specifically:** my system's accuracy gates (SC-001: ≥90%
 play-type accuracy; SC-002: ≥85% Reisner token accuracy) are not field-credible until I have

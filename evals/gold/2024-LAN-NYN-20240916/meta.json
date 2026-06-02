@@ -33,7 +33,9 @@
 
   "cwevent_verdict": {
     "passed": false,
-    "_note": "Set to false until the HUMAN-produced independent EVN is verified (current EVN is the harness scaffold — see HUMAN_HANDOFF.md). When the human delivers retrosheet/<GAMEID>.EVN and it passes retrosheet-gate.sh with zero stderr warnings, set passed=true and fill in run_at + event_rows_emitted.",
+    "_note": "`passed` tracks the HUMAN-produced independent EVN, which does not exist yet — so it is false. The CURRENT file is the harness scaffold; its scaffold-gate status is recorded separately in `scaffold_cwevent_passed` to avoid contradiction. When the human delivers retrosheet/<GAMEID>.EVN and it passes retrosheet-gate.sh with zero stderr warnings, set passed=true and fill in run_at + event_rows_emitted.",
+    "scaffold_cwevent_passed": true,
+    "scaffold_event_rows_emitted": 61,
     "cwevent_version": "0.10.0",
     "run_at": null,
     "stderr_clean": null,

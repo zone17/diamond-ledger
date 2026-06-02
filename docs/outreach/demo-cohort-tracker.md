@@ -33,7 +33,7 @@ This document tracks the cohort recruitment and the ADR-0006 distribution tripwi
 
 For this cohort, "serious scorer" means:
 
-- **Official/credentialed scorers**: MLB-credentialed official scorers (~100 active), state
+- **Official/credentialed scorers**: MLB-credentialed official scorers (a small rotating pool, ~2-3 per club), state
   high school association scorers, MiLB official scorers.
 - **High-frequency amateur scorers**: travel baseball statisticians (frequent game scoring),
   college or high school athletic scorekeeping staff, Retrosheet volunteer contributors.
@@ -53,7 +53,7 @@ The beachhead is people for whom scoring is a skill they practice deliberately.
 | Local SABR chapters (LA, NY, other) | Local | MEDIUM | 5–15 per chapter | See `sabr-retrosheet-outreach.md` Track 1C |
 | Retrosheet contributor network | Archive volunteers | MEDIUM | 20–50 active | Via Tom Thress intro — see Track 1A |
 | Travel baseball association stats coordinators | Amateur operators | MEDIUM | Hard to reach cold | Via regional travel ball associations |
-| College baseball SIDs / statisticians | College ops | MEDIUM | Hard to reach cold | Via NACDA or direct outreach to sports info directors |
+| College baseball SIDs / statisticians | College ops | MEDIUM | Hard to reach cold | Via CoSIDA (College Sports Information Directors of America) or direct outreach to sports info directors |
 | Direct personal network | Warm contacts | HIGH | Low ceiling | Start here; fastest path to first 5 |
 | Twitter/X baseball scoring community | Social | LOW | Noisy | Use only if warm channels are exhausted |
 

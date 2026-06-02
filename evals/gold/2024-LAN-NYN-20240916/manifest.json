@@ -27,8 +27,8 @@
     "advisory_mode_label": "SELF-CONSISTENCY (advisory — not field accuracy)",
     "sc_001_threshold": 0.90,
     "sc_002_threshold": 0.85,
-    "sc_001_source_field": "reisner_scorecard.innings[*].top.plays[*].play_type_label",
-    "sc_002_source_field": "reisner_scorecard.innings[*].top.plays[*].reisner_cell"
+    "sc_001_source_field": "reisner_scorecard.innings[*].*.plays[*].play_type_label",
+    "sc_002_source_field": "reisner_scorecard.innings[*].*.plays[*].reisner_cell"
   },
 
   "human_handoff_steps": [
@@ -72,9 +72,9 @@
     "errors": ["E6"],
     "stolen_bases": ["SB3"],
     "caught_stealing": ["CS2(26)"],
-    "advances": [".1-2", ".1-3", ".1-H", ".2-H", ".3-H"],
-    "modifiers": ["/F", "/L", "/G"],
-    "multi_run_advances": ["HR.1-H", "HR.1-H.2-H"]
+    "advances": [".1-2", ".1-3", ".2-H", ".3-H", ".B-1"],
+    "modifiers": ["/F", "/L"],
+    "multi_run_advances": []
   },
 
   "judgment_plays_in_game": {
