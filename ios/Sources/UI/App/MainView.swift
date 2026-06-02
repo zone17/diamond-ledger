@@ -39,13 +39,22 @@ struct MainView: View {
             .sheet(item: $state.presentedSheet, onDismiss: { appState.handleSheetDismiss() }) { sheet in
                 sheetContent(for: sheet)
             }
-            // --- New Game button (top trailing) ---
+            // --- Toolbar ---
             .toolbar {
+                // T057: End Game → export sheet (only visible when a game is active).
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("New Game") {
-                        appState.presentedSheet = .newGame
+                    if appState.activeGame != nil {
+                        Button("End Game") {
+                            appState.presentedSheet = .export
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.red)
+                    } else {
+                        Button("New Game") {
+                            appState.presentedSheet = .newGame
+                        }
+                        .font(.subheadline.weight(.semibold))
                     }
-                    .font(.subheadline.weight(.semibold))
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     if let name = appState.session?.displayName {
@@ -113,6 +122,11 @@ struct MainView: View {
             ManualEntryView(prefilledTranscript: transcript)
                 .environment(appState)
                 .presentationDetents([.medium])
+        case .export:
+            // T057 — Retrosheet export / finalize scorecard (Story B8).
+            ExportView()
+                .environment(appState)
+                .presentationDetents([.large])
         }
     }
 }

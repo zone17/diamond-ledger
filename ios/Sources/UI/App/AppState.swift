@@ -47,6 +47,8 @@ enum AppSheet: Identifiable {
     case cardB(RecordPlayResult)
     case clarify(candidatePlays: [ClarifyCandidate])
     case manualEntry(prefilledTranscript: String)
+    /// T057 — Retrosheet export / finalize scorecard (Story B8).
+    case export
 
     var id: String {
         switch self {
@@ -55,6 +57,7 @@ enum AppSheet: Identifiable {
         case .cardB:        return "cardB"
         case .clarify:      return "clarify"
         case .manualEntry:  return "manualEntry"
+        case .export:       return "export"
         }
     }
 }

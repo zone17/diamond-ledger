@@ -88,6 +88,78 @@ makes the `dl` CLI a real cross-invocation agent surface.
 
 ---
 
+## ADR-0010 — Two-Engine ASR Adapter Shape + Engine-Selection Seam (T047/T048)
+
+- **Status:** Accepted
+- **Date:** 2026-06-02
+- **Owner:** Squad B (iOS Voice Client)
+- **Relates to:** ADR-0007 (two-engine ASR design decision D2), Story B2 (#78), T047 (#80), T048 (#81)
+
+### Context
+
+ADR-0007 specified a two-engine ASR architecture: Apple `SpeechAnalyzer` (primary, iOS 26+) and
+sherpa-onnx/Parakeet (fallback/portable). This ADR documents the concrete adapter design choices
+made during implementation:
+
+1. **`@available(iOS 26, *)`** on `AppleTranscriber` — the type guard is placed on the class, not
+   individual methods, so callers (EngineSelector) check `#available(iOS 26, *)` once at the
+   selection site rather than every call site.
+
+2. **`SherpaTranscriber` compiled in all targets but `SHERPA_ONNX_ENABLED` gates real decode** —
+   the adapter shape, protocol conformance, and selection logic compile always; the real
+   sherpa-onnx XCFramework is behind a compile flag to avoid a missing-framework build error until
+   the framework binary is fetched and committed to the repo.
+
+3. **`TranscriberEngineSelector` with `nonisolated(unsafe) static var forceStub`** — the debug
+   toggle needs to be mutable from test setUp (serial context) but is never written concurrently
+   in production, making `nonisolated(unsafe)` the correct Swift 6 annotation. The seam is
+   `#if DEBUG`-guarded so it is excluded from release builds.
+
+4. **`SherpaStubSeam.isOverrideActive`** — same pattern, test-only mutation, also `#if DEBUG`-guarded.
+
+5. **Integer confidence at the adapter boundary** — both adapters convert their native float
+   confidence to an integer percentage via a single shared `mapConfidence` helper
+   (`Int((clamp(native, 0, 1) * 100).rounded())`) before returning `Transcript`.
+   This eliminates float-precision divergence between engines at the `GrammarParser` threshold.
+
+### Decision
+
+- Both adapters conform to `Transcriber: Sendable` (actor-based, Swift 6 strict concurrency).
+- `EngineSelector.resolve()` returns `any Transcriber` (existential) so call sites remain
+  engine-agnostic.
+- The WoZ stub remains the default in simulator/debug builds (`forceStub = true`), preserving
+  the existing WoZ demo workflow. The stub reports a distinct `.stub` engine kind (not `.apple`)
+  so observability reflects reality.
+- Real on-device Apple ASR accuracy (mic → `SpeechAnalyzer` → transcript) requires a physical
+  device and microphone. This is a human handoff, documented in `MANUAL-TESTING.md`.
+- The sherpa-onnx framework download + model asset is a human handoff (see `SherpaTranscriber.swift`
+  handoff checklist); the compile-always stub path prevents blocking the build.
+
+### Alternatives Considered
+
+- **Dynamic library dispatch (ObjC `id<Transcriber>`)**: rejected — Swift protocols with
+  `consuming` parameters require value-type dispatch.
+- **Single-engine with fallback inside the engine**: rejected — would couple Apple and sherpa
+  concerns; cleaner as separate conformers behind the selection seam.
+
+### Consequences
+
+- `AppleTranscriber` uses **legacy `SFSpeechRecognizer`** today; `preloadAssets()` only requests
+  authorization. Real `SpeechAnalyzer`/`AssetInventory` preload (FR-021) is a pending on-device
+  handoff, flagged with a `#warning` in the file and a follow-up issue.
+- `SherpaTranscriber` is an integration skeleton until the XCFramework is fetched; tests exercise
+  the selection logic and stub path without the real binary.
+- The WoZ fact-mapping (`misplayed-grounder` → MockCore routing) lives in the PTT/test harness
+  layer, NOT in the Speech module — the Speech module has no MockCore dependency.
+
+### Renumbering note
+
+This ADR was originally drafted as ADR-0009 on `feat/ios/DL-080-asr-adapters-export`. On merge with
+`main`, ADR-0009 was claimed by the UniFFI Wiring decision (PR #141); this ASR ADR was renumbered to
+ADR-0010 to preserve append-only numbering.
+
+---
+
 ## ADR-0008 — Cargo Workspace Root at Repo Root; Rust Toolchain Bumped to 1.96
 
 - **Status:** Accepted
