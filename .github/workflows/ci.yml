@@ -75,11 +75,17 @@ jobs:
       # Scans core/, ios/, adapters/, android/ for any code path that writes raw PCM
       # audio to disk, a database, telemetry, or any persistent sink.
       # Script: scripts/check-no-raw-audio.sh
-      # A match exits 1 and emits ::error:: annotations in CI output.
+      # Step 1 (--self-test): verifies the patterns themselves catch all known violation
+      #   idioms and do not fire on clean code. Fails fast if a pattern is broken.
+      # Step 2 (main scan): scans the repo source. A match exits 1 with ::error:: annotations.
       # Do NOT add continue-on-error here — this is a non-negotiable privacy gate.
       - name: Privacy gate — no raw-audio persistence (T070 / FR-022 / COPPA)
         run: |
           set -euo pipefail
+          echo "=== Step 1: self-test (verify patterns are functional) ==="
+          bash scripts/check-no-raw-audio.sh --self-test
+          echo ""
+          echo "=== Step 2: scan repo source ==="
           bash scripts/check-no-raw-audio.sh "${GITHUB_WORKSPACE}"
 
   hooks-test:
@@ -433,11 +439,10 @@ jobs:
             use_ndk: false
             advisory: true
     runs-on: ${{ matrix.runner }}
-    # Advisory legs: continue-on-error so they cannot block a merge.
-    # Hard legs: no continue-on-error (false => field omitted from effective config, but
-    # we use the advisory boolean to set the step-level behaviour instead — GitHub Actions
-    # does not support dynamic continue-on-error at job level from matrix booleans, so we
-    # use an explicit fail-or-warn step at the end of each leg).
+    # continue-on-error supports ${{ matrix.* }} expressions at job level (supported since
+    # GitHub Actions Sep 2022 — https://github.blog/changelog/2022-09-08-github-actions-improvements-to-reusable-workflows-2/).
+    # Advisory legs (matrix.advisory == true) absorb failures so they cannot block a merge.
+    # Hard legs (matrix.advisory == false) propagate failures normally.
     continue-on-error: ${{ matrix.advisory }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
