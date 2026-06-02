@@ -1,0 +1,14 @@
+---
+source: core/src/reisner/mod.rs
+expression: cell
+---
+{
+  "situation_diamond": "--- 0",
+  "catalyst_symbols": "6-3",
+  "pitch_marks": [],
+  "runner_fate": {
+    "put_out": {
+      "n": 1
+    }
+  }
+}
