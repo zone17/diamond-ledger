@@ -53,7 +53,10 @@ import Foundation
 ///
 /// TODO: T046 — bind to AVAudioPCMBuffer or CMSampleBuffer; decide format (16 kHz mono Int16).
 /// TODO: T047 — verify at conformer review that no retained copy of rawBytes escapes the frame.
-public struct AudioBuffer: ~Copyable {
+/// `Sendable` (all stored properties — `Data`, `Double`, `Date` — are `Sendable`) so the
+/// `~Copyable` buffer can be transferred into an `actor`-isolated `Transcriber` conformer
+/// (e.g. `StubTranscriber`) across the async boundary without a Swift 6 concurrency error.
+public struct AudioBuffer: ~Copyable, Sendable {
     /// Opaque raw bytes — format TBD at T046 (16 kHz mono Int16 expected).
     ///
     /// CONTRACT: conformers of `Transcriber` MUST NOT retain a reference to this `Data` value
