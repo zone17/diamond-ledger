@@ -20,7 +20,8 @@ use crate::rules::HalfInningCtx;
 /// - `-2-` = runner on second
 /// - `--3` = runner on third
 /// - `123` = bases loaded
-/// etc.
+///
+/// (…and so on for every base-occupancy combination.)
 pub fn render_situation_diamond(runners: &Runners, outs: u8) -> String {
     let first = if runners.first.is_some() { "1" } else { "-" };
     let second = if runners.second.is_some() { "2" } else { "-" };

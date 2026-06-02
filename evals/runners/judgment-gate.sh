@@ -19,8 +19,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-# Default corpus.
-CORPUS="${1:-${REPO_ROOT}/evals/judgment-corpus/seed.jsonl}"
+# Default corpus: the full corpus.jsonl (Squad C, 20 entries). Pass an arg to override.
+CORPUS="${1:-${REPO_ROOT}/evals/judgment-corpus/corpus.jsonl}"
 
 echo "SC-003 Judgment Gate"
 echo "===================="

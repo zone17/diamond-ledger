@@ -314,9 +314,8 @@ jobs:
   core-build:
     name: Rust core — cargo check + tests (ADR-0007 / T002 / T016)
     runs-on: ubuntu-latest
-    # continue-on-error removed when core compiles cleanly on main.
-    # Coordinate with Squad A before dropping this.
-    continue-on-error: true
+    # ENFORCING (DL-104): the core compiles + tests + clippy(-D warnings) are green on
+    # main; this is now a hard gate. `make demo` runs the same checks locally.
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       - name: Install pinned Rust toolchain
@@ -357,9 +356,9 @@ jobs:
   core-eval:
     name: Rust core — eval harness (T004 / T041 / T042 / T043)
     runs-on: ubuntu-latest
-    # Advisory: eval runners require the compiled Rust core (T021/T024).
-    # Drop continue-on-error once judgment-gate.sh + core are wired.
-    continue-on-error: true
+    # ENFORCING (DL-104): the SC-003 judgment gate (judgment-gate.sh over the full
+    # corpus) is green on main; this is now a hard gate. The gate resolves a relative
+    # CORPUS_PATH against the repo root, so it is CWD-independent.
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       - name: Run eval runners when present

@@ -211,7 +211,7 @@ fn base_distance(from: crate::model::Base, to: crate::model::AdvanceTo) -> u8 {
         AdvanceTo::Base(Base::Second) => 2,
         AdvanceTo::Base(Base::Third) => 3,
     };
-    if to_n > from_n { to_n - from_n } else { 0 }
+    to_n.saturating_sub(from_n)
 }
 
 // ---------------------------------------------------------------------------
