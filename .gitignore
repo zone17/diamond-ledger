@@ -40,3 +40,8 @@ __pycache__/
 # Swift / SwiftPM build output
 .build/
 *.xcodeproj/xcuserdata/
+
+# Xcode / SwiftPM per-user IDE state
+**/xcuserdata/
+*.xcuserstate
+ios/.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata

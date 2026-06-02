@@ -175,8 +175,9 @@ public struct GrammarParser: Sendable {
     }
 
     private func trySacBunt(_ s: String) -> NormalizedPlay? {
-        guard s.contains("sac") && (s.contains("bunt") || s.contains("sacrifice")) ||
-              s.contains("sacrifice bunt") else { return nil }
+        // Must contain "bunt" — a bare "sacrifice" must NOT match (else "sacrifice fly"
+        // is ambiguous between sac_fly and sac_bunt). "sacrifice" already contains "sac".
+        guard s.contains("bunt") && s.contains("sac") else { return nil }
         return ["batter_result": "sac_bunt", "outs_recorded": "1"]
     }
 
