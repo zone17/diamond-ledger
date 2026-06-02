@@ -268,6 +268,38 @@ impl EventLog {
         None
     }
 
+    /// The set of `PlayRecorded` seqs that have an **unresolved** `JudgmentOpened`
+    /// pointing at them (`for_seq`). These seqs MUST be withheld from authoritative
+    /// projection: state must not advance through an undecided scoring call (SC-003/I2).
+    ///
+    /// This is the projection-layer analogue of the `confirm_play` gate: `confirm_play`
+    /// already rejects confirmation while a judgment is open, so projection must also
+    /// skip (not apply) any play whose `for_seq` carries an unresolved judgment — the
+    /// correction path bypasses the confirm gate because the row is already confirmed,
+    /// but projection must enforce the same invariant to prevent silent advancement.
+    pub fn open_judgment_for_seqs(&self, game_id: GameId) -> std::collections::HashSet<u64> {
+        // Collect (decision_id, for_seq) for every opened judgment, then remove
+        // resolved ones. The surviving for_seqs are withheld from projection.
+        let mut open_for: HashMap<u64, u64> = HashMap::new(); // decision_id → for_seq
+        let mut resolved_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        for row in self.all_rows(game_id) {
+            match &row.event {
+                Event::JudgmentOpened(p) => {
+                    open_for.insert(p.decision_id, p.for_seq);
+                }
+                Event::JudgmentResolved(p) => {
+                    resolved_ids.insert(p.decision_id);
+                }
+                _ => {}
+            }
+        }
+        open_for
+            .into_iter()
+            .filter(|(did, _)| !resolved_ids.contains(did))
+            .map(|(_, for_seq)| for_seq)
+            .collect()
+    }
+
     /// Check if any play in a list has an error or passed ball (half-inning context).
     pub fn plays_have_error_or_pb(plays: &[NormalizedPlay]) -> bool {
         for play in plays {

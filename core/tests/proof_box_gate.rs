@@ -171,3 +171,105 @@ fn proof_box_empty_inning_balances() {
     let gid = new_game(&core);
     assert_balanced(&core.get_proof_box(gid, 1, Half::Top).unwrap(), "empty inning");
 }
+
+// ---------------------------------------------------------------------------
+// Historical (PAST half-inning) proof box — replay-up-to (ADR-0012).
+//
+// ADR-0009 documented a known limitation: `get_proof_box` returned an ERROR for a PAST
+// half-inning (it only projected the current half). These tests lock in the replay-up-to
+// fix: a fully-played past half rebuilds its CLOSED proof box, it balances (SC-011), and
+// it matches what `finalize_scorecard` computed for that same half.
+// ---------------------------------------------------------------------------
+
+/// A past 1-2-3 top of the 1st: after the 3rd out the half is closed and the projection
+/// has advanced to the bottom of the 1st. Querying the PAST top-1st must now rebuild its
+/// closed box (3 AB, 3 putouts, 0 stranded) and balance — not return an error.
+#[test]
+fn past_one_two_three_half_inning_rebuilds_and_balances() {
+    let core = DiamondCore::new();
+    let gid = new_game(&core);
+
+    // Three groundouts → the top of the 1st closes; projection moves to the bottom.
+    for i in 0..3 {
+        record_confirm(&core, gid, groundout(), &format!("past{i}"));
+    }
+
+    // The top of the 1st is now a PAST half-inning. Replay-up-to must rebuild it.
+    let pb = core
+        .get_proof_box(gid, 1, Half::Top)
+        .expect("past half-inning proof box must rebuild (ADR-0012), not error");
+    assert_balanced(&pb, "closed past top-1st");
+    assert_eq!(pb.ab, 3, "three at-bats");
+    assert_eq!(pb.putouts, 3, "three putouts");
+    assert_eq!(pb.runs, 0, "no runs");
+    assert_eq!(pb.stranded, 0, "nobody stranded on a 1-2-3 inning");
+}
+
+/// The rebuilt PAST proof box MUST match what `finalize_scorecard` computes for the same
+/// half — the two paths share the projection, so they cannot diverge (SC-011 parity).
+#[test]
+fn past_half_inning_matches_finalize() {
+    use dl_core::ffi::{FinalizeMode, FinalizeRequest};
+
+    let core = DiamondCore::new();
+    let gid = new_game(&core);
+
+    // A run-scoring past half: solo HR, then three groundouts (4 batters, 3 outs, 1 run).
+    let hr = NormalizedPlay {
+        situation: situation(),
+        catalyst: Catalyst {
+            batter_event: BatterEvent::HomeRun,
+            fielders: vec![],
+            ball_type: BallType::Fly,
+            advances: vec![Advance {
+                runner: RunnerId(0),
+                from: Base::Home,
+                to: AdvanceTo::Base(Base::Home),
+                by_error: None,
+            }],
+            touched_or_misplayed_by: vec![],
+        },
+        audit_label: None,
+    };
+    record_confirm(&core, gid, hr, "fin-hr");
+    for i in 0..3 {
+        record_confirm(&core, gid, groundout(), &format!("fin-go{i}"));
+    }
+
+    // The top of the 1st is now closed/past. Rebuild it via replay-up-to.
+    let replayed = core.get_proof_box(gid, 1, Half::Top).expect("rebuild past box");
+    assert_balanced(&replayed, "past top-1st with a run");
+    assert_eq!(replayed.runs, 1, "the HR scored one run");
+    assert_eq!(replayed.ab, 4, "HR + 3 outs = 4 at-bats");
+    assert_eq!(replayed.putouts, 3, "three outs closed the half");
+
+    // Finalize and find the matching proof box; it must equal the replayed one.
+    let fin = core
+        .finalize_scorecard(FinalizeRequest {
+            game_id: gid,
+            mode: FinalizeMode::Checkpoint,
+            idempotency_key: "fin-key".into(),
+            actor: owner(),
+        })
+        .expect("finalize succeeds");
+    let finalize_box = fin
+        .proof_box
+        .iter()
+        .find(|pb| pb.inning == 1 && pb.half == Half::Top)
+        .expect("finalize reports the top-1st proof box");
+    assert_eq!(
+        &replayed, finalize_box,
+        "replay-up-to past box must equal finalize's box for the same half (SC-011)"
+    );
+}
+
+/// A FUTURE (not-yet-played) half-inning legitimately has no tallies yet — zeros, balanced,
+/// never an error. Guards that replay-up-to didn't turn the future case into a failure.
+#[test]
+fn future_half_inning_is_zeros() {
+    let core = DiamondCore::new();
+    let gid = new_game(&core);
+    let pb = core.get_proof_box(gid, 5, Half::Bottom).expect("future half is zeros");
+    assert_balanced(&pb, "future half");
+    assert_eq!(pb.ab + pb.runs + pb.putouts + pb.stranded, 0, "future half is all zeros");
+}

@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use crate::authz::{assert_authority, assert_nontrivial_identity, GameAuthority};
 use crate::classify::{classify_with_context, ClassifyContext};
 use crate::eventlog::{
-    Event, EventLog, GameFinalizedPayload, GameStartedPayload,
+    Event, EventCorrectedPayload, EventLog, GameFinalizedPayload, GameStartedPayload,
     JudgmentOpenedPayload, JudgmentResolvedPayload, PlayConfirmedPayload, PlayRecordedPayload,
     RunnerAdvancedPayload,
 };
@@ -25,14 +25,14 @@ use crate::ffi::{
     ConfirmPlayRequest, ConfirmPlayResult, CoreApi, CoreResult, CreateGameRequest,
     CreateGameResult, DecisionRef, Error, ErrorCode, FinalizeRequest,
     FinalizeResult, GameId, GameState, Half, JudgmentDecision, JudgmentStatus, Needs, Play,
-    PlayInput, ProofBox, Recommendation, RecordPlayRequest, RecordPlayResult,
+    PlayInput, PlayRef, ProofBox, Recommendation, RecordPlayRequest, RecordPlayResult,
     ReisnerScorebook, ResolveJudgmentRequest, ResolveJudgmentResult,
-    Seq, EventSummary, CorrectEventRequest, CorrectEventResult, Unresolved,
+    Seq, EventSummary, CorrectEventRequest, CorrectEventResult, Unresolved, Version,
 };
 use crate::model::{AdvanceTo, Base, Classification, JudgmentKind, NormalizedPlay};
 use crate::reisner::{check_proof_box_balance, compute_proof_box, render_cell};
 use crate::retrosheet::{emit_game, GameExportInput, PlayExportInput};
-use crate::rules::project_game;
+use crate::rules::{project_game, project_half_inning_proof_box};
 
 // ---------------------------------------------------------------------------
 // Core engine (in-memory, single-process for MVP)
@@ -333,6 +333,220 @@ fn judgment_recommendation(kind: JudgmentKind) -> (Recommendation, Vec<Call>) {
             ],
         ),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for correct_event (US4)
+// ---------------------------------------------------------------------------
+
+/// Count the outs a play's facts produce (advances retired on the play).
+///
+/// Used to decide whether a correction changed the out-count of the corrected play — the
+/// signal that downstream plays may be invalidated (FR-014). Integer-only (I6).
+fn outs_in_play(play: &NormalizedPlay) -> u32 {
+    play.catalyst
+        .advances
+        .iter()
+        .filter(|a| matches!(a.to, AdvanceTo::Out))
+        .count() as u32
+}
+
+/// `true` iff the play's facts introduce a defensive error or passed ball — the fact that
+/// flips a half-inning's `has_error_or_pb` context (drives EarnedVsUnearned, I3).
+fn play_has_error_or_pb(play: &NormalizedPlay) -> bool {
+    play.catalyst.batter_event == crate::model::BatterEvent::Error
+        || play.catalyst.batter_event == crate::model::BatterEvent::PassedBall
+        || play.catalyst.advances.iter().any(|a| a.by_error.is_some())
+}
+
+/// Reconstruct the `inning_has_error_or_pb` context for the half-inning the corrected play
+/// lives in, honoring the amended facts at `corrects_seq` (the override). This is the same
+/// context `record_play` derives, so the amended play reclassifies exactly as a fresh
+/// record would (I1/parity, FR-006).
+///
+/// Implementation: replay the CONFIRMED `PlayRecorded` rows with the correction override
+/// applied, bucketing each play into its half-inning via the live projection's half index.
+/// Returns `true` iff ANY confirmed play in the corrected play's half (including the
+/// amended play itself) carries an error or passed ball. Integer-only, deterministic (I6).
+fn half_has_error_or_pb_with_amendment(
+    inner: &CoreInner,
+    game_id: GameId,
+    corrects_seq: u64,
+    amended: &NormalizedPlay,
+) -> bool {
+    use crate::rules::{half_index_of, GameProjection};
+
+    // The withheld set (seqs with unresolved open judgments) must be skipped here too so
+    // this context scan matches what `project_game` projects — consistency between the
+    // reclassification context and the authoritative projection (SC-003/I2).
+    let withheld = inner.log.open_judgment_for_seqs(game_id);
+
+    // One replay pass, honoring the override: record each confirmed play's half-index and
+    // whether its (possibly amended) facts carry an error/PB, plus which half the corrected
+    // play sits in. Then resolve: does the corrected play's half contain any error/PB?
+    let mut proj = GameProjection::default();
+    let mut target_half: Option<u32> = None;
+    let mut error_pb_halves: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
+    for row in inner.log.confirmed_rows(game_id) {
+        if let Event::PlayRecorded(p) = &row.event {
+            let here = half_index_of(proj.inning, proj.half);
+            // The corrects_seq itself is withheld (it now has an open judgment), but we
+            // still want its amended facts to contribute to the error/PB context — the
+            // classification is FOR the corrected play, so its own amended facts count.
+            // Other withheld seqs (pre-existing unresolved judgments) are skipped to
+            // match the projection boundary.
+            if withheld.contains(&row.seq) && row.seq != corrects_seq {
+                // Skip: this play's state is withheld from authoritative projection.
+                // Don't advance the half-position either — use the original play for
+                // the position accounting (to keep half-index tracking correct) but
+                // exclude its error/PB contribution from the authoritative context.
+                proj.apply_play(&p.play, row.seq);
+                continue;
+            }
+            let play = if row.seq == corrects_seq { amended } else { &p.play };
+            if row.seq == corrects_seq {
+                target_half = Some(here);
+            }
+            if play_has_error_or_pb(play) {
+                error_pb_halves.insert(here);
+            }
+            proj.apply_play(play, row.seq);
+        }
+    }
+
+    target_half
+        .map(|h| error_pb_halves.contains(&h))
+        .unwrap_or_else(|| play_has_error_or_pb(amended))
+}
+
+/// Build a [`CorrectEventResult`] deterministically from the (already amended) log.
+///
+/// Used by BOTH the fresh correction path and the idempotent-retry path, so a retried
+/// `idempotency_key` reproduces byte-identical output (SC-008 parity, FR-012). Reads the
+/// `EventCorrected` row at `correction_seq` for the amended facts, the ORIGINAL row at
+/// `corrects_seq` for the preserved prior version (append-only history, SC-007), re-projects
+/// state (FR-012), and computes `invalidated_downstream` here (not in the caller) so the
+/// retry path also returns the correct list — fixing P2 (byte-identity across retries).
+///
+/// **SC-003/I2:** `project_game` withholds any corrected seq with an open judgment, so
+/// `recomputed_state` reflects the pre-correction state when the amended facts are a
+/// judgment. The caller surfaces `reclassified` so callers know resolution is required.
+fn build_correct_event_result(
+    inner: &CoreInner,
+    game_id: GameId,
+    correction_seq: u64,
+    corrects_seq: u64,
+) -> CoreResult<CorrectEventResult> {
+    // Amended facts from the appended correction event.
+    let amended = match inner.log.get_row(game_id, correction_seq).map(|r| &r.event) {
+        Some(Event::EventCorrected(c)) => c.amended_play.clone(),
+        _ => {
+            return Err(Error::new(
+                ErrorCode::NotFound,
+                format!("Correction event {} not found", correction_seq),
+            ))
+        }
+    };
+
+    // Original (pre-correction) facts → preserved prior version (FR-013/SC-007). The
+    // original PlayRecorded row is untouched; we read it directly.
+    let original_play = match inner.log.get_row(game_id, corrects_seq).map(|r| &r.event) {
+        Some(Event::PlayRecorded(p)) => p.play.clone(),
+        _ => {
+            return Err(Error::new(
+                ErrorCode::NotFound,
+                format!("Original play {} not found", corrects_seq),
+            ))
+        }
+    };
+
+    // Re-project state with the correction applied (project_game honors the override and
+    // withholds the corrected seq when it has an open judgment — SC-003/I2 fix).
+    let proj = project_game(&inner.log, game_id);
+
+    // Reclassify amended facts (I1) with the corrected play's half context.
+    let amended_ctx = ClassifyContext {
+        inning_has_error_or_pb: half_has_error_or_pb_with_amendment(
+            inner, game_id, corrects_seq, &amended,
+        ),
+    };
+    let reclassified = classify_with_context(&amended, &amended_ctx);
+
+    // Prior version's classification uses the ORIGINAL facts' half context.
+    let original_ctx = ClassifyContext {
+        inning_has_error_or_pb: half_has_error_or_pb_with_amendment(
+            inner, game_id, corrects_seq, &original_play,
+        ),
+    };
+    let original_classification = classify_with_context(&original_play, &original_ctx);
+
+    let history = vec![Version {
+        seq: Seq(corrects_seq),
+        normalized: original_play.clone(),
+        classification: original_classification,
+    }];
+
+    // Compute invalidated_downstream here (not in the caller) so the idempotent-retry
+    // path also returns the correct list — fixing P2 (byte-identity on retry, SC-008).
+    // A correction that changes the out-count of the corrected play may invalidate later
+    // confirmed plays in the same half; surface them for review (FR-014).
+    let invalidated_downstream = if outs_in_play(&original_play) != outs_in_play(&amended) {
+        downstream_plays_in_same_half(inner, game_id, corrects_seq)
+    } else {
+        Vec::new()
+    };
+
+    Ok(CorrectEventResult {
+        correction_seq: Seq(correction_seq),
+        amended,
+        reclassified,
+        recomputed_state: proj.to_game_state(),
+        invalidated_downstream,
+        history,
+    })
+}
+
+/// Confirmed `PlayRecorded` plays AFTER `corrects_seq` that share its half-inning — the
+/// plays a changed out-count may have invalidated (FR-014). Surfaced for review, never
+/// silently discarded. Deterministic replay buckets each play by half-index (I6).
+fn downstream_plays_in_same_half(
+    inner: &CoreInner,
+    game_id: GameId,
+    corrects_seq: u64,
+) -> Vec<PlayRef> {
+    use crate::rules::{half_index_of, GameProjection};
+
+    // First pass: find the corrected play's half-index by replaying confirmed plays.
+    let mut proj = GameProjection::default();
+    let mut target_half: Option<u32> = None;
+    for row in inner.log.confirmed_rows(game_id) {
+        if let Event::PlayRecorded(p) = &row.event {
+            if row.seq == corrects_seq {
+                target_half = Some(half_index_of(proj.inning, proj.half));
+            }
+            proj.apply_play(&p.play, row.seq);
+        }
+    }
+    let target = match target_half {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+
+    // Second pass: collect later plays sharing that half (by the ORIGINAL projection
+    // positions — the pre-correction timeline whose downstream assumptions are at risk).
+    let mut proj = GameProjection::default();
+    let mut out = Vec::new();
+    for row in inner.log.confirmed_rows(game_id) {
+        if let Event::PlayRecorded(p) = &row.event {
+            let here = half_index_of(proj.inning, proj.half);
+            if here == target && row.seq > corrects_seq {
+                out.push(PlayRef { game_id, seq: Seq(row.seq) });
+            }
+            proj.apply_play(&p.play, row.seq);
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -680,18 +894,124 @@ impl CoreApi for DiamondCore {
         })
     }
 
+    /// Amend a previously recorded play (US4 / FR-012–014, `contracts/correct_event.md`).
+    ///
+    /// APPEND-ONLY: emits an `EventCorrected` referencing `corrects_seq`; the original
+    /// `PlayRecorded` row is NEVER mutated or deleted (FR-013). State is then ACTUALLY
+    /// recomputed by replaying the log with the amended facts substituted for the
+    /// corrected seq (FR-012), the amended facts are reclassified from facts alone (I1),
+    /// and if they constitute a judgment a FRESH `JudgmentDecision` is opened — never
+    /// silently resolved (SC-003/I2). Idempotent on `idempotency_key`. Authority +
+    /// non-trivial identity are asserted before any append (I5/FR-020).
     fn correct_event(&self, req: CorrectEventRequest) -> CoreResult<CorrectEventResult> {
-        let inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
+
+        // Authority (I5/FR-020) — owner-as-decider + non-trivial identity, before any append.
         let auth = inner.get_authority(req.game_id)?.clone();
         assert_authority(&req.actor, &auth)?;
         assert_nontrivial_identity(&req.actor)?;
 
-        // correct_event is post-MVP (US4); return a structured "not yet implemented" error.
-        // This satisfies the contract (never panics, returns typed error).
-        Err(Error::new(
-            ErrorCode::InvalidArgument,
-            "correct_event is post-MVP (US4); not yet implemented in this increment",
-        ))
+        if !inner.log.game_exists(req.game_id) {
+            return Err(Error::new(ErrorCode::NotFound, "Game not found"));
+        }
+
+        let corrects_seq = req.corrects_seq.0;
+
+        // Idempotency: a retry with a known key returns the prior result WITHOUT appending
+        // a second correction (the log stays append-only with no duplicate). The result is
+        // rebuilt deterministically from the existing log (FR-012, SC-008 parity).
+        if let Some(prior_seq) = inner.log.check_idempotency(req.game_id, &req.idempotency_key) {
+            return build_correct_event_result(&inner, req.game_id, prior_seq, corrects_seq);
+        }
+
+        // Precondition: `corrects_seq` must exist AND be a PlayRecorded (else NOT_FOUND).
+        // We read the original play here to validate the precondition; `build_correct_event_result`
+        // re-reads it from the log. The binding is prefixed `_` to satisfy `unused_variables`
+        // since we removed the `outs_changed` computation that used to reference it.
+        let _original_play = match inner.log.get_row(req.game_id, corrects_seq) {
+            Some(row) => match &row.event {
+                Event::PlayRecorded(p) => p.play.clone(),
+                _ => {
+                    return Err(Error::new(
+                        ErrorCode::NotFound,
+                        format!("Seq {} is not a correctable play", corrects_seq),
+                    ))
+                }
+            },
+            None => {
+                return Err(Error::new(
+                    ErrorCode::NotFound,
+                    format!("Seq {} not found", corrects_seq),
+                ))
+            }
+        };
+
+        // The amended facts (pure core consumes Normalized only; a Transcript is a schema
+        // violation here — INVALID_ARGUMENT, within the contract's error set).
+        let amended = match req.amended {
+            PlayInput::Normalized(play) => play,
+            PlayInput::Transcript(_) => {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    "correct_event on the pure core requires Normalized facts \
+                     (transcripts are parsed by an adapter, not the core)",
+                ));
+            }
+        };
+
+        // `invalidated_downstream` and the out-count comparison are computed inside
+        // `build_correct_event_result` so the idempotent-retry path is byte-identical
+        // (SC-008 parity, P2 fix).
+
+        // APPEND the correction event (append-only, FR-013). `corrects_seq` is recorded on
+        // the row so `list_game_events` surfaces the linkage; the original row is untouched.
+        let correction_seq = inner.log.append(
+            req.game_id,
+            req.actor.clone(),
+            Event::EventCorrected(EventCorrectedPayload {
+                corrects_seq,
+                amended_play: amended.clone(),
+                idempotency_key: req.idempotency_key.clone(),
+            }),
+            Some(corrects_seq),
+        );
+        inner
+            .log
+            .register_idempotency(req.game_id, req.idempotency_key.clone(), correction_seq);
+
+        // Re-derive the amended play's classification from facts (I1). If it is a judgment,
+        // open a FRESH decision (never silently resolve — SC-003/I2). The override map is
+        // already in place (the EventCorrected was appended), so the context replay sees
+        // the amended facts.
+        let amended_ctx = ClassifyContext {
+            inning_has_error_or_pb: half_has_error_or_pb_with_amendment(
+                &inner,
+                req.game_id,
+                corrects_seq,
+                &amended,
+            ),
+        };
+        let reclassified = classify_with_context(&amended, &amended_ctx);
+
+        if let Classification::Judgment(kind) = &reclassified {
+            let decision_id = inner.log.next_judgment_id(req.game_id);
+            inner.log.append(
+                req.game_id,
+                req.actor.clone(),
+                Event::JudgmentOpened(JudgmentOpenedPayload {
+                    decision_id,
+                    kind: *kind,
+                    for_seq: corrects_seq,
+                }),
+                None,
+            );
+        }
+
+        // Build the result deterministically from the now-amended log. `invalidated_downstream`
+        // is computed inside `build_correct_event_result` so the idempotent-retry path is
+        // byte-identical (SC-008 parity, P2 fix). `recomputed_state` reflects the withheld
+        // projection when amended facts are a judgment (P0 fix, SC-003/I2).
+        build_correct_event_result(&inner, req.game_id, correction_seq, corrects_seq)
     }
 
     fn finalize_scorecard(&self, req: FinalizeRequest) -> CoreResult<FinalizeResult> {
@@ -735,12 +1055,38 @@ impl CoreApi for DiamondCore {
             }
         }
 
-        // Build proof boxes.
-        // MVP: We build a simplified proof-box for the current completed half-inning.
-        // A full implementation would scan the entire log and group by half-inning.
+        // Build proof boxes — one per CLOSED half-inning plus the current (open) half.
+        //
+        // Every half-inning that ended (a recorded 3rd out) was archived into
+        // `completed_halves` during replay (ADR-0012); we emit each in half-inning order,
+        // then append the still-open current half. This makes finalize report ALL
+        // completed half-innings' proof boxes (SC-011: "must balance for EVERY completed
+        // half-inning"), not just the current one, and means a historical `get_proof_box`
+        // query returns the SAME box finalize reports for that half (replay parity).
+        let mut closed_keys: Vec<u32> = proj.completed_halves.keys().copied().collect();
+        closed_keys.sort_unstable();
         let mut proof_boxes: Vec<ProofBox> = Vec::new();
-        let pb = compute_proof_box(&proj.current_half, proj.inning, proj.half);
-        proof_boxes.push(pb);
+        for key in closed_keys {
+            let ctx = &proj.completed_halves[&key];
+            // Decode (inning, half) from the half-index: index = (inning << 1) | is_bottom.
+            let inning = (key >> 1) as u8;
+            let half = if key & 1 == 1 { Half::Bottom } else { Half::Top };
+            proof_boxes.push(compute_proof_box(ctx, inning, half));
+        }
+        // The current (still-open) half-inning — only when it has plays. When the last play
+        // closed a half exactly on the 3rd out, the next half is empty (all fields zero);
+        // emitting an all-zeros box for an unplayed half is misleading. An all-zeros box
+        // still balances (0==0) so SC-011 would pass vacuously — omitting it is cleaner.
+        // An empty game (no closed halves, no current plays) still gets one all-zeros box.
+        let current_has_plays = proj.current_half.ab
+            + proj.current_half.bb
+            + proj.current_half.sac
+            + proj.current_half.hbp
+            + proj.current_half.putouts
+            > 0;
+        if current_has_plays || proof_boxes.is_empty() {
+            proof_boxes.push(compute_proof_box(&proj.current_half, proj.inning, proj.half));
+        }
 
         // SC-011: fail if any proof box doesn't balance.
         for pb in &proof_boxes {
@@ -968,6 +1314,7 @@ impl CoreApi for DiamondCore {
         }
         let proj = project_game(&inner.log, game_id);
         if proj.inning == inning && proj.half == half {
+            // The CURRENT (still-open) half-inning: read its live running tallies.
             return Ok(compute_proof_box(&proj.current_half, inning, half));
         }
 
@@ -979,17 +1326,24 @@ impl CoreApi for DiamondCore {
         let current = half_index(proj.inning, proj.half);
 
         if requested < current {
-            // A PAST half-inning: the current projection no longer holds its tallies,
-            // and replay-up-to-that-point is not yet implemented. Return a structured
-            // error rather than a misleading all-zeros ProofBox (no silent fabrication).
-            Err(Error::new(
-                ErrorCode::InvalidArgument,
-                format!(
-                    "historical proof box for inning {} {:?} requires replay-up-to \
-                     (not yet implemented); only the current half-inning is queryable",
-                    inning, half
-                ),
-            ))
+            // A PAST half-inning: rebuild its CLOSED proof box by replaying the confirmed
+            // event log up to that half's third out (ADR-0012 — replay-up-to). The
+            // archived context is exactly what finalize balanced for that half (SC-011);
+            // replay is byte-identical (I6). This replaces the prior "not implemented"
+            // structured error (the ADR-0009 documented limitation is now closed).
+            project_half_inning_proof_box(&inner.log, game_id, inning, half).ok_or_else(|| {
+                // Defensive: per the index this half is in the past, but no closed context
+                // exists in the replayed log (no recorded third out). Surface a structured
+                // error rather than fabricate an all-zeros box (no silent fabrication).
+                Error::new(
+                    ErrorCode::ContradictoryState,
+                    format!(
+                        "past inning {} {:?} has no closed proof box in the replayed log \
+                         (no recorded third out); cannot rebuild it",
+                        inning, half
+                    ),
+                )
+            })
         } else {
             // A FUTURE/not-yet-played half-inning legitimately has no tallies yet.
             Ok(ProofBox {
@@ -1498,5 +1852,43 @@ mod tests {
             actor: owner_actor(),
         });
         assert!(result.is_ok(), "Empty game finalize should succeed: {:?}", result);
+    }
+
+    /// A correction is deterministic (I6): re-projecting after a correction yields
+    /// byte-identical state across reads — the override replay is a pure function of the
+    /// (append-only) log.
+    #[test]
+    fn correction_replay_is_deterministic() {
+        let core = DiamondCore::new();
+        let gid = core.create_game(create_game_req()).unwrap().game_id;
+
+        let r = core.record_play(RecordPlayRequest {
+            game_id: gid,
+            input: PlayInput::Normalized(strikeout_play()),
+            idempotency_key: "p".into(),
+            actor: owner_actor(),
+        }).unwrap();
+        core.confirm_play(ConfirmPlayRequest {
+            game_id: gid,
+            confirms_seq: r.recorded_seq,
+            idempotency_key: "c".into(),
+            actor: owner_actor(),
+        }).unwrap();
+
+        core.correct_event(CorrectEventRequest {
+            game_id: gid,
+            corrects_seq: r.recorded_seq,
+            amended: PlayInput::Normalized(groundout_play()),
+            idempotency_key: "fix".into(),
+            actor: owner_actor(),
+        }).unwrap();
+
+        let s1 = core.get_game_state(gid).unwrap();
+        let s2 = core.get_game_state(gid).unwrap();
+        assert_eq!(
+            serde_json::to_string(&s1).unwrap(),
+            serde_json::to_string(&s2).unwrap(),
+            "post-correction state must be byte-identical across reads (I6)"
+        );
     }
 }

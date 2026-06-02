@@ -117,6 +117,98 @@ FR-022 (process-don't-store) and FR-029 (COPPA) as hard-fails:
 - **Reproducibility (Article XXXV):** `cargo-ndk` pinned at v3.5.4 `--locked`.
 - **Agent-native (Art. II):** parity across iOS/Android/WASM/CLI is now mechanically
   verified in CI, not just asserted by design.
+## ADR-0012 — correct_event (US4) Append-Only Correction + get_proof_box Historical Replay-Up-To
+
+- **Status:** Accepted
+- **Date:** 2026-06-02
+- **Owner:** Squad A (Deterministic Core & Agent Parity)
+- **Implements:** US4 · FR-012–014 · SC-007 · `contracts/correct_event.md` · Art. III/XII
+- **Closes:** the ADR-0009 documented limitation (`get_proof_box` errored on a PAST half-inning)
+- **Tickets:** DL-correct-event-proofbox
+
+### Context
+
+Two pieces of core work were incomplete. (1) `correct_event` (US4) was a stub returning
+`InvalidArgument` — the amend-a-prior-play primitive in the contract (`contracts/correct_event.md`,
+FR-012–014) was never implemented. (2) ADR-0009 §Consequences recorded a known limitation:
+`get_proof_box` returned a structured error for a PAST half-inning because the live projection only
+carries the *current* half's tallies; a review (correctly) made it error rather than return a
+misleading all-zeros box. Historical-inning proof boxes needed replay-up-to.
+
+### Decision
+
+1. **Correction is APPEND-ONLY via a replay override (FR-013).** `correct_event` appends an
+   `EventCorrected{corrects_seq, amended_play, idempotency_key}` row — the original `PlayRecorded`
+   row is **never** mutated or deleted. Replay (`project_game`) builds a `corrected_seq → amended_play`
+   override map from all `EventCorrected` rows and substitutes the amended facts for the corrected
+   seq during projection. Latest correction wins (scanned in seq order). History is preserved: the
+   result's `history` re-reads the untouched original row (SC-007: 100% of corrections retain prior
+   versions). The log only ever GROWS.
+
+2. **State is ACTUALLY recomputed (FR-012), not flagged.** With the override in place, the standard
+   deterministic replay produces `recomputed_state` — a real `GameState`, byte-identical across reads
+   (I6). The amended facts are reclassified from facts alone (I1), using the corrected play's
+   half-inning error/PB context reconstructed by a per-half replay scan (parity with `record_play`).
+
+3. **A correction that introduces a judgment opens a FRESH decision — never silent (SC-003/I2).**
+   If the amended facts classify as `Judgment(kind)`, `correct_event` appends a `JudgmentOpened`
+   `for_seq == corrects_seq`. It does not resolve it; the silent-resolution counter stays zero. A
+   correction OUT of a judgment simply reclassifies `Deterministic`.
+
+4. **`invalidated_downstream` is surfaced, not discarded (FR-014).** When the correction changes the
+   corrected play's out-count, later confirmed plays in the SAME half-inning are returned as
+   `[PlayRef]` for review — never silently dropped.
+
+5. **Idempotent on `idempotency_key` (Art. XXXIII).** A retried key returns a byte-identical result
+   and appends NO second correction (the result is rebuilt deterministically from the existing log).
+
+6. **`get_proof_box` past half-inning = replay-up-to.** `end_half_inning` now archives each CLOSED
+   half's `HalfInningCtx` into `GameProjection.completed_halves` (keyed by a half-index
+   `(inning<<1)|is_bottom`) before resetting `current_half`. A past-half query replays the confirmed
+   log and reads the archived context — exactly the tallies `finalize` balances (SC-011), byte-identical
+   on replay (I6). The current half still reads live; a future half still returns zeros; a past half
+   with no recorded 3rd out surfaces a structured `ContradictoryState` rather than fabricating zeros.
+
+7. **`finalize_scorecard` now emits a proof box for EVERY closed half-inning** (from
+   `completed_halves`, in half-index order) plus the current half — so SC-011 ("must balance for every
+   completed half-inning") is enforced across all halves, and a historical `get_proof_box` query
+   returns the SAME box finalize reports (replay parity). Previously finalize emitted only the current
+   half's box.
+
+8. **CLI parity (Art. II):** added a `dl correct-event <game-id> <corrects-seq> <amended-play-json>
+   <owner-id>` subcommand so the correction primitive is invokable from the CLI/agent surface exactly
+   as from the core/UI path.
+
+### Alternatives Considered
+
+- **Mutate the corrected row in place.** Rejected: violates the append-only invariant (FR-013) and
+  destroys the audit history (SC-007). The override-map replay preserves both.
+- **Store a recomputed snapshot on the correction event.** Rejected: snapshots drift from the
+  deterministic replay (I6) and duplicate state; re-deriving from the log is the single source of truth.
+- **Leave `get_proof_box` erroring on past halves (status quo).** Rejected: the data exists in the
+  log; replay-up-to is the correct, deterministic answer, and the archive makes it O(replay) with no
+  extra storage in the log.
+- **Compute `invalidated_downstream` for the whole game.** Rejected as over-broad: only same-half
+  downstream plays depend on the corrected play's out/runner state in v1; cross-inning effects are out
+  of scope and would produce noisy review lists.
+
+### Consequences / Reversibility
+
+- US4 is shippable end-to-end (core + CLI parity + 12 contract tests); the ADR-0009 proof-box
+  limitation is closed (7 proof-box tests incl. past-half-matches-finalize). `cargo test --workspace`,
+  `cargo clippy --workspace --all-targets -- -D warnings` (no-float), the SC-003 judgment gate, and
+  `make demo` are all green.
+- **Reversibility:** high — the correction override and `completed_halves` archive are additive; the
+  `EventCorrected` event already existed in the schema. Reverting restores the stub + the past-half
+  error path with no data migration (no production data).
+
+### Impact
+
+- **Append-only / audit (FR-013/SC-007):** corrections never rewrite history; every prior version is
+  retained and surfaced.
+- **No-silent-judgment (SC-003/I2):** a correction that creates a judgment opens a fresh decision.
+- **Determinism (I6):** correction replay and historical proof boxes are pure functions of the log.
+- **Agent-native (Art. II):** the `dl correct-event` subcommand gives the CLI/agent path full parity.
 
 ---
 
