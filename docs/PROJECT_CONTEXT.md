@@ -63,6 +63,7 @@ Retrosheet valued beyond SABR) is **confidence-L, untested**.
 | 0005 | Compound-gate recursion backstop (don't resolve volatile context via a racing live call) |
 | **0006** | **Build authorized ahead of the A1/A3 demand gate → parallel instrument + tripwires** |
 | **0007** | **v1 tech architecture: Rust core + UniFFI parity · two-engine ASR · pinned `cwevent` v0.10.0 · event-sourced SQLite/CloudKit · first slice US1+US2+US3** |
+| **0008** | Cargo **workspace root at repo root** (members must live below root) · toolchain pin bumped 1.83→1.96 (proptest MSRV) |
 
 ## 5. Critical invariants (spec 001 — the probe broke these once; keep them)
 

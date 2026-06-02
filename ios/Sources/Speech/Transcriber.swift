@@ -35,12 +35,32 @@ import Foundation
 
 /// An opaque handle to a single push-to-talk audio capture.
 ///
-/// Ownership: the caller transfers ownership to `Transcriber.transcribe(buffer:)`.
-/// The conformer MUST release the underlying PCM data before returning (FR-022).
+/// ## Ownership and PCM retention contract (FR-022 / COPPA / process-don't-store)
+///
+/// `AudioBuffer` is declared `~Copyable` (noncopyable) to make the ownership transfer to
+/// `Transcriber.transcribe(buffer:)` **compiler-enforced**: the caller cannot retain a copy of
+/// `rawBytes` after passing `buffer` because the `consuming` parameter annotation on
+/// `transcribe(buffer:)` moves the value into the callee and invalidates the caller's binding.
+///
+/// Conformance checklist (enforced at T047 / T048 review gate):
+///   - [ ] The conformer must NOT assign `buffer.rawBytes` to any `var`/`let` that outlives the
+///         current stack frame (no closure captures, no `self.` storage, no `Task {}` captures).
+///   - [ ] The conformer must deinit / zero the underlying buffer before returning (where the OS
+///         API permits — AVAudioPCMBuffer zeroing is implementation-defined on iOS 26).
+///   - [ ] The conformer must NOT pass `buffer` to a child `Task`/`async let` that may outlive
+///         the `transcribe` call — doing so with a noncopyable type is a compile-time error,
+///         which is intentional.
 ///
 /// TODO: T046 — bind to AVAudioPCMBuffer or CMSampleBuffer; decide format (16 kHz mono Int16).
-public struct AudioBuffer: Sendable {
+/// TODO: T047 — verify at conformer review that no retained copy of rawBytes escapes the frame.
+public struct AudioBuffer: ~Copyable {
     /// Opaque raw bytes — format TBD at T046 (16 kHz mono Int16 expected).
+    ///
+    /// CONTRACT: conformers of `Transcriber` MUST NOT retain a reference to this `Data` value
+    /// after `transcribe(buffer:)` returns. The `~Copyable` annotation on `AudioBuffer` makes
+    /// the ownership transfer explicit at the call site; this comment states the byte-level
+    /// obligation that the type system cannot fully enforce once `Data` (a reference type) is
+    /// read from the struct.
     public let rawBytes: Data
     /// Duration of the captured audio, in seconds.
     public let durationSeconds: Double
@@ -66,16 +86,35 @@ public struct AudioBuffer: Sendable {
 public struct Transcript: Sendable {
     /// Best-hypothesis text from the ASR engine.
     public let text: String
-    /// Engine-reported confidence in [0.0, 1.0]. Use for parse-ambiguity routing (T050).
-    /// Note: fixed-point representation preferred internally (Art. VII / ADR-0007 no-float);
-    /// this is a Swift-side convenience value only — never passed to the Rust core.
-    public let confidence: Double
+
+    /// Engine-reported confidence as an integer in the range 0...100 (inclusive).
+    ///
+    /// ## Why integer, not float (ADR-0007 / Art. VII / FR-008)
+    ///
+    /// The FR-008 ambiguity threshold is a deterministic integer comparison (e.g. `confidence < 70`),
+    /// not a cross-engine float comparison. Using an integer scale:
+    ///   - Eliminates float-precision divergence between Apple `SpeechAnalyzer` and sherpa-onnx
+    ///     when the two engines report the same logical confidence level differently (e.g. 0.699...
+    ///     vs 0.700... for the same utterance quality).
+    ///   - Keeps the seam integer-only, consistent with the Rust core boundary (I6/ADR-0007).
+    ///   - Makes the ambiguity gate in `Parse` (T050) a simple `Int` comparison with no
+    ///     floating-point epsilon concerns.
+    ///
+    /// **Engine adapter obligation**: each `Transcriber` conformer converts its native float
+    /// confidence to this integer scale at the edge, before constructing `Transcript`:
+    ///   - `AppleTranscriber` (T047): `Int(clamp(nativeConfidence * 100, 0, 100).rounded())`
+    ///   - `SherpaTranscriber` (T048): same formula applied to the Parakeet posterior score.
+    ///
+    /// This value is a Swift-side signal only — it is never passed to the Rust core.
+    public let confidence: Int  // 0...100
+
     /// Which engine produced this transcript.
     public let engine: TranscriberEngine
     /// Wall-clock time the transcript was finalized (audit / SC-005 latency measurement).
     public let finalizedAt: Date
 
-    public init(text: String, confidence: Double, engine: TranscriberEngine, finalizedAt: Date) {
+    public init(text: String, confidence: Int, engine: TranscriberEngine, finalizedAt: Date) {
+        precondition((0...100).contains(confidence), "Transcript.confidence must be 0...100; got \(confidence)")
         self.text = text
         self.confidence = confidence
         self.engine = engine

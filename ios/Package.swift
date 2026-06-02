@@ -2,7 +2,7 @@
 // Diamond Ledger — iOS app-logic library package (T003)
 //
 // Min platform: iOS 26 — required by SpeechAnalyzer / DictationTranscriber (T046, ADR-0007).
-// This package wraps the UniFFI-generated XCFramework (Squad A / H1) plus the four thin
+// This package wraps the UniFFI-generated XCFramework (Squad A / H1) plus the six thin
 // Swift-side modules: Core, Speech, Parse, Persistence, UI, Auth.
 //
 // Note: The real UniFFI XCFramework target (DiamondLedgerCore) is added in Phase B (H1).
@@ -73,9 +73,10 @@ let package = Package(
 
         // MARK: - UI
         // V3 glance HUD, push-to-talk, Card A/B, export UI (T045, T051–T057).
+        // Depends on Auth to read the authenticated ownerId for all CoreClient calls (FR-020/I5).
         .target(
             name: "UI",
-            dependencies: ["Core", "DiamondSpeech", "Parse", "Persistence"],
+            dependencies: ["Core", "DiamondSpeech", "Parse", "Persistence", "Auth"],
             path: "Sources/UI"
         ),
 

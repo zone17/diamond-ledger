@@ -6,6 +6,59 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0008 — Cargo Workspace Root at Repo Root; Rust Toolchain Bumped to 1.96
+
+- **Status:** Accepted
+- **Date:** 2026-06-01
+- **Owner:** Project lead (zone17)
+- **Amends:** ADR-0007 (Cargo workspace layout consequence)
+- **Ticket:** PLAT-009
+
+### Context
+
+ADR-0007 established Rust + UniFFI as the core language.  When the Cargo workspace was scaffolded
+the initial `Cargo.toml` was placed inside `core/`.  Cargo requires that every `[workspace]`
+member be located **below** the directory that contains `Cargo.toml`; a workspace root inside `core/`
+cannot reference sibling directories (`adapters/cli`, `adapters/agent`) as members without
+symlinks or path hacks.  The fix is to move the workspace manifest to the **repo root**, with
+`core/`, `adapters/cli/`, and `adapters/agent/` listed as members.
+
+A related discovery: `proptest` (the adversarial fuzz library selected in ADR-0007) requires a
+minimum Rust edition / MSRV of **1.96**; the toolchain had been pinned at 1.83 (the channel
+available at planning time).  The toolchain pin was bumped to 1.96 in `rust-toolchain.toml`.
+
+### Decision
+
+1. **Cargo workspace manifest lives at repo root** (`./Cargo.toml`), not inside `core/`.
+   Members: `core`, `adapters/cli`, `adapters/agent` (and `android/` when scaffolded).
+2. **`cargo` commands run from repo root** against the root `Cargo.toml` — consistent with the
+   CI `core-build` job (`cargo check --workspace`).
+3. **`rust-analyzer`** is configured at repo root (workspace root = `.`).
+4. **Rust toolchain pin bumped: 1.83 → 1.96** to satisfy `proptest`'s MSRV.  Pin is in
+   `rust-toolchain.toml`; CI reads it automatically via `rustup show`.
+
+### Alternatives Considered
+
+- **Keep workspace root inside `core/`; use path hacks for adapters.** Rejected: non-idiomatic,
+  breaks `cargo check --workspace`, complicates `rust-analyzer`.
+- **Separate workspace per crate.** Rejected: defeats shared `Cargo.lock` and unified CI check.
+
+### Consequences
+
+- All developers and CI agents run `cargo <cmd>` from the repo root.
+- The `rust-toolchain.toml` at repo root controls the compiler version for the entire workspace.
+- `proptest` and other dev-dependencies compile without MSRV overrides.
+- **Reversibility:** high — moving `Cargo.toml` back and updating the CI step is the full revert.
+
+### Impact
+
+- **Reproducibility (Art. XXXV):** single `Cargo.lock` at repo root; toolchain version is
+  deterministic and version-controlled.
+- **CI:** `core-build` job already targets repo-root `Cargo.toml` (`cargo check --workspace`).
+- **Agent-native:** any agent or developer who runs `cargo` from repo root gets the full picture.
+
+---
+
 ## ADR-0007 — v1 Technical Architecture: Rust Deterministic Core + UniFFI Parity, Two-Engine ASR, Pinned Chadwick `cwevent`
 
 - **Status:** Accepted

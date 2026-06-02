@@ -2,7 +2,7 @@
 
 **Feature:** `001-voice-scorebook-core`
 **Status:** FROZEN — v1 contract (do not change without a revision note and new version tag)
-**Version:** v1.0 (frozen 2026-06-01)
+**Version:** v1.1 (2026-06-01 — see §8 change log)
 **Authority:** [`spec.md`](../spec.md) (FR-016 / FR-017) · [`research.md`](../research.md) (D4)
 **Reference:** [retrosheet.org/eventfile.htm](https://www.retrosheet.org/eventfile.htm)
 **Acceptance gate:** Chadwick `cwevent` v0.10.0 (pinned, SHA256-pinned — see plan.md D4)
@@ -323,7 +323,7 @@ The following play types are **outside v1 scope**. When the emitter encounters a
 |----------|-------------|-----------------|
 | **Multi-out plays with runner annotations** | Double plays and triple plays where the textual `(runner)` notation is required to identify which runner is retired (e.g. `4(1)3` = second baseman tags runner from first, throws to first for DP; `1(B)3(1)` = pitcher tags batter-runner, throw to first retires runner from first for TP) | Requires resolving runner identity mid-string in the advance section; annotation grammar overlaps with error-in-advance; correct mapping requires unambiguous runner tracking that is not in v1 event model |
 | **Throwing-error reclassification mid-string** | A play that starts as a fielded out but the throw is errant, allowing runners to advance beyond what the error alone accounts for — requiring reclassification of the primary event (e.g. a fielder's choice where an errant throw turns a FC into a hit-with-error compound) | Mid-string error reclassification requires rewriting the primary event after the fact; v1 emitter writes events linearly from the confirmed facts |
-| **Fielder's choice (FC) disambiguation** | FC plays where the "safe" determination cannot be resolved from the available facts without scorer judgment that goes beyond the standard judgment flag — e.g. FC where multiple runners are moving and it is ambiguous which runner the fielder chose to retire | The emitter can emit `FC` for a clean fielder's choice; the flag-for-manual case is where facts are insufficient to resolve which runner was the target |
+| **Fielder's choice (FC) — all cases** | Any play where the fielder elected to retire a runner other than the batter-runner, resulting in the batter-runner reaching base safely | FC is a **ContestedCredit / scorer-judgment play** (per spec.md Play classification reference): determining which runner was the intended target and whether the batter-runner reached on a true FC or an error requires scorer judgment. FC is therefore **always flag-for-manual** in v1; the emitter MUST NOT emit an `FC` event string — it emits a `com` record and an `NP` placeholder instead. `FC` is absent from the Section 4 BNF `primary-event` production for this reason. |
 | **Interference and obstruction** | Batter interference (`C/INT`), catcher obstruction (`C/OBS`), fielder obstruction — especially when they result in automatic bases or reversed outs | Small edge-case frequency in amateur play; correct event-string encoding requires additional state not tracked in v1 |
 | **Combined / rare baserunning events** | Two-runner steals (e.g. `SB3;SB2`), pickoff + advance combinations (e.g. `POCS2(1e2/TH)`), balk-plus-advance (`BK`), wild-pitch-plus-advance (`WP`), passed-ball-plus-advance (`PB`) where the primary event is a non-plate-appearance baserunning event (not a strikeout+WP handled above) | Low frequency; encoding requires semicolon-separated multi-event strings and additional runner-state tracking beyond the v1 event model |
 | **Earned/unearned requiring Rule 9.16 reconstruction** | Any run that scores in a half-inning with a defensive error or passed ball, where determining earned vs. unearned requires the counterfactual "what would have happened without the error" — i.e. `data,er` entries that cannot be filled in as 0 | Full MLB Rule 9.16 counterfactual reconstruction is deferred (FR-017); v1 always sets `earned_unearned = PENDING` for affected runs |
@@ -376,15 +376,22 @@ and MUST include it verbatim in the exported file (D6 / Retrosheet notice.txt re
 
 ## 8. Contract Versioning and Change Protocol
 
-This document is **frozen at v1.0**. Any change requires:
-1. A new version tag (e.g. `v1.1`) in the header.
-2. A revision note documenting what changed and why.
-3. An ADR entry if the change affects the emitter/fixture boundary (Art. XXXVIII).
-4. Re-validation of the `cwevent` fixture corpus (Squad C must update fixtures to match).
-
 **Non-breaking additions** (new event types in v1 scope, new modifiers): bump minor version.
 **Breaking changes** (removing a construct, changing canonical form): bump major version, notify both squads.
 
+Any change requires:
+1. A new version tag in the header.
+2. A revision note in the change log below.
+3. An ADR entry if the change affects the emitter/fixture boundary (Art. XXXVIII).
+4. Re-validation of the `cwevent` fixture corpus (Squad C must update fixtures to match).
+
+### Change log
+
+| Version | Date | Change |
+|---------|------|--------|
+| v1.1 | 2026-06-01 | Section 5: FC (fielder's choice) clarified as **always flag-for-manual** in v1 — the emitter MUST NOT emit an `FC` event string. Previous wording ("the emitter can emit FC for a clean fielder's choice") contradicted the Section 4 BNF, which has no FC production in `primary-event`. Resolved in favour of the BNF: FC is a scorer-judgment play (ContestedCredit) per the spec, so it is flag-for-manual regardless of whether the individual case appears "clean". |
+| v1.0 | 2026-06-01 | Initial frozen contract. |
+
 ---
 
-*Frozen 2026-06-01 · Feature `001-voice-scorebook-core` · Reference: [retrosheet.org/eventfile.htm](https://www.retrosheet.org/eventfile.htm)*
+*v1.0 frozen 2026-06-01; v1.1 revised 2026-06-01 · Feature `001-voice-scorebook-core` · Reference: [retrosheet.org/eventfile.htm](https://www.retrosheet.org/eventfile.htm)*

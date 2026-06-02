@@ -139,6 +139,8 @@ core/                          # Rust — the platform-independent deterministic
 │   ├── reisner/               # situation-diamond + catalyst model, renderer, proof-box
 │   ├── retrosheet/            # reduced-but-valid emitter (8 record types, reduced grammar)
 │   ├── eventlog/              # append-only event model + replay/projection
+│   ├── model.rs               # normalized-fact schema (NormalizedPlay, SituationDiamond, Catalyst, …)
+│   ├── authz.rs               # owner-as-decider authority assertion (FR-020 / I5)
 │   └── ffi.rs                 # UniFFI surface: 4 primitives + plain owned types + typed errors
 ├── tests/                     # contract tests + proptest invariants + insta golden snapshots
 └── Cargo.toml                 # pinned toolchain; CI-linted no-float
@@ -155,6 +157,7 @@ evals/                         # Article XXI durable eval artifacts
 
 ios/                           # Swift 6 app (iOS-first) — a CLIENT of the core
 ├── Sources/
+│   ├── Auth/                  # email + social sign-in; authenticated owner identity (FR-020 / FR-028)
 │   ├── Speech/                # Transcriber protocol: SpeechAnalyzer + sherpa-onnx adapters
 │   ├── Parse/                 # grammar-constrained transcript→event normalizer/parser
 │   ├── Core/                  # SwiftPM wrapper around the UniFFI XCFramework

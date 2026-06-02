@@ -7,14 +7,23 @@ language-neutral contracts before implementation. Each is exposed identically to
 an agent/API/CLI client (Art. II parity, FR-018) — the *same* core function backs both. Schemas are
 illustrative pseudo-types; the Rust core + UniFFI surface is the reference binding.
 
-## The four primitives
+## The primitives
 
 | Verb | Risk tier | File |
 |------|-----------|------|
+| `create_game` | Tier 2 (creates the event-log root) | [`create_game.md`](./create_game.md) |
 | `record_play` | Tier 2 (meaningful write, preview-then-confirm) | [`record_play.md`](./record_play.md) |
+| `confirm_play` | Tier 2 (the FR-007 read-verify state-advance gate) | [`confirm_play.md`](./confirm_play.md) |
 | `advance_runner` | Tier 2 | [`advance_runner.md`](./advance_runner.md) |
+| `resolve_judgment` | Tier 2 (records a decider-attributed call, FR-011) | [`resolve_judgment.md`](./resolve_judgment.md) |
 | `correct_event` | Tier 2 (reversible, history-preserving) | [`correct_event.md`](./correct_event.md) |
 | `finalize_scorecard` | Tier 3 (produces the official record / export) | [`finalize_scorecard.md`](./finalize_scorecard.md) |
+
+The four *atomic write* primitives (`record_play`, `advance_runner`, `correct_event`,
+`finalize_scorecard`) are joined by the game-lifecycle / loop-control primitives `create_game` (FR-001),
+`confirm_play` (FR-007 read-verify gate), and `resolve_judgment` (FR-011) so the quickstart CLI verbs
+(`new-game`, `confirm`, `resolve`) and the data-model events (`GameStarted`, `PlayConfirmed`,
+`JudgmentResolved`) each map to a boundary method.
 
 Atomicity (Art. III): each does **one** thing. A full game is composed by an agent or the UI from these
 verbs + the reads below — no `manage_game` god-verb.
@@ -37,7 +46,24 @@ ErrorCode =
   | OUT_OF_FORMAT             // outside reduced v1 grammar; flag needs-review, never fabricate (FR-017)
   | INVALID_ARGUMENT          // schema/precondition violation
   | NOT_FOUND                 // unknown game/event id
+  | TRANSCRIPT_NOT_SUPPORTED  // a Transcript input reached a pure core with no bundled parser (see Wire format)
 ```
+
+## Wire format (SC-008 parity)
+
+The canonical external wire convention at this boundary is **snake_case external tagging**. Every
+data-carrying enum that crosses the JSON seam (`ActorKind`, `ErrorCode`, `Needs`, `Half`, `EarnedUnearned`,
+`JudgmentStatus`, `RunnerFate`, `AdvanceOutcome`, `FinalizeMode`, `PlayInput`, `Classification`, …) pins
+`#[serde(rename_all = "snake_case")]` so variant names serialize deterministically (e.g. `pending_confirmation`,
+`out_of_format`, `Transcript` → `transcript`, `Normalized` → `normalized`). This removes any reliance on
+serde's PascalCase default and gives the Swift `MockCore` / UniFFI surface a single, unambiguous target —
+the mock and real cores stay byte-for-byte interchangeable (SC-008 parity). Variant *data shapes* are
+unchanged; only the external tag casing is fixed.
+
+**Transcript is adapter-only.** `PlayInput::Transcript` is accepted only by adapters that bundle a grammar
+parser (they normalize first, then call the core). The pure `dl-core` / `MockCore` consume
+`PlayInput::Normalized` facts only and return `TRANSCRIPT_NOT_SUPPORTED` for a `Transcript` — never a
+guess (FR-008-adjacent). This keeps the grammar parser in the adapter, not the core.
 
 ## Authority (deterministic boundary policy — Art. XXV/XXVIII, FR-020)
 

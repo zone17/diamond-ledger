@@ -60,6 +60,22 @@ enum MockFFI {
     /// Mirrors `ffi::JudgmentStatus`.
     enum JudgmentStatus: String, Sendable { case open, resolved, pending }
 
+    // --- Actor (ffi.rs §Identifiers) ---
+
+    /// Mirrors `ffi::ActorKind` — distinguishes human scorers from authorized agents.
+    enum ActorKind: String, Sendable { case human, agent }
+
+    /// Mirrors `ffi::Actor` — the recorded decider identity (FR-011).
+    ///
+    /// `harnessVersion` is present for agent callers (audit trail); `nil` for human callers.
+    struct Actor: Sendable {
+        let kind: ActorKind
+        /// Stable account / agent identity string (owner id, agent id, …).
+        let id: String
+        /// Agent harness/build version — `nil` for human callers.
+        let harnessVersion: String?
+    }
+
     // --- Judgment decision (US2 — surfaced, never auto-resolved) ---
 
     /// Mirrors `ffi::Call` — an opaque, stable call token + display label.
@@ -76,6 +92,10 @@ enum MockFFI {
 
     /// Mirrors `ffi::JudgmentDecision`. The mock always returns `.open` with a recommendation
     /// and alternatives; `chosen`/`decider` stay nil until the UI resolves it (I2).
+    ///
+    /// Note: `decider` is `Actor?` (not `String?`) to match the Rust `Option<Actor>` field.
+    /// `deciderId: String?` was incorrect — the Rust boundary carries a full Actor struct so the
+    /// decider identity includes `kind` and (for agents) `harnessVersion` (FR-011).
     struct JudgmentDecision: Sendable {
         let id: UInt64
         let kind: JudgmentKind
@@ -83,7 +103,7 @@ enum MockFFI {
         let recommendation: Recommendation
         let alternatives: [Call]
         let chosen: Call?       // nil while .open / .pending
-        let deciderId: String?  // recorded decider identity — present iff resolved (FR-011)
+        let decider: Actor?     // nil while unresolved; full Actor once resolved (FR-011)
     }
 
     // --- Reisner rendering (ffi.rs §Reisner) ---
@@ -157,46 +177,71 @@ public final class MockCore: CoreClient {
     // MARK: Canned input scripts
     //
     // The Wizard-of-Oz facilitator (interaction-spec.md) selects a script by what the scorer
-    // "said". We key off a recognizable marker in `normalizedFacts` / transcript so the demo is
-    // deterministic. Anything unrecognized falls back to the deterministic 6-3 card.
+    // "said". We key off an explicit marker in `normalizedFacts["script"]` so the demo is
+    // deterministic and the routing is unambiguous.
+    //
+    // IMPORTANT: do NOT trigger Card B on any "error" substring in the transcript (P2 fix).
+    // "Reached on error" is a deterministic confirmed fact — it is NOT a judgment. Routing on
+    // the string "error" would misclassify confirmed plays as judgment calls. Card B is only
+    // triggered by the explicit script marker below.
 
-    /// Marker the demo harness sets to pick the misplayed-grounder (Card B) script.
-    /// e.g. `normalizedFacts["script"] = "misplayed-grounder"` or a transcript containing it.
-    private static let judgmentScriptKey = "misplayed-grounder"
+    /// Explicit script marker that selects the misplayed-grounder (Card B) canned result.
+    /// Set `normalizedFacts["script"] = "misplayed-grounder"` in the demo harness.
+    private static let judgmentScriptMarker = "misplayed-grounder"
 
-    /// Marker for the clear 6-3 deterministic ground out (Card A). Default when unspecified.
-    private static let deterministicScriptKey = "6-3"
-
+    /// Returns `true` only when the caller has set the explicit misplayed-grounder script marker.
+    /// Does NOT match on transcript substrings — "reached on error" is a deterministic fact, not a
+    /// judgment (P2: removed the `localizedCaseInsensitiveContains("error")` clause).
     private func selectsJudgment(_ facts: [String: String]) -> Bool {
-        let blob = (facts["script"] ?? "") + " " + (facts["transcript"] ?? "") + " " + (facts["play"] ?? "")
-        return blob.localizedCaseInsensitiveContains(Self.judgmentScriptKey)
-            || blob.localizedCaseInsensitiveContains("error")
+        facts["script"] == Self.judgmentScriptMarker
+    }
+
+    // MARK: Primitive 0 — create_game
+
+    /// Returns a canned initial game state for two teams.
+    /// Authority is mocked: an empty `ownerId` is rejected exactly as the real core would (I5/FR-020).
+    public func createGame(
+        homeTeam: String,
+        visitorTeam: String,
+        ownerId: String,
+        correlationId: String
+    ) async throws -> CreateGameResult {
+        guard !ownerId.isEmpty else {
+            throw CoreError.unauthorized("MockCore: empty ownerId — createGame requires an authenticated owner (FR-020/I5)")
+        }
+        let gameId = "mock-game-\(homeTeam.prefix(3).lowercased())-\(visitorTeam.prefix(3).lowercased())"
+        let initialState = GameState(
+            gameId: gameId,
+            inning: 1,
+            isTopHalf: true,
+            outs: 0
+        )
+        return CreateGameResult(gameId: gameId, state: initialState)
     }
 
     // MARK: Primitive 1 — record_play (US1/US2 · contracts/record_play.md)
 
     /// Returns a canned Card A (clear "6-3" ground out → confirm) or Card B (misplayed grounder
-    /// → open HitVsError judgment). Authority is mocked: an empty `ownerId` is rejected exactly
-    /// as the real core would (FR-020 / I5), so the UI's auth path is exercised.
+    /// → open HitVsError judgment). Returns the full `RecordPlayResult` — NOT a bare `GameState` —
+    /// so the caller can dispatch on `result.needs` and surface Card B when needed (P0 fix).
+    ///
+    /// Authority is mocked: an empty `ownerId` is rejected exactly as the real core would (FR-020/I5).
     public func recordPlay(
         gameId: String,
         ownerId: String,
         normalizedFacts: [String: String],
         correlationId: String
-    ) async throws -> GameState {
+    ) async throws -> RecordPlayResult {
         guard !ownerId.isEmpty else {
             throw CoreError.unauthorized("MockCore: empty ownerId is not the game owner (FR-020/I5)")
         }
 
-        // Build the rich FFI-shaped canned result (the shape the real core returns at H1) ...
+        // Build the rich FFI-shaped canned result then project to the protocol's RecordPlayResult.
         let ffiResult: MockFFI.RecordPlayResult = selectsJudgment(normalizedFacts)
             ? Self.cannedMisplayedGrounder()   // Card B — judgment
             : Self.cannedSixThreeGroundOut()   // Card A — deterministic
 
-        // ... then project it down to the Phase-1 `CoreClient.GameState` the protocol returns
-        // today. (At H1 the protocol's return type widens to the full FFI struct and this
-        // narrowing disappears.)
-        return Self.toClientState(gameId: gameId, ffiResult.statePreview)
+        return Self.toRecordPlayResult(gameId: gameId, ffiResult)
     }
 
     /// CARD A — deterministic "6-3" ground out (the ~85%). `Classification.deterministic`,
@@ -230,6 +275,7 @@ public final class MockCore: CoreClient {
     /// CARD B — misplayed grounder ⇒ **open** HitVsError judgment (the ~15%, V3 glance).
     /// The core REFUSES to decide (I2): status `.open`, a recommendation ("Looked like a clean
     /// single — Hit") + alternatives (Hit / Error). `chosen`/`decider` stay nil until the UI taps.
+    /// `decider` is `Actor?` (not `String?`) to match the Rust `Option<Actor>` boundary shape.
     static func cannedMisplayedGrounder() -> MockFFI.RecordPlayResult {
         let recommendation = MockFFI.Recommendation(
             call: MockFFI.Call(token: "hit", label: "Hit"),
@@ -245,7 +291,7 @@ public final class MockCore: CoreClient {
                 MockFFI.Call(token: "error:6", label: "Error (SS)")
             ],
             chosen: nil,
-            deciderId: nil
+            decider: nil                                     // open/unresolved — Actor? nil (I2)
         )
         return MockFFI.RecordPlayResult(
             recordedSeq: 2,
@@ -334,6 +380,71 @@ public final class MockCore: CoreClient {
         return Self.toClientState(gameId: gameId, preview)
     }
 
+    // MARK: Primitive 3b — confirm_play (FR-007 · read-verify-correct loop)
+
+    /// Canned confirm: applies the pending play and returns the confirmed state.
+    /// Authority guard matches the real core (empty ownerId → unauthorized, FR-020/I5).
+    public func confirmPlay(
+        gameId: String,
+        confirmsSeq: UInt64,
+        ownerId: String,
+        correlationId: String
+    ) async throws -> ConfirmPlayResult {
+        guard !ownerId.isEmpty else {
+            throw CoreError.unauthorized("MockCore: empty ownerId — confirmPlay requires an authenticated owner (FR-020/I5)")
+        }
+        // The canned confirmed state is the Card A state-preview applied (1 out, bases clear).
+        let confirmedState = GameState(
+            gameId: gameId,
+            inning: 1,
+            isTopHalf: true,
+            outs: 1
+        )
+        return ConfirmPlayResult(confirmedSeq: confirmsSeq, state: confirmedState)
+    }
+
+    // MARK: Primitive 3c — resolve_judgment (FR-011 · Card B resolution)
+
+    /// Canned judgment resolution: records the scorer's chosen call + decider identity (FR-011).
+    /// The mock never auto-resolves (I2) — this method is only reachable when the UI taps a call.
+    /// Authority guard matches the real core (empty ownerId → unauthorized, FR-020/I5).
+    public func resolveJudgment(
+        gameId: String,
+        decisionId: UInt64,
+        chosen: ScoringCall,
+        ownerId: String,
+        correlationId: String
+    ) async throws -> ResolveJudgmentResult {
+        guard !ownerId.isEmpty else {
+            throw CoreError.unauthorized("MockCore: empty ownerId — resolveJudgment requires an authenticated owner (FR-020/I5)")
+        }
+        // Build the resolved decision with the chosen call and the authenticated owner as decider.
+        let decider = Actor(kind: .human, id: ownerId, harnessVersion: nil)
+        let resolvedDecision = RecordPlayJudgment(
+            id: decisionId,
+            kind: .hitVsError,
+            status: .resolved,
+            recommendation: ScoringRecommendation(
+                call: ScoringCall(token: "hit", label: "Hit"),
+                oneLineReason: "Looked like a clean single up the middle"
+            ),
+            alternatives: [
+                ScoringCall(token: "hit", label: "Hit"),
+                ScoringCall(token: "error:6", label: "Error (SS)")
+            ],
+            chosen: chosen,
+            decider: decider
+        )
+        // Post-resolution state: batter-runner safely on 1st (or error scored, depending on call).
+        let resolvedState = GameState(
+            gameId: gameId,
+            inning: 1,
+            isTopHalf: true,
+            outs: 0
+        )
+        return ResolveJudgmentResult(decision: resolvedDecision, state: resolvedState)
+    }
+
     // MARK: Primitive 4 — finalize_scorecard (US3 · contracts/finalize_scorecard.md)
 
     /// Returns a small **sample reduced-Retrosheet** event file + a human Reisner book string.
@@ -374,11 +485,25 @@ public final class MockCore: CoreClient {
         return FinalizedScorebook(reisnerBook: reisnerBook, retrosheetEvents: retrosheet)
     }
 
-    // MARK: - Projection helper
-    //
-    // Narrows the rich `MockFFI.GameState` down to the Phase-1 `CoreClient.GameState` the
-    // protocol returns today. Removed at H1 when the protocol adopts the full FFI struct.
+    // MARK: - Projection helpers
 
+    /// Projects a `MockFFI.RecordPlayResult` to the protocol-level `RecordPlayResult`.
+    /// This is the **correct** projection — it carries all fields including `classification`,
+    /// `needs`, and `judgment`, so Card B is reachable. (Replacing the old `toClientState` call
+    /// that narrowed to bare GameState, which silently dropped `needs`/`judgment`.)
+    static func toRecordPlayResult(gameId: String, _ r: MockFFI.RecordPlayResult) -> RecordPlayResult {
+        RecordPlayResult(
+            recordedSeq: r.recordedSeq,
+            classification: toClientClassification(r.classification),
+            needs: toClientNeeds(r.needs),
+            judgment: r.judgment.map { toClientJudgment($0) },
+            reisner: toClientReisner(r.reisner),
+            statePreview: toClientState(gameId: gameId, r.statePreview)
+        )
+    }
+
+    /// Narrows the rich `MockFFI.GameState` to the Phase-1 `CoreClient.GameState`.
+    /// Still used by `advanceRunner` and `correctEvent` which return bare `GameState`.
     static func toClientState(gameId: String, _ s: MockFFI.GameState) -> GameState {
         GameState(
             gameId: gameId,
@@ -386,5 +511,79 @@ public final class MockCore: CoreClient {
             isTopHalf: s.half == .top,
             outs: s.outs
         )
+    }
+
+    private static func toClientClassification(_ c: MockFFI.Classification) -> RecordPlayClassification {
+        switch c {
+        case .deterministic:          return .deterministic
+        case .judgment(let kind):     return .judgment(toClientJudgmentKind(kind))
+        case .outOfFormat(let msg):   return .outOfFormat(msg)
+        }
+    }
+
+    private static func toClientJudgmentKind(_ k: MockFFI.JudgmentKind) -> JudgmentKind {
+        switch k {
+        case .hitVsError:         return .hitVsError
+        case .earnedVsUnearned:   return .earnedVsUnearned
+        case .contestedCredit:    return .contestedCredit
+        case .ambiguousAdvance:   return .ambiguousAdvance
+        }
+    }
+
+    private static func toClientNeeds(_ n: MockFFI.Needs) -> RecordPlayNeeds {
+        switch n {
+        case .none:      return .none
+        case .confirm:   return .confirm
+        case .clarify:   return .clarify
+        case .judgment:  return .judgment
+        }
+    }
+
+    private static func toClientJudgment(_ d: MockFFI.JudgmentDecision) -> RecordPlayJudgment {
+        RecordPlayJudgment(
+            id: d.id,
+            kind: toClientJudgmentKind(d.kind),
+            status: toClientJudgmentStatus(d.status),
+            recommendation: ScoringRecommendation(
+                call: ScoringCall(token: d.recommendation.call.token, label: d.recommendation.call.label),
+                oneLineReason: d.recommendation.oneLineReason
+            ),
+            alternatives: d.alternatives.map { ScoringCall(token: $0.token, label: $0.label) },
+            chosen: d.chosen.map { ScoringCall(token: $0.token, label: $0.label) },
+            decider: d.decider.map { toClientActor($0) }
+        )
+    }
+
+    private static func toClientJudgmentStatus(_ s: MockFFI.JudgmentStatus) -> JudgmentStatus {
+        switch s {
+        case .open:      return .open
+        case .resolved:  return .resolved
+        case .pending:   return .pending
+        }
+    }
+
+    private static func toClientActor(_ a: MockFFI.Actor) -> Actor {
+        Actor(
+            kind: a.kind == .human ? .human : .agent,
+            id: a.id,
+            harnessVersion: a.harnessVersion
+        )
+    }
+
+    private static func toClientReisner(_ r: MockFFI.ReisnerCell) -> ReisnerCellSnapshot {
+        ReisnerCellSnapshot(
+            situationDiamond: r.situationDiamond,
+            catalystSymbols: r.catalystSymbols,
+            pitchMarks: r.pitchMarks,
+            runnerFate: toClientRunnerFate(r.runnerFate)
+        )
+    }
+
+    private static func toClientRunnerFate(_ f: MockFFI.RunnerFate) -> RunnerFate {
+        switch f {
+        case .scored(let rbi):   return .scored(rbi: rbi)
+        case .putOut(let n):     return .putOut(n: n)
+        case .leftOnBase:        return .leftOnBase
+        }
     }
 }

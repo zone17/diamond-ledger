@@ -1,6 +1,6 @@
 # Eval-Harness Interface Contract
 
-**Version**: 1.0.0  
+**Version**: 1.1.0  
 **Task**: T010 (Foundational Phase — Phase 2 unblocking interface)  
 **Authority**: [`specs/001-voice-scorebook-core/tasks.md`](../specs/001-voice-scorebook-core/tasks.md) stories A9, C3, C4;
 [`research.md`](../specs/001-voice-scorebook-core/research.md) D4 (cwevent gate), D6 (gold);
@@ -138,8 +138,36 @@ Each line is one JSON object with exactly these top-level keys:
   // Human-readable description of why this is a judgment play.
   // Not consumed by runners; used for corpus review and audit.
 
-  "source": "synthetic"
+  "source": "synthetic",
   // "synthetic" (Squad A seed) | "real" (Squad C real corpus)
+
+  // ── Optional: half-inning error/passed-ball context (required for EarnedVsUnearned) ──
+  "inning_error_context": {
+    "has_error_or_pb": true
+    // true  — the current half-inning contains at least one prior defensive error
+    //         or passed ball, so any run that scores MUST be flagged PENDING
+    //         (data-model §6 invariant I3; Rule 9.16 counterfactual cannot be
+    //         resolved from per-play facts alone).
+    // false — no error or passed ball has occurred in this half-inning; this field
+    //         is present but does not trigger the EarnedVsUnearned judgment.
+    //
+    // REQUIRED for entries with trigger = "EarnedVsUnearned".
+    // OPTIONAL (may be omitted) for all other trigger types.
+    //
+    // Rationale: NormalizedPlay / SituationDiamond carries only per-play facts.
+    // The inning-level context (has a prior E or PB occurred this half-inning?)
+    // is NOT encoded in the play itself.  classify() cannot mechanically derive
+    // the EarnedVsUnearned trigger without this field — without it, the entries
+    // would be underspecified and the SC-003 gate would be vacuous for that
+    // trigger type.  The runner injects this field so classify() can read it
+    // as a normalized input alongside the per-play facts.
+  },
+
+  // ── Optional: synthetic authorship flag ───────────────────────────────────
+  "synthetic": true
+  // true  — this entry was synthetically authored by Squad A (seed corpus, T011).
+  // false / absent — real corpus entry produced by Squad C (T063).
+  // Not consumed by runners; used for corpus provenance audit and honesty caveat.
 }
 ```
 
@@ -500,6 +528,13 @@ Once `meta.json.h3_ready == true`:
 ---
 
 ## 5. Versioning and Change Control
+
+### Change log
+
+| Version | Date | Change |
+|---------|------|--------|
+| 1.1.0 | 2026-06-01 | Added optional `inning_error_context` field (required for `EarnedVsUnearned` entries) so `classify()` can mechanically derive the half-inning error/passed-ball trigger from normalized inputs. Added optional `synthetic` boolean field for corpus provenance. Both additions are backward-compatible; existing entries without these fields remain valid for non-`EarnedVsUnearned` triggers. |
+| 1.0.0 | 2026-06-01 | Initial frozen interface. |
 
 This file is a **frozen interface** once the foundational phase checkpoint is reached (T007–T012 all
 committed).  Squads A and B build against it; Squad C produces data to it.
