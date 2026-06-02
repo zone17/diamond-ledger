@@ -2,7 +2,7 @@
 
 > **Fast-orientation single source.** Load this to get current. The binding authority is the
 > constitution (`.specify/memory/constitution.md`); this file is the map + index, kept in sync with
-> `DECISIONS.md` and `docs/solutions/`. Last updated 2026-06-01 (plan 001 + ADR-0007).
+> `DECISIONS.md` and `docs/solutions/`. Last updated 2026-06-02 (DL-134 iOS sheet-onDismiss learning).
 
 ## 1. What this is
 
@@ -94,6 +94,7 @@ the underlying detail docs.
 | Hook command-string matching pitfalls | `best-practices/hook-command-string-matching-pitfalls.md` |
 | `/watch-ci` gate choreography (+ `skipped`≠`failure`) | `workflow-issues/watch-ci-gate-choreography.md` |
 | Private-repo branch-protection fallback · unauthored template root commit | `conventions/` |
+| SwiftUI swipe-dismissible `.sheet` → reconcile owner state in `onDismiss` (gesture-dismiss skips button handlers) | `ui-bugs/swiftui-sheet-ondismiss-state-reconciliation.md` |
 
 ## 7. Anti-patterns (do not reintroduce)
 
