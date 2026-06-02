@@ -32,6 +32,7 @@ the fast path. Add a row when a new P2/P3 learning is compounded.
 | 6 | Spec-coherence probe (break a spec before building) | P2 | [design-patterns/spec-coherence-probe](../design-patterns/spec-coherence-probe.md) |
 | 7 | Private-repo branch-protection fallback (hooks, not rulesets) | P3 | [conventions/private-repo-branch-protection-fallback](../conventions/private-repo-branch-protection-fallback.md) |
 | 8 | Verify generated code with the real toolchain (not static review); Cargo workspace + advisory-CI gotchas | P2 | [best-practices/verify-generated-code-with-real-toolchain](../best-practices/verify-generated-code-with-real-toolchain.md) |
+| 9 | Parallel-squad integration: advisory CI masks merge failures · worktrees outside the repo · gate the cardinal invariant not a proxy | P2 | [workflow-issues/parallel-squad-integration](../workflow-issues/parallel-squad-integration.md) |
 
 ## Checklists (fast path)
 
