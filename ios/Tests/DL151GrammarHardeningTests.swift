@@ -8,6 +8,10 @@
 ///   1. Misplay routing → Card B.  Transcripts with misplay verbs (misplayed / booted / bobbled /
 ///      muffed / dropped) on a batter who REACHED must emit `reached_on_error` facts, and those
 ///      facts must build the misplayedGrounder NormalizedPlay the real core classifies HitVsError.
+///      Adversarial cases (P1a/P1b code-review fixes, DL-151):
+///        - P1a: "dropped third strike, batter reached first" → NOT reached_on_error (K+WP is OOG).
+///        - P1b: "dropped fly ball in center, runner scored safely" → NOT reached_on_error (batter out).
+///        - P2a: "dropped in left field, batter safe at first" → error_position "7" not "6".
 ///   2. Deterministic fielder order.  "ground ball to short, threw him out at first" must ALWAYS
 ///      produce fielders "63" (short=6 precedes first=3 in the transcript), never "36".
 ///   3. Reduced-grammar coverage.  Groundout, flyout, strikeout(looking), walk, single, double,
@@ -115,6 +119,69 @@ final class DL151MisplayRoutingTests: XCTestCase {
         } else {
             XCTFail("misplayedGrounder must include a batter advance")
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL CASES — P1a / P1b code-review bugs (DL-151 follow-up)
+    // -------------------------------------------------------------------------
+
+    // P1a — dropped third strike: "dropped third strike, batter reached first"
+    // MUST NOT produce reached_on_error (false Card B).
+    // K+WP/K+PB is out-of-grammar in v1 → must throw outOfGrammar (or at minimum NOT card B).
+    // The misplay verb ("dropped") + bare-reached signal ("reached first") previously fired
+    // tryMisplay before the third-strike guard was added. FR-008/Article VII: no silent judgment.
+    func test_P1a_droppedThirdStrike_batterReachedFirst_isNotCardB() {
+        XCTAssertThrowsError(try parse("dropped third strike, batter reached first")) { e in
+            // Must NOT silently emit reached_on_error — either outOfGrammar or ambiguous is fine.
+            if case ParseError.outOfGrammar = e { return }
+            if case ParseError.ambiguous = e { return }
+            // If it somehow succeeded (should never happen after fix), fail explicitly.
+            XCTFail("P1a: dropped-third-strike must NOT succeed — got \(e)")
+        }
+        // Belt-and-suspenders: parse as Result and assert the fact map never carries reached_on_error.
+        let result = Result { try parse("dropped third strike, batter reached first") }
+        if case .success(let facts) = result {
+            XCTAssertNotEqual(facts["batter_result"], "reached_on_error",
+                              "P1a: dropped third strike must NEVER emit reached_on_error (false Card B)")
+        }
+    }
+
+    // P1b — runner safe, batter out: "dropped fly ball in center, runner scored safely"
+    // The batter was OUT (the fielder dropped the fly ball after catch, runner tagged and scored).
+    // Bare "safely" ≈ "safe" but refers to the RUNNER, not the batter.
+    // MUST NOT produce reached_on_error → must be outOfGrammar (batter was out, no Card B).
+    func test_P1b_droppedFlyBall_runnerScored_batterWasOut_isNotCardB() {
+        let result = Result { try parse("dropped fly ball in center, runner scored safely") }
+        switch result {
+        case .success(let facts):
+            XCTAssertNotEqual(facts["batter_result"], "reached_on_error",
+                              "P1b: runner-safe transcript must NOT produce reached_on_error (batter was out)")
+        case .failure:
+            // outOfGrammar or ambiguous — both acceptable (batter was out, no v1 production).
+            break
+        }
+    }
+
+    // P1b variant — "struck out, runner safe at third" (bare "safe" refers to runner, not batter).
+    // Another case where bare-"safe" would have triggered the old tryMisplay but must not now.
+    // No misplay verb here so tryMisplay wouldn't fire anyway, but tests the invariant stays clean.
+    func test_P1b_noMisplayVerb_runnerSafe_doesNotRouteToMisplay() throws {
+        // "struck out, runner safe at third" → strikeout, not reached_on_error.
+        let facts = try parse("struck out, runner safe at third")
+        XCTAssertEqual(facts["batter_result"], "strikeout",
+                       "P1b: no misplay verb → must not produce reached_on_error even with 'safe at third'")
+        XCTAssertNotEqual(facts["batter_result"], "reached_on_error")
+    }
+
+    // P2a — outfield misplay: "dropped in left field, batter safe at first"
+    // error_position must be "7" (left field), not "6" (shortstop default).
+    // The old tryMisplay called parseInfieldPosition only → defaulted to "6" for any outfield drop.
+    func test_P2a_droppedInLeftField_batterSafe_errorPositionIsLeftField() throws {
+        let facts = try parse("dropped in left field, batter safe at first")
+        XCTAssertEqual(facts["batter_result"], "reached_on_error",
+                       "P2a: dropped in left field + batter safe must be reached_on_error")
+        XCTAssertEqual(facts["error_position"], "7",
+                       "P2a: outfield drop in left field must record error_position '7', not '6' (SS default)")
     }
 }
 

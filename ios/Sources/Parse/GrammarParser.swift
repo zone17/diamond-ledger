@@ -15,7 +15,7 @@
 ///   are thrown as `ParseError.outOfGrammar` for manual entry — never fabricated.
 ///
 /// Reduced play set (the common ~95%):
-///   Misplay/error: "misplayed/booted/bobbled/muffed/dropped ... reached" → reached_on_error (Card B)
+///   Misplay/error: "misplayed/booted/bobbled/muffed/dropped + batter-specific reached" → reached_on_error (Card B)
 ///   Groundouts:  "ground ball to [pos], threw him out at [pos]"     → fielders e.g. "63"
 ///   Flyouts:     "fly ball to [pos]", "caught by [pos]"             → fielder e.g. "8"
 ///   Strikeouts:  "struck out", "strikeout", "K"                     → K / Kl
@@ -129,35 +129,73 @@ public struct GrammarParser: Sendable {
     //
     // Misplay verbs that indicate the batter REACHED base (error, not out):
     //   "misplayed grounder to short, reached first"
-    //   "booted by short"
-    //   "bobbled the grounder, safe at first"
+    //   "booted by short, batter safe at first"
+    //   "bobbled the grounder, batter safe at first"
     //   "muffed the ball, batter safe"
     //   "dropped it, batter reaches first"
     //
-    // For a match we need BOTH:
-    //   (a) a misplay verb (misplayed / booted / bobbled / muffed / dropped), AND
-    //   (b) the batter reaching base (reached / safe / on base)
+    // Three-signal guard (P1a + P1b code-review fixes, DL-151):
     //
-    // Without (b), "dropped the throw to first, out at first" is still an out — not a misplay
-    // that let the batter reach. If neither (a) nor (b) is present, return nil so tryGroundout
-    // can handle a plain "grounder" correctly.
+    //   (a) A misplay verb: misplayed / booted / bobbled / muffed / dropped
+    //
+    //   (b) The BATTER specifically reached — NOT a bare "safe" / "reached" anywhere in the
+    //       transcript (that could refer to a runner, not the batter). Accepted batter-specific
+    //       patterns:
+    //         "batter safe", "batter reached", "batter reach"
+    //         "safe at first", "safe at second", "safe at third"
+    //         "reached first", "reached second", "reached third", "reached base"
+    //       A bare "reached"/"safe"/"on base" without a batter-specific anchor is rejected.
+    //       Rationale: "dropped fly ball in center, runner scored safely" → "safely" ≈ "safe"
+    //       but the batter was out — the bare-safe guard was the P1b false-Card-B root cause.
+    //
+    //   (c) NOT a dropped-third-strike context: "third strike" / "strike three" / "strike 3"
+    //       in the same transcript → return nil (K+WP/K+PB is out-of-grammar in v1; routing it
+    //       to reached_on_error was the P1a false-Card-B root cause).
+    //
+    //   (d) NOT a fly-ball context: "fly ball" / "flyout" / "fly out" → return nil. A fielder
+    //       dropping a fly ball where the batter reaches would be described differently (e.g.
+    //       "dropped in left, batter safe at first"); a "dropped fly ball" transcript almost
+    //       always means the batter reached on the catch attempt, which is a different scorer
+    //       judgment path — leave it out-of-grammar so the scorer can use manual entry.
     //
     // Emits: ["batter_result": "reached_on_error", "error_position": "<pos>"]
-    // These are the SAME keys tryError emits; FactBridge.normalizedPlay maps them to
-    // the misplayedGrounder(at:) fact pattern that the real core classifies as HitVsError (Card B).
+    // FactBridge maps this to misplayedGrounder(at:) → real core classifies HitVsError (Card B).
+    //
+    // P2a fix: use parseInfieldPosition ?? parseOutfieldPosition so an outfield drop (e.g.
+    // "dropped in left field, batter safe at first") records position 7 not 6 (SS default).
     private func tryMisplay(_ s: String) -> NormalizedPlay? {
+        // (a) Require a misplay verb.
         let hasMisplayVerb = s.contains("misplayed") || s.contains("booted")
                           || s.contains("bobbled")   || s.contains("muffed")
                           || s.contains("dropped")
         guard hasMisplayVerb else { return nil }
 
-        // The batter must have REACHED — otherwise a "dropped throw, out at first" is an out.
-        // Accept "reached", "safe", "on base", or "reach" (verb form without -ed).
-        let batterReached = s.contains("reached") || s.contains("safe")
-                         || s.contains("on base")  || s.contains("reach")
+        // (c) P1a guard: dropped-third-strike context → out-of-grammar in v1, not Card B.
+        // "dropped third strike, batter reached first" is K+WP/K+PB — no v1 production.
+        if s.contains("third strike") || s.contains("strike three") || s.contains("strike 3") {
+            return nil
+        }
+
+        // (d) Fly-ball context guard: a "dropped fly ball" where the batter reached is a
+        // distinct scorer judgment; leave it for manual entry (outOfGrammar) rather than
+        // silently mis-classifying it as a reached-on-grounder-error (FR-008 / Article VII).
+        if s.contains("fly ball") || s.contains("flyout") || s.contains("fly out") {
+            return nil
+        }
+
+        // (b) P1b guard: the BATTER must specifically have reached, not just any runner.
+        // Anchored patterns only — bare "safe" / "reached" anywhere in the string is
+        // insufficient and was the root cause of the runner-safe false-Card-B.
+        let batterReachedAnchors: [String] = [
+            "batter safe", "batter reached", "batter reach",
+            "safe at first", "safe at second", "safe at third",
+            "reached first", "reached second", "reached third", "reached base",
+        ]
+        let batterReached = batterReachedAnchors.contains { s.contains($0) }
         guard batterReached else { return nil }
 
-        let pos = parseInfieldPosition(s) ?? "6"  // default: shortstop
+        // P2a: try infield position first, then outfield (a drop in left field → pos "7").
+        let pos = parseInfieldPosition(s) ?? parseOutfieldPosition(s) ?? "6"
         return ["batter_result": "reached_on_error", "error_position": pos]
     }
 
