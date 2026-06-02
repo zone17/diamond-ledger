@@ -16,7 +16,7 @@ use std::env;
 use std::path::PathBuf;
 
 use dl_core::ffi::{
-    Actor, ActorKind, Call, ConfirmPlayRequest, CoreApi, CreateGameRequest,
+    Actor, ActorKind, Call, ConfirmPlayRequest, CoreApi, CorrectEventRequest, CreateGameRequest,
     FinalizeMode, FinalizeRequest, GameId, PlayInput, RecordPlayRequest,
     ResolveJudgmentRequest, Seq, Team,
 };
@@ -81,7 +81,12 @@ fn save_core(core: &DiamondCore) -> Result<(), String> {
 fn is_mutating(cmd: &str) -> bool {
     matches!(
         cmd,
-        "new-game" | "record-play" | "confirm-play" | "resolve-judgment" | "finalize"
+        "new-game"
+            | "record-play"
+            | "confirm-play"
+            | "resolve-judgment"
+            | "correct-event"
+            | "finalize"
     )
 }
 
@@ -100,6 +105,7 @@ fn usage() {
     eprintln!("  dl record-play <game-id> <normalized-play-json> <owner-id>");
     eprintln!("  dl confirm-play <game-id> <seq> <owner-id>");
     eprintln!("  dl resolve-judgment <game-id> <decision-id> <call-token> <call-label> <owner-id>");
+    eprintln!("  dl correct-event <game-id> <corrects-seq> <amended-play-json> <owner-id>");
     eprintln!("  dl finalize <game-id> <owner-id>");
     eprintln!("  dl state <game-id>");
     eprintln!();
@@ -225,6 +231,33 @@ fn run(core: &DiamondCore, args: &[String]) -> Result<serde_json::Value, String>
                 actor: owner_actor(owner_id),
             };
             core.resolve_judgment(req)
+                .map(|r| serde_json::to_value(r).unwrap())
+                .map_err(|e| format!("{:?}", e))
+        }
+        "correct-event" => {
+            // Amend a prior play (US4 / FR-012–014). Append-only: this emits an
+            // EventCorrected referencing <corrects-seq> and re-projects downstream state;
+            // the original recorded play is never mutated. Agent/CLI parity (Art. II).
+            if args.len() < 6 {
+                return Err(
+                    "Usage: dl correct-event <game-id> <corrects-seq> <amended-play-json> <owner-id>"
+                        .into(),
+                );
+            }
+            let game_id = GameId(args[2].parse::<u64>().map_err(|e| e.to_string())?);
+            let corrects_seq = args[3].parse::<u64>().map_err(|e| e.to_string())?;
+            let play_json = &args[4];
+            let owner_id = &args[5];
+            let play: NormalizedPlay = serde_json::from_str(play_json)
+                .map_err(|e| format!("Invalid amended play JSON: {}", e))?;
+            let req = CorrectEventRequest {
+                game_id,
+                corrects_seq: Seq(corrects_seq),
+                amended: PlayInput::Normalized(play),
+                idempotency_key: format!("correct-{}-{}-{}", game_id.0, corrects_seq, uuid_like()),
+                actor: owner_actor(owner_id),
+            };
+            core.correct_event(req)
                 .map(|r| serde_json::to_value(r).unwrap())
                 .map_err(|e| format!("{:?}", e))
         }
