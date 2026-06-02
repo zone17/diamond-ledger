@@ -79,6 +79,33 @@ fails**. Reading only the run-level conclusion would have hidden the failing com
    agent picked 1.83; `cargo check` (lib) passed, but `proptest`'s MSRV is 1.85+, so the first test
    would have broken the pin. Verify `--all-targets` on the pinned version and bump deliberately.
 
+5. **iOS/Swift IS locally verifiable — drive `xcodebuild` yourself; don't outsource the build loop to
+   screenshots.** Earlier this project assumed agent-authored Swift was "compile-untested" because the
+   environment seemed to lack Xcode. It didn't — `xcode-select` was pointed at the **Command Line
+   Tools** (which `git`/`cc` want, but which lack `xcodebuild` + the iOS SDK). Point `DEVELOPER_DIR` at
+   the full Xcode and you can build + test on a simulator:
+   ```bash
+   export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer   # NOT CommandLineTools
+   xcrun simctl list runtimes | grep iOS          # find an installed runtime
+   xcodebuild -scheme <Scheme> -showdestinations  # find an EXISTING device (e.g. iPhone 17, not 16)
+   xcodebuild -scheme <Scheme> -destination 'platform=iOS Simulator,name=iPhone 17' build
+   xcodebuild -scheme <Scheme> -destination 'platform=iOS Simulator,name=iPhone 17' test
+   ```
+   This turned a multi-round screenshot loop into a tight local iterate-fix-rebuild loop.
+   **Swift 6 first-build gotchas** (all caught only by the real build):
+   - *Wrong destination is the loudest false alarm:* an iOS-only package (`platforms: [.iOS(...)]`,
+     no `.macOS`) built for **"My Mac"** reports ~every modern SwiftUI API (`@Observable`, `App`,
+     `WindowGroup`, `@Environment`) as *"only available in macOS N"*. **Build for an iOS Simulator** —
+     all of them vanish; it's not a code problem.
+   - *Strict concurrency:* a non-`Sendable` value (e.g. a `~Copyable` `AudioBuffer`) can't be passed
+     into an `actor`-isolated `async` protocol method → conform the value type to `Sendable` (Xcode's
+     fix-it is reliable) when its fields are all `Sendable`.
+   - *Real type errors hide behind the noise:* `Color.tint` doesn't exist (`.tint` is a modifier) →
+     `.accentColor`; a substring grammar rule matching `"sacrifice"` conflated "sacrifice **fly**"
+     with a sac-bunt → require the distinguishing token (`"bunt"`).
+   - Gitignore Xcode per-user state (`**/xcuserdata/`, `*.xcuserstate`) — `git add -A` will otherwise
+     commit another developer's IDE state.
+
 ## Why This Matters
 
 A green-looking review plus a green-looking CI run gave false confidence on code that did not compile.
