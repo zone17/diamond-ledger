@@ -131,7 +131,7 @@ struct CardBView: View {
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
-                    Text(""\(j.recommendation.call.label)"")
+                    Text("\"\(j.recommendation.call.label)\"")
                         .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(.primary)
                     Text(j.recommendation.oneLineReason)
