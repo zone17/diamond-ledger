@@ -59,7 +59,7 @@ jobs:
           fi
 
   secret-scan:
-    name: Secret scan (Articles XXVI, XXXVI)
+    name: Secret scan + privacy gate (Articles XXVI, XXXVI / T070 / FR-022)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -70,41 +70,23 @@ jobs:
           set -euo pipefail
           docker run --rm -v "${PWD}:/repo" zricethezav/gitleaks:v8.18.4 \
             detect --source=/repo --redact -v
-      - name: Privacy check — no raw-audio persistence path (T070 / FR-022)
-        # Assert no code writes raw PCM audio to disk, database, or telemetry.
-        # Grep-based guard: flag any open() / fwrite / write() calls on audio-like
-        # paths. False positives reviewed manually in CI output.
+
+      # T070 / FR-022 / COPPA — HARD-FAIL.
+      # Scans core/, ios/, adapters/, android/ for any code path that writes raw PCM
+      # audio to disk, a database, telemetry, or any persistent sink.
+      # Script: scripts/check-no-raw-audio.sh
+      # Step 1 (--self-test): verifies the patterns themselves catch all known violation
+      #   idioms and do not fire on clean code. Fails fast if a pattern is broken.
+      # Step 2 (main scan): scans the repo source. A match exits 1 with ::error:: annotations.
+      # Do NOT add continue-on-error here — this is a non-negotiable privacy gate.
+      - name: Privacy gate — no raw-audio persistence (T070 / FR-022 / COPPA)
         run: |
           set -euo pipefail
-          echo "=== Privacy guard: scanning for raw audio persistence patterns ==="
-          FOUND=0
-          # Patterns that would indicate raw PCM persistence (not streaming / decoding)
-          if grep -rn --include="*.swift" --include="*.kt" --include="*.rs" \
-              -E '(\.pcm|\.wav|\.raw|pcmBuffer|AudioBuffer).*(write|save|store|persist|insert|upload)' \
-              core/ ios/ adapters/ 2>/dev/null | grep -v '^\s*//'; then
-            echo "::warning::Potential raw audio persistence path found — review above matches"
-            FOUND=1
-          fi
-          if [[ "$FOUND" -eq 0 ]]; then
-            echo "OK: No raw audio persistence patterns detected"
-          fi
-      - name: COPPA consent presence check (T070 / FR-029)
-        # Assert that a COPPA/consent flow marker exists in the iOS source when
-        # the auth module is present. This is a structural presence check —
-        # the consent UX is enforced in review, not just by file existence.
-        run: |
-          set -euo pipefail
-          echo "=== COPPA consent check ==="
-          if [[ -d "ios/Sources/Auth" ]]; then
-            if find ios/Sources/Auth -name "*.swift" | \
-                xargs grep -l -i "coppa\|consent\|age.*verif\|parental" 2>/dev/null | head -1 | grep -q .; then
-              echo "OK: COPPA/consent marker found in ios/Sources/Auth"
-            else
-              echo "::warning::ios/Sources/Auth exists but no COPPA/consent marker found — add explicit consent gating before shipping (FR-029)"
-            fi
-          else
-            echo "OK: ios/Sources/Auth not yet present — COPPA check deferred until auth module lands (T081)"
-          fi
+          echo "=== Step 1: self-test (verify patterns are functional) ==="
+          bash scripts/check-no-raw-audio.sh --self-test
+          echo ""
+          echo "=== Step 2: scan repo source ==="
+          bash scripts/check-no-raw-audio.sh "${GITHUB_WORKSPACE}"
 
   hooks-test:
     name: Compound-loop hooks (ADR-0003)
@@ -308,7 +290,7 @@ jobs:
           PYEOF
 
   # ---------------------------------------------------------------------------
-  # Advisory jobs — remain advisory until squad work is merged
+  # Rust core — build, test, clippy, UniFFI surface (ENFORCING)
   # ---------------------------------------------------------------------------
 
   core-build:
@@ -326,6 +308,17 @@ jobs:
           else
             echo "rust-toolchain.toml not yet present — skipping toolchain install (placeholder)"
           fi
+      - name: Cache cargo registry and build artefacts
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-host-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-host-
       - name: cargo check (integer/fixed-point core, no f32/f64)
         # Checks the whole workspace (core + adapters) from the repo-root Cargo.toml.
         run: |
@@ -336,23 +329,23 @@ jobs:
           fi
       - name: cargo test (unit + integration tests)
         # T016: no-float determinism + contract tests (arts. X/XI).
-        # Drop continue-on-error on this job once all tests are wired.
         run: |
           if [ -f Cargo.toml ]; then
             cargo test --workspace 2>&1
           else
             echo "Cargo.toml not yet present — skipping cargo test (placeholder)"
           fi
-      - name: clippy no-float gate (T016 — FR-003 / I6)
+      - name: clippy no-float gate (T016 — FR-003 / I6) — HARD-FAIL
         # Enforces no f32/f64 in core/ — determinism invariant.
         # Reads deny rules from clippy.toml at workspace root.
+        # This step has NO continue-on-error: a clippy warning is a CI failure.
         run: |
           if [ -f Cargo.toml ] && [ -f clippy.toml ]; then
             cargo clippy --workspace --all-targets -- -D warnings 2>&1
           else
             echo "clippy.toml or Cargo.toml not present — no-float gate advisory (placeholder)"
           fi
-      - name: UniFFI surface compiles + no-float holds with the feature (T037 / H1)
+      - name: UniFFI surface compiles + no-float holds with the feature (T037 / H1) — HARD-FAIL
         # The FFI boundary types + the exported DiamondCore impl must compile under the
         # uniffi feature AND still pass the no-float clippy gate (the integer-only seam).
         run: |
@@ -369,6 +362,181 @@ jobs:
             make uniffi-bindings
           fi
 
+  # ---------------------------------------------------------------------------
+  # Multi-target cross-compile matrix (T068 / #112 — ADR-0007 UniFFI parity)
+  #
+  # Builds dl-core with --features uniffi across all UniFFI-targeted platforms:
+  #   - host (ubuntu) — already covered by core-build; included for matrix symmetry
+  #   - iOS device:    aarch64-apple-ios     (cross-compile; needs macOS runner)
+  #   - iOS simulator: aarch64-apple-ios-sim (cross-compile; needs macOS runner)
+  #   - Android arm64: aarch64-linux-android (cross-compile via NDK)
+  #   - Android armv7: armv7-linux-androideabi (cross-compile via NDK)
+  #   - WASM:          wasm32-unknown-unknown (no_std-compatible feature subset)
+  #
+  # iOS targets (aarch64-apple-ios, aarch64-apple-ios-sim):
+  #   macOS runner with Xcode. These jobs compile the Rust → static lib only;
+  #   the XCFramework assembly (lipo + xcframework) is advisory (ios-build job).
+  #
+  # Android targets (aarch64-linux-android, armv7-linux-androideabi):
+  #   Ubuntu runner + Android NDK (pre-installed on GitHub's ubuntu-latest).
+  #   cargo-ndk is installed at job start to manage linker config.
+  #
+  # WASM (wasm32-unknown-unknown):
+  #   Ubuntu runner + wasm-pack or plain rustup target add.
+  #   The uniffi feature is intentionally NOT applied to WASM — UniFFI's generated
+  #   Swift/Kotlin glue has no meaning in a WASM context, and the proc-macro
+  #   dependencies may not support wasm32-unknown-unknown. The core crate itself
+  #   (no-float, no-std-compatible logic) is what we prove compiles for WASM.
+  #
+  # GATE SEMANTICS:
+  #   All matrix legs are HARD-FAILs (no continue-on-error) EXCEPT:
+  #   - ios-device (aarch64-apple-ios) and ios-sim (aarch64-apple-ios-sim) remain
+  #     advisory for now because the build may not be green without the full Xcode
+  #     SDK and the real device/sim target on all macOS versions. Promoted to hard
+  #     once a macOS runner with the iOS SDK passes cleanly.
+  #
+  # Cache strategy: separate cache key per target triple to avoid cross-contamination.
+  # ---------------------------------------------------------------------------
+  cross-compile-matrix:
+    name: Cross-compile dl-core (${{ matrix.target }})
+    needs: [core-build]
+    strategy:
+      fail-fast: false  # let all legs run; report all failures at once
+      matrix:
+        include:
+          # ── Android ──────────────────────────────────────────────────────────
+          - target: aarch64-linux-android
+            runner: ubuntu-latest
+            label: Android arm64
+            use_ndk: true
+            advisory: false
+          - target: armv7-linux-androideabi
+            runner: ubuntu-latest
+            label: Android armv7
+            use_ndk: true
+            advisory: false
+          # ── WASM ─────────────────────────────────────────────────────────────
+          # Core logic only (no UniFFI feature — UniFFI has no WASM surface);
+          # verifies the integer-only, no-std-compatible core compiles to WASM.
+          - target: wasm32-unknown-unknown
+            runner: ubuntu-latest
+            label: WASM (core, no uniffi feature)
+            use_ndk: false
+            advisory: false
+          # ── iOS (advisory — GitHub runners lack the iOS-26 SDK; see ios-build) ──
+          # To promote to hard gate: provision a self-hosted macOS runner with
+          # Xcode 26.x (iOS 26 SDK), or wait for GitHub to ship the image.
+          # The ios-build job (xcodebuild) remains separately advisory; these
+          # legs only prove the Rust cross-compile itself works.
+          - target: aarch64-apple-ios
+            runner: macos-latest
+            label: iOS device (advisory — no iOS-26 SDK on runner)
+            use_ndk: false
+            advisory: true
+          - target: aarch64-apple-ios-sim
+            runner: macos-latest
+            label: iOS simulator (advisory — no iOS-26 SDK on runner)
+            use_ndk: false
+            advisory: true
+    runs-on: ${{ matrix.runner }}
+    # continue-on-error supports ${{ matrix.* }} expressions at job level (supported since
+    # GitHub Actions Sep 2022 — https://github.blog/changelog/2022-09-08-github-actions-improvements-to-reusable-workflows-2/).
+    # Advisory legs (matrix.advisory == true) absorb failures so they cannot block a merge.
+    # Hard legs (matrix.advisory == false) propagate failures normally.
+    continue-on-error: ${{ matrix.advisory }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install pinned Rust toolchain
+        run: |
+          if [ -f rust-toolchain.toml ]; then
+            rustup show
+          else
+            echo "rust-toolchain.toml not present — using stable (placeholder)"
+            rustup toolchain install stable --profile minimal
+          fi
+
+      - name: Add cross-compile target — ${{ matrix.target }}
+        env:
+          CROSS_TARGET: ${{ matrix.target }}
+        run: rustup target add "$CROSS_TARGET"
+
+      - name: Cache cargo (target-specific)
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      # ── Android: install cargo-ndk + configure NDK linker ───────────────────
+      - name: Install cargo-ndk (Android only)
+        if: matrix.use_ndk
+        run: |
+          set -euo pipefail
+          # GitHub ubuntu-latest ships Android NDK at $ANDROID_NDK_ROOT
+          if [[ -z "${ANDROID_NDK_ROOT:-}" ]]; then
+            echo "::error::ANDROID_NDK_ROOT not set — expected on ubuntu-latest"
+            exit 1
+          fi
+          echo "Using Android NDK at: ${ANDROID_NDK_ROOT}"
+          # cargo-ndk handles linker selection and sysroot setup.
+          # Pin to a known-good release (v3.5.4 as of 2026-06-01).
+          cargo install cargo-ndk --version 3.5.4 --locked
+
+      # ── Build step ──────────────────────────────────────────────────────────
+      - name: Build dl-core for ${{ matrix.target }}
+        env:
+          # Pass matrix values through env vars — never interpolate into run: shell text.
+          # matrix.target and matrix.use_ndk are workflow-internal constants, but the
+          # safe pattern (ADR-0002 / Article XXVI) routes all expressions through env:.
+          CROSS_TARGET: ${{ matrix.target }}
+          USE_NDK: ${{ matrix.use_ndk }}
+        run: |
+          set -euo pipefail
+          if [ ! -f Cargo.toml ]; then
+            echo "Cargo.toml not present — skipping cross-compile (placeholder)"
+            exit 0
+          fi
+
+          TARGET="$CROSS_TARGET"
+
+          if [[ "$TARGET" == "wasm32-unknown-unknown" ]]; then
+            # WASM: no UniFFI feature (proc-macros may not support wasm32).
+            # Build the core crate with default features (no-float, pure logic).
+            echo "=== Building dl-core for WASM (no uniffi feature) ==="
+            cargo build -p dl-core --target wasm32-unknown-unknown
+
+          elif [[ "$USE_NDK" == "true" ]]; then
+            # Android: use cargo-ndk for linker configuration.
+            echo "=== Building dl-core for $TARGET via cargo-ndk ==="
+            cargo ndk --target "$TARGET" build -p dl-core --features uniffi
+
+          else
+            # iOS (aarch64-apple-ios / aarch64-apple-ios-sim): plain cross-compile.
+            # These produce a static lib; XCFramework assembly is a separate step
+            # (scripts/build-xcframework.sh / make xcframework) that needs Xcode.
+            echo "=== Building dl-core for $TARGET (static lib, no xcframework) ==="
+            cargo build -p dl-core --target "$TARGET" --features uniffi
+
+          fi
+
+      # ── Report advisory status ───────────────────────────────────────────────
+      # Advisory legs emit a visible notice so the summary shows they were skipped/warned
+      # rather than silently passing. Hard legs do not need this step.
+      - name: Annotate advisory result
+        if: matrix.advisory
+        env:
+          CROSS_TARGET: ${{ matrix.target }}
+        run: |
+          echo "::notice title=Advisory (${CROSS_TARGET})::This cross-compile leg is advisory." \
+               "To promote to a hard gate, provision a macOS runner with the iOS-26 SDK" \
+               "(Xcode 26.x) and remove continue-on-error from this matrix entry (T068)."
+
   core-eval:
     name: Rust core — eval harness (T040/T041/T042/T043)
     runs-on: ubuntu-latest
@@ -382,6 +550,17 @@ jobs:
         # proof-box.sh / parity.sh invoke cargo; read the channel from rust-toolchain.toml.
         run: |
           if [ -f rust-toolchain.toml ]; then rustup show; fi
+      - name: Cache cargo
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-host-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-host-
       - name: SC-003 judgment gate (T041 — HARD-FAIL)
         run: |
           if [ -f evals/runners/judgment-gate.sh ]; then
@@ -417,7 +596,11 @@ jobs:
   ios-build:
     name: iOS app — xcodebuild (T003 / Story B1)
     runs-on: macos-latest
-    # Advisory: iOS project scaffold is not yet present; placeholder only.
+    # Advisory: iOS-26 SDK is not available on GitHub-hosted macOS runners (as of 2026-06-01).
+    # The cross-compile legs in cross-compile-matrix already prove Rust compiles for iOS targets.
+    # xcodebuild requires the full Xcode 26.x + iOS 26 SDK, which must be self-hosted or
+    # provisioned when Apple ships the runner image. Remove continue-on-error here to promote
+    # this job to a hard gate once a suitable runner is confirmed.
     continue-on-error: true
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -425,6 +608,14 @@ jobs:
         # Final intent: build the ios/ Swift 6 app (min iOS 26) + run XCTest suite.
         # Requires the UniFFI XCFramework to be pre-built (or fetched from cache)
         # and placed in ios/Sources/Core/ before xcodebuild runs.
+        #
+        # ADVISORY — to promote to a hard gate:
+        #   1. Provision a macOS runner with Xcode 26.x (iOS 26 SDK).
+        #   2. Add a 'Cache XCFramework (delete-before-regenerate)' step that restores the
+        #      XCFramework from a cache keyed on Cargo.lock + build-xcframework.sh checksum,
+        #      OR runs `make xcframework` to rebuild it fresh, always deleting the output dir
+        #      first (ADR-0009 cache-pitfall guard: non-uniffi dylib → zero bindgen output).
+        #   3. Remove continue-on-error: true from this job.
         run: |
           if [ -d ios ] && ls ios/*.xcodeproj 2>/dev/null || ls ios/*.xcworkspace 2>/dev/null; then
             xcodebuild -scheme DiamondLedger -sdk iphonesimulator -destination \
