@@ -240,7 +240,7 @@ impl CoreApi for DiamondCore {
         }
 
         // Idempotency.
-        if let Some(_) = inner.log.check_idempotency(req.game_id, &req.idempotency_key) {
+        if inner.log.check_idempotency(req.game_id, &req.idempotency_key).is_some() {
             let proj = project_game(&inner.log, req.game_id);
             return Ok(ConfirmPlayResult { state: proj.to_game_state() });
         }
@@ -506,7 +506,7 @@ impl CoreApi for DiamondCore {
         }
 
         // Idempotency.
-        if let Some(_) = inner.log.check_idempotency(req.game_id, &req.idempotency_key) {
+        if inner.log.check_idempotency(req.game_id, &req.idempotency_key).is_some() {
             // Return a cached result (simplified for MVP — just rebuild).
         }
 
@@ -527,7 +527,7 @@ impl CoreApi for DiamondCore {
         // A full implementation would scan the entire log and group by half-inning.
         let mut proof_boxes: Vec<ProofBox> = Vec::new();
         let pb = compute_proof_box(&proj.current_half, proj.inning, proj.half);
-        proof_boxes.push(pb.clone());
+        proof_boxes.push(pb);
 
         // SC-011: fail if any proof box doesn't balance.
         for pb in &proof_boxes {
@@ -639,7 +639,7 @@ impl CoreApi for DiamondCore {
         }
 
         // Idempotency.
-        if let Some(_) = inner.log.check_idempotency(req.game_id, &req.idempotency_key) {
+        if inner.log.check_idempotency(req.game_id, &req.idempotency_key).is_some() {
             let decision = build_judgment_decision(&inner, req.game_id, req.decision_id)
                 .ok_or_else(|| Error::new(ErrorCode::NotFound, "Judgment not found"))?;
             let proj = project_game(&inner.log, req.game_id);
@@ -773,7 +773,7 @@ fn base_distance_direct(from: crate::model::Base, to: AdvanceOutcome) -> u8 {
         AdvanceOutcome::Base(Base::Second) => 2,
         AdvanceOutcome::Base(Base::Third) => 3,
     };
-    if to_n > from_n { to_n - from_n } else { 0 }
+    to_n.saturating_sub(from_n)
 }
 
 // ---------------------------------------------------------------------------

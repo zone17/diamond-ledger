@@ -215,7 +215,7 @@ impl EventLog {
     pub fn game_exists(&self, game_id: GameId) -> bool {
         self.games
             .get(&game_id.0)
-            .map_or(false, |v| !v.is_empty())
+            .is_some_and(|v| !v.is_empty())
     }
 
     pub fn allocate_game_id(&mut self) -> GameId {
