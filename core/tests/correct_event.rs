@@ -15,8 +15,8 @@
 
 use dl_core::classify::{reset_silent_resolution_counter, silent_resolution_count};
 use dl_core::ffi::{
-    Actor, ActorKind, ConfirmPlayRequest, CoreApi, CorrectEventRequest, CreateGameRequest,
-    ErrorCode, GameId, PlayInput, RecordPlayRequest, Seq, Team,
+    Actor, ActorKind, Call, ConfirmPlayRequest, CoreApi, CorrectEventRequest, CreateGameRequest,
+    ErrorCode, GameId, PlayInput, RecordPlayRequest, ResolveJudgmentRequest, Seq, Team,
 };
 use dl_core::model::{
     Advance, AdvanceTo, BallType, Base, BatterEvent, BatterHand, Catalyst, Classification, Count,
@@ -376,19 +376,73 @@ fn idempotent_retry_no_duplicate() {
     assert_eq!(retry.correction_seq, first.correction_seq, "same correction seq on retry");
 }
 
+/// P2 regression (SC-008 parity): a retry of a correction that changed the out-count AND
+/// has downstream same-half plays must return the SAME `invalidated_downstream` as the
+/// first call — not an empty list. Both paths now run through `build_correct_event_result`
+/// which computes `invalidated_downstream` unconditionally.
+#[test]
+fn idempotent_retry_with_downstream_is_byte_identical() {
+    let core = DiamondCore::new();
+    let gid = new_game(&core);
+
+    let seq_a = record_confirm(&core, gid, strikeout(), "a");  // will be corrected (out → no-out)
+    let seq_b = record_confirm(&core, gid, strikeout(), "b");  // downstream same-half play
+
+    // First call: correct A (an out) into a single — out-count changes, B is downstream.
+    let first = core
+        .correct_event(CorrectEventRequest {
+            game_id: gid,
+            corrects_seq: seq_a,
+            amended: PlayInput::Normalized(single()),
+            idempotency_key: "retry-down".into(),
+            actor: owner(),
+        })
+        .expect("first correction");
+    assert!(
+        first.invalidated_downstream.iter().any(|p| p.seq == seq_b),
+        "first call: seq_b must be in invalidated_downstream"
+    );
+
+    // Retry with the SAME key: must return byte-identical — including invalidated_downstream.
+    let retry = core
+        .correct_event(CorrectEventRequest {
+            game_id: gid,
+            corrects_seq: seq_a,
+            amended: PlayInput::Normalized(single()),
+            idempotency_key: "retry-down".into(),
+            actor: owner(),
+        })
+        .expect("retry correction");
+
+    assert_eq!(
+        serde_json::to_string(&first).unwrap(),
+        serde_json::to_string(&retry).unwrap(),
+        "retry must be byte-identical including invalidated_downstream (P2 / SC-008)"
+    );
+    assert!(
+        retry.invalidated_downstream.iter().any(|p| p.seq == seq_b),
+        "retry: seq_b must also be in invalidated_downstream (not empty on retry)"
+    );
+}
+
 // --- correcting INTO / OUT OF a judgment (SC-003/I2) -----------------------
 
 /// Correcting a deterministic play INTO a judgment opens a FRESH JudgmentDecision — the
 /// correction NEVER silently resolves the new scoring call (SC-003/I2). The silent
 /// resolution counter must stay zero.
+///
+/// P0 regression (SC-003/I2): `recomputed_state` must NOT advance state through the open
+/// judgment — the corrected seq is withheld from authoritative projection until the
+/// JudgmentDecision is resolved. Outs/runners must reflect the PRE-correction state.
 #[test]
 fn correcting_into_judgment_opens_decision_never_silent() {
     reset_silent_resolution_counter();
     let core = DiamondCore::new();
     let gid = new_game(&core);
 
-    // Start with a clean strikeout (deterministic).
+    // Start with a clean strikeout (deterministic). After confirmation the projection has 1 out.
     let seq = record_confirm(&core, gid, strikeout(), "k");
+    assert_eq!(core.get_game_state(gid).unwrap().outs, 1, "strikeout is confirmed: 1 out");
 
     let before_judgments = core
         .list_game_events(gid)
@@ -397,7 +451,7 @@ fn correcting_into_judgment_opens_decision_never_silent() {
         .filter(|e| e.event_type == "JudgmentOpened")
         .count();
 
-    // Amend it to a hit-vs-error JUDGMENT play.
+    // Amend it to a hit-vs-error JUDGMENT play. The corrected seq now has an open judgment.
     let res = core
         .correct_event(CorrectEventRequest {
             game_id: gid,
@@ -408,11 +462,33 @@ fn correcting_into_judgment_opens_decision_never_silent() {
         })
         .expect("correction into a judgment succeeds");
 
-    // The amended facts are reclassified as a judgment (I1) — surfaced, not resolved.
+    // The amended facts reclassify as a judgment (I1).
     assert_eq!(
         res.reclassified,
         Classification::Judgment(JudgmentKind::HitVsError),
         "amended facts reclassify as a HitVsError judgment"
+    );
+
+    // *** P0 regression assertion (SC-003/I2) ***
+    // `recomputed_state` must NOT advance through the unresolved judgment.
+    // The corrected seq is withheld from projection, so outs must revert to 0 (the
+    // state BEFORE the corrected play was applied) — not 1 (the post-out state) and
+    // not whatever the amended hit-vs-error facts would produce.
+    assert_eq!(
+        res.recomputed_state.outs, 0,
+        "recomputed_state must NOT advance through the open judgment (P0 / SC-003/I2)"
+    );
+    // Bases must also be empty: the withheld batter-runner has not reached base.
+    assert!(
+        res.recomputed_state.bases.first.is_none(),
+        "batter-runner must NOT appear on base through an unresolved judgment (SC-003/I2)"
+    );
+
+    // Live get_game_state must also withhold the seq.
+    let live = core.get_game_state(gid).unwrap();
+    assert_eq!(
+        live.outs, 0,
+        "live get_game_state must also withhold the corrected seq (P0 / SC-003/I2)"
     );
 
     // A FRESH JudgmentOpened event now exists for the corrected seq.
@@ -434,34 +510,88 @@ fn correcting_into_judgment_opens_decision_never_silent() {
         0,
         "correcting into a judgment must NOT silently resolve it (SC-003/I2)"
     );
+
+    // After resolving the judgment, the corrected seq is released into the projection.
+    let decision_id = res
+        .history  // history carries the prior classification; the decision id is in events
+        .is_empty()
+        .then_some(0u64);
+    let _ = decision_id; // we get it from events below
+    let judgment_decision_id = core
+        .list_game_events(gid)
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|e| e.event_type == "JudgmentOpened")
+        .map(|e| e.seq.0)  // seq of the JudgmentOpened event, not the decision_id
+        .unwrap();
+    // Get the actual decision_id via get_play on the corrected seq.
+    let play = core.get_play(gid, seq).unwrap();
+    let decision_id = play.judgment.as_ref().unwrap().id;
+
+    core.resolve_judgment(ResolveJudgmentRequest {
+        game_id: gid,
+        decision_id,
+        chosen: Call { token: "hit".into(), label: "Hit".into() },
+        idempotency_key: "rj-into".into(),
+        actor: owner(),
+    }).expect("resolving the judgment succeeds");
+    let _ = judgment_decision_id;
+
+    // Now the corrected seq (hit_vs_error → batter reaches first) is in the projection.
+    let after_resolve = core.get_game_state(gid).unwrap();
+    assert_eq!(
+        after_resolve.outs, 0,
+        "after resolve: outs still 0 (the hit_vs_error play didn't put anyone out)"
+    );
+    assert!(
+        after_resolve.bases.first.is_some(),
+        "after resolve: batter-runner is now on first (released from withhold)"
+    );
 }
 
-/// Correcting a judgment play OUT into a clean play reclassifies Deterministic — the new
-/// facts no longer demand a scoring call (and no silent resolution is recorded).
+/// Correcting a judgment play OUT into a clean play (after the judgment is resolved)
+/// reclassifies Deterministic and the projection advances. This tests the full correct
+/// cycle: correct INTO judgment → resolve judgment → correct OUT to deterministic.
 #[test]
 fn correcting_out_of_judgment_reclassifies_deterministic() {
     reset_silent_resolution_counter();
     let core = DiamondCore::new();
     let gid = new_game(&core);
 
-    // Record a judgment play (it opens a decision on record_play). We do NOT need to
-    // confirm it through the judgment gate for the correction test: confirm is blocked by
-    // the open judgment, so record + correct the unconfirmed seq is the realistic "I
-    // mis-entered this, let me fix it before confirming" path. But correct_event replays
-    // CONFIRMED rows; to make the corrected play part of the projection we resolve then
-    // confirm. Simplest: record a clean play, confirm, then correct INTO and back OUT.
+    // Start with a clean single (deterministic, confirmed). Projection: 0 outs, runner on 1st.
     let seq = record_confirm(&core, gid, single(), "s");
 
-    // First correct the clean single INTO a judgment, then OUT to a strikeout.
-    core.correct_event(CorrectEventRequest {
-        game_id: gid,
-        corrects_seq: seq,
-        amended: PlayInput::Normalized(hit_vs_error_play()),
-        idempotency_key: "into".into(),
-        actor: owner(),
-    })
-    .unwrap();
+    // Correct the single INTO a hit-vs-error judgment.
+    let into_res = core
+        .correct_event(CorrectEventRequest {
+            game_id: gid,
+            corrects_seq: seq,
+            amended: PlayInput::Normalized(hit_vs_error_play()),
+            idempotency_key: "into".into(),
+            actor: owner(),
+        })
+        .unwrap();
+    let decision_id = {
+        let play = core.get_play(gid, seq).unwrap();
+        play.judgment.as_ref().unwrap().id
+    };
+    let _ = into_res;
 
+    // The corrected seq is now withheld: projection has 0 outs and no runner.
+    assert_eq!(core.get_game_state(gid).unwrap().outs, 0,
+        "after INTO correction: withheld — projection at pre-correction state");
+
+    // Resolve the judgment FIRST so the corrected seq is released.
+    core.resolve_judgment(ResolveJudgmentRequest {
+        game_id: gid,
+        decision_id,
+        chosen: Call { token: "hit".into(), label: "Hit".into() },
+        idempotency_key: "rj-for-into".into(),
+        actor: owner(),
+    }).expect("resolve judgment before OUT correction");
+
+    // Now correct OUT to a strikeout (replaces the confirmed single / judgment with an out).
     let out = core
         .correct_event(CorrectEventRequest {
             game_id: gid,
@@ -477,9 +607,13 @@ fn correcting_out_of_judgment_reclassifies_deterministic() {
         Classification::Deterministic,
         "the latest amended facts (a clean strikeout) reclassify Deterministic"
     );
-    // The latest correction wins in the projection: the play is an out again.
+    // The latest correction wins: strikeout → 1 out. No open judgment on this seq.
     assert_eq!(out.recomputed_state.outs, 1, "latest correction (strikeout) wins on replay");
-    assert_eq!(silent_resolution_count(), 0, "no silent resolution on correcting out");
+    assert!(
+        out.recomputed_state.bases.first.is_none(),
+        "batter did not reach on a strikeout"
+    );
+    assert_eq!(silent_resolution_count(), 0, "no silent resolution throughout");
 }
 
 // --- invalidated_downstream (FR-014) ---------------------------------------

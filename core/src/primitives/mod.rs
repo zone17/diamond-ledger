@@ -376,6 +376,11 @@ fn half_has_error_or_pb_with_amendment(
 ) -> bool {
     use crate::rules::{half_index_of, GameProjection};
 
+    // The withheld set (seqs with unresolved open judgments) must be skipped here too so
+    // this context scan matches what `project_game` projects — consistency between the
+    // reclassification context and the authoritative projection (SC-003/I2).
+    let withheld = inner.log.open_judgment_for_seqs(game_id);
+
     // One replay pass, honoring the override: record each confirmed play's half-index and
     // whether its (possibly amended) facts carry an error/PB, plus which half the corrected
     // play sits in. Then resolve: does the corrected play's half contain any error/PB?
@@ -386,6 +391,19 @@ fn half_has_error_or_pb_with_amendment(
     for row in inner.log.confirmed_rows(game_id) {
         if let Event::PlayRecorded(p) = &row.event {
             let here = half_index_of(proj.inning, proj.half);
+            // The corrects_seq itself is withheld (it now has an open judgment), but we
+            // still want its amended facts to contribute to the error/PB context — the
+            // classification is FOR the corrected play, so its own amended facts count.
+            // Other withheld seqs (pre-existing unresolved judgments) are skipped to
+            // match the projection boundary.
+            if withheld.contains(&row.seq) && row.seq != corrects_seq {
+                // Skip: this play's state is withheld from authoritative projection.
+                // Don't advance the half-position either — use the original play for
+                // the position accounting (to keep half-index tracking correct) but
+                // exclude its error/PB contribution from the authoritative context.
+                proj.apply_play(&p.play, row.seq);
+                continue;
+            }
             let play = if row.seq == corrects_seq { amended } else { &p.play };
             if row.seq == corrects_seq {
                 target_half = Some(here);
@@ -405,11 +423,15 @@ fn half_has_error_or_pb_with_amendment(
 /// Build a [`CorrectEventResult`] deterministically from the (already amended) log.
 ///
 /// Used by BOTH the fresh correction path and the idempotent-retry path, so a retried
-/// `idempotency_key` reproduces byte-identical output (SC-008 parity). Reads the
+/// `idempotency_key` reproduces byte-identical output (SC-008 parity, FR-012). Reads the
 /// `EventCorrected` row at `correction_seq` for the amended facts, the ORIGINAL row at
-/// `corrects_seq` for the preserved prior version (append-only history, SC-007), and the
-/// re-projected state (FR-012). `invalidated_downstream` defaults to empty; the fresh path
-/// fills it when the out-count changed (FR-014).
+/// `corrects_seq` for the preserved prior version (append-only history, SC-007), re-projects
+/// state (FR-012), and computes `invalidated_downstream` here (not in the caller) so the
+/// retry path also returns the correct list — fixing P2 (byte-identity across retries).
+///
+/// **SC-003/I2:** `project_game` withholds any corrected seq with an open judgment, so
+/// `recomputed_state` reflects the pre-correction state when the amended facts are a
+/// judgment. The caller surfaces `reclassified` so callers know resolution is required.
 fn build_correct_event_result(
     inner: &CoreInner,
     game_id: GameId,
@@ -439,7 +461,8 @@ fn build_correct_event_result(
         }
     };
 
-    // Re-project state with the correction applied (project_game honors the override).
+    // Re-project state with the correction applied (project_game honors the override and
+    // withholds the corrected seq when it has an open judgment — SC-003/I2 fix).
     let proj = project_game(&inner.log, game_id);
 
     // Reclassify amended facts (I1) with the corrected play's half context.
@@ -460,16 +483,26 @@ fn build_correct_event_result(
 
     let history = vec![Version {
         seq: Seq(corrects_seq),
-        normalized: original_play,
+        normalized: original_play.clone(),
         classification: original_classification,
     }];
+
+    // Compute invalidated_downstream here (not in the caller) so the idempotent-retry
+    // path also returns the correct list — fixing P2 (byte-identity on retry, SC-008).
+    // A correction that changes the out-count of the corrected play may invalidate later
+    // confirmed plays in the same half; surface them for review (FR-014).
+    let invalidated_downstream = if outs_in_play(&original_play) != outs_in_play(&amended) {
+        downstream_plays_in_same_half(inner, game_id, corrects_seq)
+    } else {
+        Vec::new()
+    };
 
     Ok(CorrectEventResult {
         correction_seq: Seq(correction_seq),
         amended,
         reclassified,
         recomputed_state: proj.to_game_state(),
-        invalidated_downstream: Vec::new(),
+        invalidated_downstream,
         history,
     })
 }
@@ -892,7 +925,10 @@ impl CoreApi for DiamondCore {
         }
 
         // Precondition: `corrects_seq` must exist AND be a PlayRecorded (else NOT_FOUND).
-        let original_play = match inner.log.get_row(req.game_id, corrects_seq) {
+        // We read the original play here to validate the precondition; `build_correct_event_result`
+        // re-reads it from the log. The binding is prefixed `_` to satisfy `unused_variables`
+        // since we removed the `outs_changed` computation that used to reference it.
+        let _original_play = match inner.log.get_row(req.game_id, corrects_seq) {
             Some(row) => match &row.event {
                 Event::PlayRecorded(p) => p.play.clone(),
                 _ => {
@@ -923,12 +959,9 @@ impl CoreApi for DiamondCore {
             }
         };
 
-        // Compute the out-count delta the correction introduces. If the corrected play's
-        // out contribution changed, downstream plays in its half may be invalidated and
-        // are surfaced for review — never silently discarded (FR-014). The preserved prior
-        // version (SC-007) is reconstructed in `build_correct_event_result` from the
-        // untouched original row.
-        let outs_changed = outs_in_play(&original_play) != outs_in_play(&amended);
+        // `invalidated_downstream` and the out-count comparison are computed inside
+        // `build_correct_event_result` so the idempotent-retry path is byte-identical
+        // (SC-008 parity, P2 fix).
 
         // APPEND the correction event (append-only, FR-013). `corrects_seq` is recorded on
         // the row so `list_game_events` surfaces the linkage; the original row is untouched.
@@ -974,19 +1007,11 @@ impl CoreApi for DiamondCore {
             );
         }
 
-        // Build the result deterministically from the now-amended log.
-        let mut result =
-            build_correct_event_result(&inner, req.game_id, correction_seq, corrects_seq)?;
-
-        // Attach invalidated-downstream plays when the out-count changed (FR-014). These
-        // are later confirmed plays whose pre-play assumptions the correction may have
-        // broken (e.g. a changed out count) — surfaced for review, not discarded.
-        if outs_changed {
-            result.invalidated_downstream =
-                downstream_plays_in_same_half(&inner, req.game_id, corrects_seq);
-        }
-
-        Ok(result)
+        // Build the result deterministically from the now-amended log. `invalidated_downstream`
+        // is computed inside `build_correct_event_result` so the idempotent-retry path is
+        // byte-identical (SC-008 parity, P2 fix). `recomputed_state` reflects the withheld
+        // projection when amended facts are a judgment (P0 fix, SC-003/I2).
+        build_correct_event_result(&inner, req.game_id, correction_seq, corrects_seq)
     }
 
     fn finalize_scorecard(&self, req: FinalizeRequest) -> CoreResult<FinalizeResult> {
@@ -1048,8 +1073,20 @@ impl CoreApi for DiamondCore {
             let half = if key & 1 == 1 { Half::Bottom } else { Half::Top };
             proof_boxes.push(compute_proof_box(ctx, inning, half));
         }
-        // The current (still-open) half-inning, if it has any plays or the game is empty.
-        proof_boxes.push(compute_proof_box(&proj.current_half, proj.inning, proj.half));
+        // The current (still-open) half-inning — only when it has plays. When the last play
+        // closed a half exactly on the 3rd out, the next half is empty (all fields zero);
+        // emitting an all-zeros box for an unplayed half is misleading. An all-zeros box
+        // still balances (0==0) so SC-011 would pass vacuously — omitting it is cleaner.
+        // An empty game (no closed halves, no current plays) still gets one all-zeros box.
+        let current_has_plays = proj.current_half.ab
+            + proj.current_half.bb
+            + proj.current_half.sac
+            + proj.current_half.hbp
+            + proj.current_half.putouts
+            > 0;
+        if current_has_plays || proof_boxes.is_empty() {
+            proof_boxes.push(compute_proof_box(&proj.current_half, proj.inning, proj.half));
+        }
 
         // SC-011: fail if any proof box doesn't balance.
         for pb in &proof_boxes {

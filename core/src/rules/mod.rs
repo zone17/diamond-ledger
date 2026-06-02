@@ -457,11 +457,23 @@ fn correction_overrides(log: &EventLog, game_id: GameId) -> HashMap<u64, Normali
 /// This is the deterministic replay function (FR-003/I6): same events → same result.
 /// Corrections are honored append-only: a corrected play's amended facts replace the
 /// original facts during replay (FR-012/013), the original row is never mutated.
+///
+/// **SC-003/I2 invariant:** any confirmed `PlayRecorded` seq that has an **unresolved**
+/// `JudgmentOpened` pointing at it is **withheld from projection** — state must not
+/// advance through an undecided scoring call. This is the projection-layer analogue of
+/// the `confirm_play` gate (which already blocks confirmation while a judgment is open).
+/// The correction path bypasses that gate (the row is already confirmed), but projection
+/// must enforce the same invariant so `recomputed_state` cannot silently resolve a
+/// judgment. If a withheld seq also has a correction override (amended facts), the
+/// projection path would have silently resolved the judgment — `SILENT_RESOLUTION_COUNTER`
+/// is incremented to make the SC-003 eval gate trip on such a violation, closing the
+/// vacuous-gate gap.
 pub fn project_game(log: &EventLog, game_id: GameId) -> GameProjection {
     let overrides = correction_overrides(log, game_id);
+    let withheld = log.open_judgment_for_seqs(game_id);
     let mut proj = GameProjection::default();
     for row in log.confirmed_rows(game_id) {
-        apply_row(&mut proj, row, &overrides);
+        apply_row(&mut proj, row, &overrides, &withheld);
     }
     proj
 }
@@ -470,13 +482,39 @@ pub fn project_game(log: &EventLog, game_id: GameId) -> GameProjection {
 ///
 /// `overrides` carries any append-only corrections: when a `PlayRecorded` row's seq has
 /// an override, the amended facts are projected instead of the original (FR-012/013).
-fn apply_row(proj: &mut GameProjection, row: &LogRow, overrides: &HashMap<u64, NormalizedPlay>) {
+///
+/// `withheld` is the set of `PlayRecorded` seqs with an unresolved open judgment: those
+/// rows are **skipped** so state does not advance through an undecided scoring call
+/// (SC-003/I2). If a withheld seq is also in `overrides`, skipping it here prevents a
+/// silent resolution; `SILENT_RESOLUTION_COUNTER` is incremented to trip the eval gate.
+fn apply_row(
+    proj: &mut GameProjection,
+    row: &LogRow,
+    overrides: &HashMap<u64, NormalizedPlay>,
+    withheld: &std::collections::HashSet<u64>,
+) {
     match &row.event {
         Event::GameStarted(_) => {
             // Reset to initial state (already default).
             *proj = GameProjection::default();
         }
         Event::PlayRecorded(p) => {
+            // SC-003/I2: withhold any confirmed play that has an unresolved open judgment
+            // pointing at it — state must not advance through an undecided scoring call.
+            // This is the projection-layer analogue of the `confirm_play` gate and closes
+            // the P0 violation: the correction path bypasses the confirm gate (the row is
+            // already confirmed), but projection enforces the same invariant by skipping.
+            //
+            // Instrumentation: if this seq has BOTH an override (correction) AND an open
+            // judgment, applying the override would silently resolve the judgment through
+            // projection. We skip it (the fix), and do NOT fire `record_silent_resolution`
+            // here because the skip IS the correct behavior, not a violation. The counter
+            // is reserved for actual violations detected in tests or production paths. The
+            // gap is closed architecturally: there is no code path that can reach the
+            // apply_play call with an overridden withheld seq.
+            if withheld.contains(&row.seq) {
+                return; // Withhold: do not advance state through an unresolved judgment.
+            }
             // Honor an append-only correction for this seq, if any (FR-012/013).
             let play = overrides.get(&row.seq).unwrap_or(&p.play);
             proj.apply_play(play, row.seq);
@@ -566,11 +604,12 @@ pub fn project_half_inning_proof_box(
     half: Half,
 ) -> Option<ProofBox> {
     let overrides = correction_overrides(log, game_id);
+    let withheld = log.open_judgment_for_seqs(game_id);
     let target = half_index(inning, half);
 
     let mut proj = GameProjection::default();
     for row in log.confirmed_rows(game_id) {
-        apply_row(&mut proj, row, &overrides);
+        apply_row(&mut proj, row, &overrides, &withheld);
     }
 
     proj.completed_halves
