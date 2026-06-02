@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use dl_core::ffi::{
     Actor, ActorKind, Call, ConfirmPlayRequest, CoreApi, CreateGameRequest,
     FinalizeMode, FinalizeRequest, GameId, PlayInput, RecordPlayRequest,
-    ResolveJudgmentRequest, Team,
+    ResolveJudgmentRequest, Seq, Team,
 };
 use dl_core::model::NormalizedPlay;
 use dl_core::primitives::{CoreSnapshot, DiamondCore};
@@ -50,11 +50,31 @@ fn load_core() -> Result<DiamondCore, String> {
 }
 
 /// Persist the core's snapshot back to the state file (after a mutating command).
+///
+/// Write is **atomic**: the snapshot is written to a temp file in the SAME directory,
+/// then `rename`d onto the final path. On POSIX `rename` within a directory is atomic,
+/// so a crash mid-write leaves the prior state intact rather than a truncated/corrupt
+/// log (the append-only invariant must never be observable as half-written, I6).
 fn save_core(core: &DiamondCore) -> Result<(), String> {
     let path = state_file();
     let text = serde_json::to_string_pretty(&core.snapshot())
         .map_err(|e| format!("cannot serialize state: {e}"))?;
-    std::fs::write(&path, text).map_err(|e| format!("cannot write state file {}: {e}", path.display()))
+
+    // Temp file in the SAME directory as the target (rename is only atomic within a
+    // filesystem; a same-dir temp guarantees that). Unique-enough name via uuid_like().
+    let dir = path.parent().filter(|p| !p.as_os_str().is_empty());
+    let tmp = match dir {
+        Some(d) => d.join(format!(".dl-state.tmp.{}", uuid_like())),
+        None => PathBuf::from(format!(".dl-state.tmp.{}", uuid_like())),
+    };
+
+    std::fs::write(&tmp, text)
+        .map_err(|e| format!("cannot write temp state file {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        // Best-effort cleanup so a failed rename doesn't leak the temp file.
+        let _ = std::fs::remove_file(&tmp);
+        format!("cannot atomically replace state file {}: {e}", path.display())
+    })
 }
 
 /// Commands that mutate the event log and therefore must persist afterward.
@@ -177,7 +197,7 @@ fn run(core: &DiamondCore, args: &[String]) -> Result<serde_json::Value, String>
             let owner_id = &args[4];
             let req = ConfirmPlayRequest {
                 game_id,
-                confirms_seq: seq,
+                confirms_seq: Seq(seq),
                 idempotency_key: format!("confirm-{}-{}", game_id.0, seq),
                 actor: owner_actor(owner_id),
             };
@@ -300,7 +320,7 @@ fn replay_ops(core: &DiamondCore, ops_text: &str) -> Result<serde_json::Value, S
             ReplayOp::ConfirmPlay { game_id, seq, owner } => {
                 core.confirm_play(ConfirmPlayRequest {
                     game_id: GameId(game_id),
-                    confirms_seq: seq,
+                    confirms_seq: Seq(seq),
                     idempotency_key: format!("replay-con-{i}"),
                     actor: owner_actor(&owner),
                 })
@@ -315,12 +335,21 @@ fn replay_ops(core: &DiamondCore, ops_text: &str) -> Result<serde_json::Value, S
         .map_err(|e| format!("{e:?}"))
 }
 
-/// Simple monotonic counter for idempotency keys (MVP — not a real UUID).
+/// A collision-resistant token for idempotency keys / temp filenames (MVP — not a real UUID).
+///
+/// Combines the FULL nanosecond timestamp since the epoch with a process-wide atomic
+/// counter, so two calls in the same nanosecond (rapid successive commands) still get
+/// distinct tokens — `subsec_nanos()` alone collides on coarse-resolution clocks and
+/// would alias idempotency keys.
 fn uuid_like() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .subsec_nanos();
-    format!("{}", nanos)
+        .as_nanos();
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{nanos}-{seq}")
 }

@@ -36,7 +36,7 @@ fn temp_state(tag: &str) -> String {
     p.to_string_lossy().to_string()
 }
 
-const GROUNDOUT: &str = r#"{"situation":{"runners":{"first":null,"second":null,"third":null},"outs":0,"count":{"balls":0,"strikes":0},"batter_hand":"Right"},"catalyst":{"batter_event":"FieldedOut","fielders":[6,3],"ball_type":"Ground","advances":[{"runner":1,"from":"Home","to":"Out","by_error":null}],"touched_or_misplayed_by":[]}}"#;
+const GROUNDOUT: &str = r#"{"situation":{"runners":{"first":null,"second":null,"third":null},"outs":0,"count":{"balls":0,"strikes":0},"batter_hand":"right"},"catalyst":{"batter_event":"fielded_out","fielders":[6,3],"ball_type":"ground","advances":[{"runner":1,"from":"home","to":"out","by_error":null}],"touched_or_misplayed_by":[]}}"#;
 
 #[test]
 fn game_persists_across_invocations() {

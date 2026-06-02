@@ -684,7 +684,7 @@ pub struct CreateGameResult {
 pub struct ConfirmPlayRequest {
     pub game_id: GameId,
     /// The recorded play's `seq` being confirmed (FR-007).
-    pub confirms_seq: u64,
+    pub confirms_seq: Seq,
     pub idempotency_key: String,
     pub actor: Actor,
 }

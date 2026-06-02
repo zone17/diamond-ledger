@@ -85,6 +85,7 @@ impl Position {
 /// A base on the diamond. `Home` is both the origin of the batter and the
 /// scoring destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum Base {
     /// Home plate — batter origin and scoring destination.
@@ -97,6 +98,7 @@ pub enum Base {
 /// Which side of the plate the batter hits from (a pre-play *fact*; an input to
 /// classification's platoon-independent logic, recorded as part of the situation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum BatterHand {
     Left,
@@ -161,6 +163,7 @@ pub struct SituationDiamond {
 /// anything outside it lands on [`BatterEvent::Other`] and will classify as
 /// `OutOfFormat` rather than be fabricated into a known event (FR-017).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum BatterEvent {
     Single,
@@ -192,6 +195,7 @@ pub enum BatterEvent {
 /// distinguishing a line-drive single from a misplayed pop). `None` for events
 /// with no batted ball (walk, strikeout looking, etc.).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum BallType {
     Ground,
@@ -205,6 +209,7 @@ pub enum BallType {
 
 /// Where a runner ended up on the play.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum AdvanceTo {
     /// Advanced (or held) at a base.
@@ -291,6 +296,7 @@ pub struct NormalizedPlay {
 /// module). Roughly ~85% `Deterministic` / ~15% `Judgment` / ~5% `OutOfFormat`
 /// on representative corpora.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum Classification {
     /// Facts fully determine the scoring outcome; no human judgment required.
@@ -305,6 +311,7 @@ pub enum Classification {
 
 /// The kind of scoring judgment a play's facts demand (data-model §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum JudgmentKind {
     /// Hit vs. error on a ball a fielder touched/misplayed.

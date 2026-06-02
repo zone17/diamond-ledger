@@ -54,8 +54,8 @@ OWNER="owner-parity"
 
 # A deterministic 3-out half-inning of normalized facts (two groundouts, one strikeout),
 # each recorded then confirmed. The SAME facts drive both paths.
-GROUNDOUT='{"situation":{"runners":{"first":null,"second":null,"third":null},"outs":0,"count":{"balls":0,"strikes":0},"batter_hand":"Right"},"catalyst":{"batter_event":"FieldedOut","fielders":[6,3],"ball_type":"Ground","advances":[{"runner":1,"from":"Home","to":"Out","by_error":null}],"touched_or_misplayed_by":[]}}'
-STRIKEOUT='{"situation":{"runners":{"first":null,"second":null,"third":null},"outs":0,"count":{"balls":0,"strikes":2},"batter_hand":"Right"},"catalyst":{"batter_event":"Strikeout","fielders":[],"ball_type":"None","advances":[{"runner":1,"from":"Home","to":"Out","by_error":null}],"touched_or_misplayed_by":[]}}'
+GROUNDOUT='{"situation":{"runners":{"first":null,"second":null,"third":null},"outs":0,"count":{"balls":0,"strikes":0},"batter_hand":"right"},"catalyst":{"batter_event":"fielded_out","fielders":[6,3],"ball_type":"ground","advances":[{"runner":1,"from":"home","to":"out","by_error":null}],"touched_or_misplayed_by":[]}}'
+STRIKEOUT='{"situation":{"runners":{"first":null,"second":null,"third":null},"outs":0,"count":{"balls":0,"strikes":2},"batter_hand":"right"},"catalyst":{"batter_event":"strikeout","fielders":[],"ball_type":"none","advances":[{"runner":1,"from":"home","to":"out","by_error":null}],"touched_or_misplayed_by":[]}}'
 
 # ── Path 1: CLI/agent path (persisted, across separate `dl` invocations) ──────
 info "Path 1 — CLI/agent (persisted event log across invocations, #128)..."

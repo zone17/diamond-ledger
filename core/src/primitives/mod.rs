@@ -384,9 +384,10 @@ impl CoreApi for DiamondCore {
     fn confirm_play(&self, req: ConfirmPlayRequest) -> CoreResult<ConfirmPlayResult> {
         let mut inner = self.inner.lock().unwrap();
 
-        // Authority.
+        // Authority (I5/FR-020).
         let auth = inner.get_authority(req.game_id)?.clone();
         assert_authority(&req.actor, &auth)?;
+        assert_nontrivial_identity(&req.actor)?;
 
         // Game must exist.
         if !inner.log.game_exists(req.game_id) {
@@ -399,26 +400,47 @@ impl CoreApi for DiamondCore {
             return Ok(ConfirmPlayResult { state: proj.to_game_state() });
         }
 
+        let confirms_seq = req.confirms_seq.0;
+
         // The seq being confirmed must exist and be a PlayRecorded.
-        let row = inner.log.get_row(req.game_id, req.confirms_seq).ok_or_else(|| {
-            Error::new(ErrorCode::NotFound, format!("Seq {} not found", req.confirms_seq))
+        let row = inner.log.get_row(req.game_id, confirms_seq).ok_or_else(|| {
+            Error::new(ErrorCode::NotFound, format!("Seq {} not found", confirms_seq))
         })?;
         if !matches!(row.event, Event::PlayRecorded(_)) {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,
-                format!("Seq {} is not a PlayRecorded event", req.confirms_seq),
+                format!("Seq {} is not a PlayRecorded event", confirms_seq),
             ));
         }
 
+        // I2 / confirm_play contract: a play that surfaced a judgment must NOT be
+        // confirmable while that judgment is still open. Scan the game's open
+        // judgments; if any was opened `for_seq == confirms_seq`, reject with
+        // JUDGMENT_REQUIRED — the open decision must be resolved first (no silent
+        // judgment; the play cannot advance state with an unresolved scoring call).
+        for decision_id in inner.log.open_judgments(req.game_id) {
+            if let Some(opened) = inner.log.get_judgment_opened(req.game_id, decision_id) {
+                if opened.for_seq == confirms_seq {
+                    return Err(Error::new(
+                        ErrorCode::JudgmentRequired,
+                        format!(
+                            "Seq {} surfaced an open judgment (decision {}); resolve it before confirming (I2)",
+                            confirms_seq, decision_id
+                        ),
+                    ));
+                }
+            }
+        }
+
         // Mark confirmed.
-        inner.log.confirm_row(req.game_id, req.confirms_seq);
+        inner.log.confirm_row(req.game_id, confirms_seq);
 
         // Append PlayConfirmed.
         let seq = inner.log.append(
             req.game_id,
             req.actor.clone(),
             Event::PlayConfirmed(PlayConfirmedPayload {
-                confirms_seq: req.confirms_seq,
+                confirms_seq,
                 idempotency_key: req.idempotency_key.clone(),
             }),
             None,
@@ -437,8 +459,62 @@ impl CoreApi for DiamondCore {
         assert_authority(&req.actor, &auth)?;
         assert_nontrivial_identity(&req.actor)?;
 
-        // FR-007: state never advances on an unconfirmed entry.
-        // If there's already an unconfirmed play, reject.
+        // Idempotency FIRST — a retry with a known key returns the prior result, and must
+        // take priority over the FR-007 pending-play guard below: the unconfirmed play it
+        // would otherwise trip on IS this same play (a genuine retry, not a new entry).
+        if let Some(prior_seq) = inner.log.check_idempotency(req.game_id, &req.idempotency_key) {
+            // Return the prior result (reconstruct from log).
+            let row = inner.log.get_row(req.game_id, prior_seq).unwrap();
+            if let Event::PlayRecorded(p) = &row.event {
+                let play = p.play.clone();
+                let proj = project_game(&inner.log, req.game_id);
+                let ctx = ClassifyContext {
+                    inning_has_error_or_pb: proj.current_half.has_error_or_pb,
+                };
+                let classification = classify_with_context(&play, &ctx);
+                let cell = render_cell(&play, proj.outs);
+
+                // If the original play surfaced a judgment, the retry MUST surface the
+                // same open decision + Needs::Judgment — never a (Confirm, None) that
+                // would let a caller bypass the open judgment on a retried key (I2).
+                let (needs, judgment) = match &classification {
+                    Classification::Judgment(_) => {
+                        // The decision opened for this play seq (`for_seq == prior_seq`).
+                        let decision_id = inner
+                            .log
+                            .all_rows(req.game_id)
+                            .find_map(|r| match &r.event {
+                                Event::JudgmentOpened(jp) if jp.for_seq == prior_seq => {
+                                    Some(jp.decision_id)
+                                }
+                                _ => None,
+                            });
+                        match decision_id
+                            .and_then(|did| build_judgment_decision(&inner, req.game_id, did))
+                        {
+                            Some(decision) => (Needs::Judgment, Some(decision)),
+                            None => (Needs::Confirm, None),
+                        }
+                    }
+                    Classification::Deterministic | Classification::OutOfFormat(_) => {
+                        (Needs::Confirm, None)
+                    }
+                };
+
+                return Ok(RecordPlayResult {
+                    recorded_seq: Seq(prior_seq),
+                    normalized: play,
+                    classification,
+                    reisner: cell,
+                    state_preview: proj.to_game_state(),
+                    judgment,
+                    needs,
+                });
+            }
+        }
+
+        // FR-007: state never advances on an unconfirmed entry. A genuinely NEW play
+        // (idempotency miss, above) while a prior play is unconfirmed is rejected.
         if inner.log.pending_play(req.game_id).is_some() {
             return Err(Error::new(
                 ErrorCode::PendingConfirmation,
@@ -456,30 +532,6 @@ impl CoreApi for DiamondCore {
             }
             PlayInput::Normalized(play) => play,
         };
-
-        // Idempotency.
-        if let Some(prior_seq) = inner.log.check_idempotency(req.game_id, &req.idempotency_key) {
-            // Return the prior result (reconstruct from log).
-            let row = inner.log.get_row(req.game_id, prior_seq).unwrap();
-            if let Event::PlayRecorded(p) = &row.event {
-                let play = p.play.clone();
-                let proj = project_game(&inner.log, req.game_id);
-                let ctx = ClassifyContext {
-                    inning_has_error_or_pb: proj.current_half.has_error_or_pb,
-                };
-                let classification = classify_with_context(&play, &ctx);
-                let cell = render_cell(&play, proj.outs);
-                return Ok(RecordPlayResult {
-                    recorded_seq: Seq(prior_seq),
-                    normalized: play,
-                    classification,
-                    reisner: cell,
-                    state_preview: proj.to_game_state(),
-                    judgment: None,
-                    needs: Needs::Confirm,
-                });
-            }
-        }
 
         // Get current projection (for inning context).
         let proj = project_game(&inner.log, req.game_id);
@@ -548,9 +600,10 @@ impl CoreApi for DiamondCore {
     fn advance_runner(&self, req: AdvanceRunnerRequest) -> CoreResult<AdvanceRunnerResult> {
         let mut inner = self.inner.lock().unwrap();
 
-        // Authority.
+        // Authority (I5/FR-020).
         let auth = inner.get_authority(req.game_id)?.clone();
         assert_authority(&req.actor, &auth)?;
+        assert_nontrivial_identity(&req.actor)?;
 
         if !inner.log.game_exists(req.game_id) {
             return Err(Error::new(ErrorCode::NotFound, "Game not found"));
@@ -631,6 +684,7 @@ impl CoreApi for DiamondCore {
         let inner = self.inner.lock().unwrap();
         let auth = inner.get_authority(req.game_id)?.clone();
         assert_authority(&req.actor, &auth)?;
+        assert_nontrivial_identity(&req.actor)?;
 
         // correct_event is post-MVP (US4); return a structured "not yet implemented" error.
         // This satisfies the contract (never panics, returns typed error).
@@ -643,9 +697,10 @@ impl CoreApi for DiamondCore {
     fn finalize_scorecard(&self, req: FinalizeRequest) -> CoreResult<FinalizeResult> {
         let mut inner = self.inner.lock().unwrap();
 
-        // Authority.
+        // Authority (I5/FR-020).
         let auth = inner.get_authority(req.game_id)?.clone();
         assert_authority(&req.actor, &auth)?;
+        assert_nontrivial_identity(&req.actor)?;
 
         if !inner.log.game_exists(req.game_id) {
             return Err(Error::new(ErrorCode::NotFound, "Game not found"));
@@ -659,10 +714,14 @@ impl CoreApi for DiamondCore {
             ));
         }
 
-        // Idempotency.
-        if inner.log.check_idempotency(req.game_id, &req.idempotency_key).is_some() {
-            // Return a cached result (simplified for MVP — just rebuild).
-        }
+        // Idempotency: a re-finalize with the same key must NOT append a second
+        // `GameFinalized`. The returned `FinalizeResult` is rebuilt deterministically
+        // from the existing projection either way; on an idempotency hit we skip the
+        // append (and the register) so the log stays append-only without duplicates.
+        let already_finalized = inner
+            .log
+            .check_idempotency(req.game_id, &req.idempotency_key)
+            .is_some();
 
         let proj = project_game(&inner.log, req.game_id);
 
@@ -751,17 +810,19 @@ impl CoreApi for DiamondCore {
             })
             .collect();
 
-        // Append GameFinalized.
-        let seq = inner.log.append(
-            req.game_id,
-            req.actor.clone(),
-            Event::GameFinalized(GameFinalizedPayload {
-                mode: req.mode,
-                idempotency_key: req.idempotency_key.clone(),
-            }),
-            None,
-        );
-        inner.log.register_idempotency(req.game_id, req.idempotency_key, seq);
+        // Append GameFinalized — only on the FIRST finalize for this key (idempotency).
+        if !already_finalized {
+            let seq = inner.log.append(
+                req.game_id,
+                req.actor.clone(),
+                Event::GameFinalized(GameFinalizedPayload {
+                    mode: req.mode,
+                    idempotency_key: req.idempotency_key.clone(),
+                }),
+                None,
+            );
+            inner.log.register_idempotency(req.game_id, req.idempotency_key, seq);
+        }
 
         Ok(FinalizeResult {
             scorebook,
@@ -775,9 +836,10 @@ impl CoreApi for DiamondCore {
     fn resolve_judgment(&self, req: ResolveJudgmentRequest) -> CoreResult<ResolveJudgmentResult> {
         let mut inner = self.inner.lock().unwrap();
 
-        // Authority.
+        // Authority (I5/FR-020).
         let auth = inner.get_authority(req.game_id)?.clone();
         assert_authority(&req.actor, &auth)?;
+        assert_nontrivial_identity(&req.actor)?;
 
         if !inner.log.game_exists(req.game_id) {
             return Err(Error::new(ErrorCode::NotFound, "Game not found"));
@@ -878,13 +940,24 @@ impl CoreApi for DiamondCore {
         let classification = classify_with_context(&play_payload.play, &ctx);
         let reisner = render_cell(&play_payload.play, 0);
 
+        // Surface the judgment opened for this play (open or resolved), if any, rather
+        // than hardcoding None — a read of a judgment play must expose its decision.
+        let judgment = inner
+            .log
+            .all_rows(game_id)
+            .find_map(|r| match &r.event {
+                Event::JudgmentOpened(jp) if jp.for_seq == seq.0 => Some(jp.decision_id),
+                _ => None,
+            })
+            .and_then(|did| build_judgment_decision(&inner, game_id, did));
+
         Ok(Play {
             seq,
             normalized: play_payload.play.clone(),
             classification,
             reisner,
             confirmed: row.confirmed,
-            judgment: None,
+            judgment,
         })
     }
 
@@ -895,10 +968,30 @@ impl CoreApi for DiamondCore {
         }
         let proj = project_game(&inner.log, game_id);
         if proj.inning == inning && proj.half == half {
-            Ok(compute_proof_box(&proj.current_half, inning, half))
+            return Ok(compute_proof_box(&proj.current_half, inning, half));
+        }
+
+        // Half-inning ordering index (top before bottom of the same inning).
+        let half_index = |inn: u8, h: Half| -> u32 {
+            (u32::from(inn) << 1) | u32::from(h == Half::Bottom)
+        };
+        let requested = half_index(inning, half);
+        let current = half_index(proj.inning, proj.half);
+
+        if requested < current {
+            // A PAST half-inning: the current projection no longer holds its tallies,
+            // and replay-up-to-that-point is not yet implemented. Return a structured
+            // error rather than a misleading all-zeros ProofBox (no silent fabrication).
+            Err(Error::new(
+                ErrorCode::InvalidArgument,
+                format!(
+                    "historical proof box for inning {} {:?} requires replay-up-to \
+                     (not yet implemented); only the current half-inning is queryable",
+                    inning, half
+                ),
+            ))
         } else {
-            // For historical half-innings, we'd need to replay up to that point.
-            // MVP: return empty proof box for past innings.
+            // A FUTURE/not-yet-played half-inning legitimately has no tallies yet.
             Ok(ProofBox {
                 inning,
                 half,
@@ -1077,7 +1170,7 @@ mod tests {
 
         core.confirm_play(ConfirmPlayRequest {
             game_id: gid,
-            confirms_seq: r1.recorded_seq.0,
+            confirms_seq: r1.recorded_seq,
             idempotency_key: "c1".into(),
             actor: owner_actor(),
         }).unwrap();
@@ -1169,6 +1262,148 @@ mod tests {
         );
     }
 
+    /// A play that surfaced a judgment must NOT be confirmable while the judgment is
+    /// open — confirm_play returns JUDGMENT_REQUIRED (I2 / confirm_play contract).
+    #[test]
+    fn confirm_blocked_by_open_judgment() {
+        let core = DiamondCore::new();
+        let gid = core.create_game(create_game_req()).unwrap().game_id;
+
+        let judgment_play = NormalizedPlay {
+            situation: SituationDiamond {
+                runners: Runners::default(),
+                outs: 0,
+                count: Count { balls: 0, strikes: 0 },
+                batter_hand: BatterHand::Right,
+            },
+            catalyst: Catalyst {
+                batter_event: BatterEvent::FieldedOut,
+                fielders: vec![Position(6)],
+                ball_type: BallType::Ground,
+                advances: vec![Advance {
+                    runner: RunnerId(1),
+                    from: Base::Home,
+                    to: AdvanceTo::Base(Base::First),
+                    by_error: None,
+                }],
+                touched_or_misplayed_by: vec![Position(6)],
+            },
+            audit_label: None,
+        };
+
+        let r = core.record_play(RecordPlayRequest {
+            game_id: gid,
+            input: PlayInput::Normalized(judgment_play),
+            idempotency_key: "pj".into(),
+            actor: owner_actor(),
+        }).unwrap();
+        assert_eq!(r.needs, Needs::Judgment);
+        let decision_id = r.judgment.as_ref().unwrap().id;
+
+        // Confirming the recorded seq while the judgment is OPEN must be rejected.
+        let blocked = core.confirm_play(ConfirmPlayRequest {
+            game_id: gid,
+            confirms_seq: r.recorded_seq,
+            idempotency_key: "c-blocked".into(),
+            actor: owner_actor(),
+        });
+        assert!(blocked.is_err(), "confirm must be blocked while judgment open");
+        assert_eq!(blocked.unwrap_err().code, ErrorCode::JudgmentRequired);
+
+        // After resolving the judgment, the same play can be confirmed.
+        core.resolve_judgment(ResolveJudgmentRequest {
+            game_id: gid,
+            decision_id,
+            chosen: Call { token: "hit".into(), label: "Hit".into() },
+            idempotency_key: "rj".into(),
+            actor: owner_actor(),
+        }).unwrap();
+
+        let ok = core.confirm_play(ConfirmPlayRequest {
+            game_id: gid,
+            confirms_seq: r.recorded_seq,
+            idempotency_key: "c-ok".into(),
+            actor: owner_actor(),
+        });
+        assert!(ok.is_ok(), "confirm must succeed once judgment resolved: {ok:?}");
+    }
+
+    /// record_play idempotent retry of a JUDGMENT play must re-surface the open
+    /// decision + Needs::Judgment — never (Confirm, None) (I2).
+    #[test]
+    fn record_play_retry_of_judgment_resurfaces_decision() {
+        let core = DiamondCore::new();
+        let gid = core.create_game(create_game_req()).unwrap().game_id;
+
+        let judgment_play = NormalizedPlay {
+            situation: SituationDiamond {
+                runners: Runners::default(),
+                outs: 0,
+                count: Count { balls: 0, strikes: 0 },
+                batter_hand: BatterHand::Right,
+            },
+            catalyst: Catalyst {
+                batter_event: BatterEvent::FieldedOut,
+                fielders: vec![Position(6)],
+                ball_type: BallType::Ground,
+                advances: vec![Advance {
+                    runner: RunnerId(1),
+                    from: Base::Home,
+                    to: AdvanceTo::Base(Base::First),
+                    by_error: None,
+                }],
+                touched_or_misplayed_by: vec![Position(6)],
+            },
+            audit_label: None,
+        };
+
+        let first = core.record_play(RecordPlayRequest {
+            game_id: gid,
+            input: PlayInput::Normalized(judgment_play.clone()),
+            idempotency_key: "retry-key".into(),
+            actor: owner_actor(),
+        }).unwrap();
+        assert_eq!(first.needs, Needs::Judgment);
+        let first_decision = first.judgment.as_ref().unwrap().id;
+
+        // Same idempotency key → idempotency-hit branch. Must NOT degrade to Confirm/None.
+        let retry = core.record_play(RecordPlayRequest {
+            game_id: gid,
+            input: PlayInput::Normalized(judgment_play),
+            idempotency_key: "retry-key".into(),
+            actor: owner_actor(),
+        }).unwrap();
+
+        assert_eq!(retry.recorded_seq, first.recorded_seq, "retry returns the prior seq");
+        assert_eq!(retry.needs, Needs::Judgment, "retry must still need a judgment");
+        let retry_decision = retry.judgment.as_ref().expect("retry must carry the decision");
+        assert_eq!(retry_decision.id, first_decision, "retry resurfaces the same decision");
+        assert_eq!(retry_decision.status, JudgmentStatus::Open);
+    }
+
+    /// H1 wire format (SC-008): the fact-layer enums serialize snake_case so the
+    /// JSON boundary is the single unambiguous target the Swift/UniFFI side codes to.
+    #[test]
+    fn fact_enums_serialize_snake_case() {
+        let play = groundout_play();
+        let json = serde_json::to_string(&play).unwrap();
+        // batter_hand: Right → "right"; batter_event: FieldedOut → "fielded_out";
+        // ball_type: Ground → "ground"; from: Home → "home"; to: Out → "out".
+        assert!(json.contains("\"right\""), "batter_hand snake_case: {json}");
+        assert!(json.contains("\"fielded_out\""), "batter_event snake_case: {json}");
+        assert!(json.contains("\"ground\""), "ball_type snake_case: {json}");
+        assert!(json.contains("\"home\""), "from base snake_case: {json}");
+        assert!(json.contains("\"out\""), "advance_to snake_case: {json}");
+        // No PascalCase leakage of the renamed variants.
+        assert!(!json.contains("\"FieldedOut\""), "no PascalCase batter_event: {json}");
+        assert!(!json.contains("\"Ground\""), "no PascalCase ball_type: {json}");
+
+        // Classification (data-carrying) serializes its tag snake_case too.
+        let j = serde_json::to_string(&Classification::Judgment(JudgmentKind::HitVsError)).unwrap();
+        assert!(j.contains("\"judgment\""), "Classification tag snake_case: {j}");
+        assert!(j.contains("\"hit_vs_error\""), "JudgmentKind snake_case: {j}");
+    }
+
     /// Determinism: same confirmed events → byte-identical state.
     #[test]
     fn determinism_same_events_byte_identical_state() {
@@ -1185,7 +1420,7 @@ mod tests {
             }).unwrap();
             core.confirm_play(ConfirmPlayRequest {
                 game_id: gid,
-                confirms_seq: r.recorded_seq.0,
+                confirms_seq: r.recorded_seq,
                 idempotency_key: format!("c{}", i),
                 actor: owner_actor(),
             }).unwrap();

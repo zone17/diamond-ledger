@@ -83,7 +83,7 @@ fn record_confirm(core: &DiamondCore, gid: GameId, play: NormalizedPlay, tag: &s
         .unwrap_or_else(|e| panic!("record_play({tag}) failed: {e:?}"));
     core.confirm_play(ConfirmPlayRequest {
         game_id: gid,
-        confirms_seq: r.recorded_seq.0,
+        confirms_seq: r.recorded_seq,
         idempotency_key: format!("con-{tag}"),
         actor: owner(),
     })
