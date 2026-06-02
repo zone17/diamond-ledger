@@ -6,6 +6,67 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0011 — iOS Real-Core Swap (H1 consumption): module name + Swift-6 language mode
+
+- **Status:** Accepted
+- **Date:** 2026-06-02
+- **Owner:** Squad F-Integration (iOS ↔ core integration)
+- **Implements:** ADR-0009 (UniFFI Wiring) · T071 / T044 · DL-35 (#35) — relates #34
+- **Tickets:** DL-35-h1-realcore
+
+### Context
+
+ADR-0009 produced the UniFFI XCFramework + Swift bindings (the A-side of H1). Swapping the iOS
+`MockCore` for the real `DiamondCore` (T071) surfaced two integration facts the A-side handoff doc
+(`ios/Generated/README.md`) did not anticipate. Both fail loudly at build time and are recorded
+here so the next consumer (Android, or a bindings regen) does not re-discover them.
+
+### Decision
+
+1. **The binary/source module is `dl_coreFFI`, not `DiamondLedgerCoreFFI`.** UniFFI 0.28 bakes the
+   FFI C-module name from the crate **lib name** (`dl_core` → header `dl_coreFFI.h`, module
+   `dl_coreFFI`), and the generated Swift `import dl_coreFFI`. The README/`build-xcframework.sh`
+   assumed it could rename the module to `DiamondLedgerCoreFFI`; the rename mismatches the generated
+   `import` and the header copy (`cp libdl_coreFFI.h` fails — the file is `dl_coreFFI.h`). Resolution:
+   the XCFramework exposes the modulemap module `dl_coreFFI` as-generated; `Package.swift` wires a
+   `.binaryTarget` + a `DiamondLedgerCoreBindings` source target compiling the generated Swift; the
+   generated `import dl_coreFFI` resolves against the binary target's baked module. No rename.
+2. **The generated bindings compile in Swift 5 language mode.** UniFFI 0.28's output uses a
+   nonisolated global `var initializationResult`, which Swift 6 strict-concurrency rejects
+   ("not concurrency-safe ... global shared mutable state"). Resolution: the `DiamondLedgerCoreBindings`
+   target alone sets `swiftSettings: [.swiftLanguageMode(.v5)]`; every hand-written target stays on
+   Swift 6. Scoped to the generated file, reversible on a UniFFI upgrade that fixes the global.
+3. **`DiamondCoreClient` is the adapter; `MockCore` stays.** A thin `CoreClient` conformer wraps a
+   single session-lifetime `DiamondCore.ffiNew()` (the real core is stateful — it holds the
+   append-only log), maps the 11 `ffi*` methods 1:1, bridges the loose `[String:String]` facts into
+   the typed generated `NormalizedPlay` (the WoZ demo scripts produce the exact fact patterns the
+   core's classifier keys on — never a `"script"`-string shortcut into the core), and maps
+   `CoreFfiError.Core(Error)` → `CoreError` by `error.code`. `MockCore` is retained for previews/tests.
+
+### Consequences
+
+- **Real-core behavior parity is verified** by 6 `RealCoreIntegrationTests` driving the full loop
+  (Card A → confirm → Card B → resolve → finalize) against `DiamondCoreClient`; I2/SC-003, FR-007,
+  owner-as-decider, and SC-011 all hold against the real core (not the mock's canned answers).
+- **One intended divergence from MockCore:** `finalizeScorecard` on the real core computes the
+  half-inning proof box and enforces SC-011, so finalizing a *still-in-progress* half-inning is
+  rejected with `proofBoxImbalance` (the mock always returned a canned balanced book). A completed/
+  empty half-inning finalizes fine. This is the real core enforcing an invariant the mock faked —
+  surfaced, not papered over (the WoZ demo's two-play half-inning is mid-inning, so a demo "Export"
+  before the half completes will show the SC-011 rejection; expected).
+- **`scripts/build-xcframework.sh` has a latent header-name bug** (`cp ${LIB_BASENAME}FFI.h` →
+  `libdl_coreFFI.h`, but UniFFI emits `dl_coreFFI.h`) that aborts `make xcframework` at step 4. The
+  XCFramework was assembled manually with the correct names for this PR (the script is Squad A's file
+  lane). Tracked as a follow-up for Squad A to fix in-script; documented here so the next run isn't
+  blocked silently.
+
+### Reversibility
+
+High. Removing the binary/bindings targets + restoring `AppState(core: MockCore())` reverts cleanly;
+the generated artifacts are `.gitignore`d build outputs.
+
+---
+
 ## ADR-0009 — UniFFI Wiring (H1) + CLI Event-Log Persistence
 
 - **Status:** Accepted

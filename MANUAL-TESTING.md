@@ -77,9 +77,17 @@ parsing lives in the iOS adapter, not the core).
 
 The voice client lives in `ios/`: the app **logic + views are a SwiftPM package**
 (`Package.swift`, fully testable) wrapped by a thin **iOS app target** (`DiamondLedger.xcodeproj`,
-generated from `project.yml` via XcodeGen). It runs against `MockCore` (the real Rust core swaps in
-at handoff H1) and implements the make-or-break interaction: push-to-talk → **Card A** (deterministic
-confirm) / **Card B** (judgment — *your call*).
+generated from `project.yml` via XcodeGen). As of **H1 (T071 / DL-35)** it runs against the **real
+UniFFI Rust core** (`DiamondCoreClient`, wrapping the generated `DiamondCore`), not `MockCore` —
+which remains for previews/tests. It implements the make-or-break interaction: push-to-talk →
+**Card A** (deterministic confirm) / **Card B** (judgment — *your call*).
+
+**Build the real-core XCFramework first** (needs full Xcode; artifacts are `.gitignore`d):
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer make xcframework
+# emits ios/Generated/DiamondLedgerCore.xcframework + DiamondLedgerCore.swift (delete-before-regen)
+cd ios && xcodegen generate    # regenerate the app project after the binary target lands
+```
 
 ```
 1. Accept the Xcode license once if you haven't:  sudo xcodebuild -license accept
@@ -88,25 +96,38 @@ confirm) / **Card B** (judgment — *your call*).
 3. Pick a destination: click "My Mac" in the top toolbar → choose an iOS Simulator
    (e.g. iPhone 17 Pro). Building for "My Mac" fails — it's an iOS-only app.
 4. Press ▶ (Run / ⌘R). The simulator boots and the app launches (~30s first time).
-5. Tap New Game. Hold the push-to-talk mic. Long-press the status text (~1.5s) to reveal
-   the Wizard-of-Oz panel → pick "Ground out 6-3" (Card A → Confirm) or "Misplayed grounder"
+5. Dev Sign-In. Tap New Game. Hold the push-to-talk mic. Long-press the status text (~1.5s) to
+   reveal the Wizard-of-Oz panel → pick "Ground out 6-3" (Card A → Confirm) or "Misplayed grounder"
    (Card B → "Hit or Error?").
 6. Verify Card B cannot be dismissed without an explicit choice (or "Leave PENDING"), and
-   that you cannot record the next play while a judgment is unresolved (the I2 invariant).
+   that you cannot record the next play while a judgment is unresolved (the I2 invariant) — now
+   enforced by the REAL core (returns JUDGMENT_REQUIRED on a premature confirm).
 ```
 
 Headless build/test (what CI-equivalent verification looks like):
 ```bash
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+make xcframework   # build the real-core binary first (see above)
+cd ios && xcodegen generate && cd ..
 xcodebuild -project ios/DiamondLedger.xcodeproj -scheme DiamondLedger \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build   # the app
-xcodebuild -scheme DiamondLedger -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test  # 30 tests
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build   # the app (real core linked)
+xcodebuild -project ios/DiamondLedger.xcodeproj -scheme DiamondLedgerTests \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test    # 55 tests
 ```
 
-> **Status (DL-B2):** the app **builds clean and runs in the iOS 26 simulator**, and the full
-> XCTest suite passes (**47/47**, up from 30/30, incl. the I2/I5 invariants + new T047/T048
-> engine-selection tests + T056 offline-integrity + T057 finalize/export tests), verified via
-> `xcodebuild`. The `ios-build` CI job remains advisory.
+> **Status (DL-35 / H1):** the app **builds clean and launches in the iOS 26 simulator with the
+> REAL Rust core injected** (`DiamondCoreClient`), and the full XCTest suite passes (**55/55**,
+> incl. 6 new `RealCoreIntegrationTests` that drive the full Card A → confirm → Card B → resolve →
+> finalize loop against the real `DiamondCoreClient` and assert I2/SC-003, FR-007, owner-as-decider,
+> and SC-011 against the real core). Verified via `xcodebuild`. The `ios-build` CI job remains advisory.
+>
+> **Real-core vs MockCore behavior parity (verified):** the loop behaves identically to MockCore for
+> the demo scripts — clean 6-3 → Card A/confirm; misplayed grounder → Card B/open HitVsError, never
+> auto-resolved. One **intended divergence** surfaced: `finalizeScorecard` on the real core actually
+> computes the half-inning proof box and **enforces SC-011**, so finalizing a *still-in-progress*
+> half-inning is rejected with `proofBoxImbalance` (MockCore always returned a canned balanced book).
+> A completed/empty half-inning finalizes fine. This is the real core enforcing an invariant the mock
+> faked — captured in `test_finalize_midHalfInning_surfacesProofBoxImbalance_realCoreStricterThanMock`.
 >
 > **What's real:** the `AppleTranscriber` adapter shape, protocol conformance, contextual biasing,
 > the `EngineSelector` runtime seam, `ExportView` UI, `FinalizedScorebook` round-trip, and the
@@ -124,7 +145,8 @@ xcodebuild -scheme DiamondLedger -destination 'platform=iOS Simulator,name=iPhon
 >     but the real decode requires the sherpa-onnx XCFramework + Parakeet ONNX model bundle (see the
 >     handoff checklist in `ios/Sources/Speech/SherpaTranscriber.swift`).
 >   - **GRDB-backed SQLiteEventLog** — T055 / deferred to H1; `InMemoryEventLog` used in tests.
->   - **Real UniFFI core** — MockCore until H1 (T071).
+>   - **Real UniFFI core** — **DONE at H1 (T071 / DL-35)**: `DiamondCoreClient` wraps the generated
+>     `DiamondCore` and is injected in `DiamondLedgerApp.swift`. `MockCore` retained for previews/tests.
 >
 > **Pre-ship / on-device human handoffs (one-liner):** COPPA consent gate (FR-029 / T081), real
 > on-device ASR accuracy, and the sherpa model bundle are all pre-ship/on-device handoffs — none
@@ -151,7 +173,8 @@ golden diff. A malformed fixture (`evals/retrosheet-fixtures/malformed/`) must *
 |---|---|---|
 | Deterministic core (engine, judgment, Reisner, Retrosheet emit) | `cargo test` (54), clippy, SC-003 gate — **run in CI as hard gates** | nothing (headless) |
 | Retrosheet export conformance | pinned `cwevent` 3-layer gate — **hard in CI** | `cwevent` locally (optional) |
-| iOS V3 glance app + ASR adapters + Export UI | `xcodebuild test` **47/47** — **build + test pass on Mac** | **your Mac + Xcode + iOS 26 sim** |
+| iOS V3 glance app + ASR adapters + Export UI | `xcodebuild test` **55/55** — **build + test pass on Mac** | **your Mac + Xcode + iOS 26 sim** |
+| Real UniFFI core swap (H1 / DL-35) | `make xcframework` + `xcodebuild test` — app **launches with `DiamondCoreClient`** + 6 `RealCoreIntegrationTests` drive the full loop against the real core (I2/SC-003/FR-007/SC-011) | **your Mac + Xcode + iOS 26 sim** |
 | Apple ASR on-device accuracy (mic → transcript; legacy SFSpeechRecognizer today) | not testable in sim | **physical iPhone 26+ + mic + iOS 26** |
 | Real SpeechAnalyzer + AssetInventory preload (FR-021) | not implemented (legacy SFSpeechRecognizer; `preloadAssets` = auth only) | on-device handoff — see `#warning` / ADR-0010 |
 | sherpa-onnx real decode (Parakeet model) | stub path tested; real decode needs framework binary | XCFramework download + model asset |

@@ -5,8 +5,16 @@
 // This package wraps the UniFFI-generated XCFramework (Squad A / H1) plus the six thin
 // Swift-side modules: Core, Speech, Parse, Persistence, UI, Auth.
 //
-// Note: The real UniFFI XCFramework target (DiamondLedgerCore) is added in Phase B (H1).
-// Until H1 lands, ios/Sources/Core/MockCore.swift provides canned results (T008).
+// H1 wiring (T071 / DL-35): the real Rust core ships as a binary XCFramework target
+// (`DiamondLedgerCoreFFI`) plus a source target compiling the generated Swift bindings
+// (`DiamondLedgerCoreBindings`). `Core` depends on the bindings; `DiamondCoreClient.swift`
+// wraps the generated `DiamondCore` behind the unchanged `CoreClient` protocol. `MockCore`
+// stays in `Core` for previews/tests. Build the artifacts with `make xcframework` — they
+// land in `Generated/` and are `.gitignore`d (see `ios/Generated/README.md`).
+//
+// Note: the generated bindings `import dl_coreFFI` — the C module name UniFFI bakes from the
+// crate lib name (`dl_core`). The binary target's module is therefore `dl_coreFFI`, NOT
+// `DiamondLedgerCoreFFI` as the README first guessed (real-core discrepancy, see PR #).
 
 import PackageDescription
 
@@ -35,11 +43,41 @@ let package = Package(
         // .package(url: "https://github.com/groue/GRDB.swift", from: "6.0.0"),
     ],
     targets: [
+        // MARK: - DiamondLedgerCoreFFI (binary)
+        // The UniFFI-generated XCFramework: device + simulator static-lib slices wrapping the
+        // real deterministic Rust core. Exposes the C module `dl_coreFFI` (named from the crate
+        // lib `dl_core`) via its baked modulemap; the generated Swift bindings `import dl_coreFFI`.
+        // Build with `make xcframework`; the artifact is `.gitignore`d (ios/Generated/README.md).
+        .binaryTarget(
+            name: "DiamondLedgerCoreFFI",
+            path: "Generated/DiamondLedgerCore.xcframework"
+        ),
+
+        // MARK: - DiamondLedgerCoreBindings (generated Swift)
+        // Compiles the generated `DiamondLedgerCore.swift` (the `open class DiamondCore` + all the
+        // boundary records/enums). Depends on the binary target whose C module it imports. This is
+        // the module `Core` imports to reach the real core (DiamondCoreClient.swift).
+        .target(
+            name: "DiamondLedgerCoreBindings",
+            dependencies: ["DiamondLedgerCoreFFI"],
+            path: "Generated",
+            sources: ["DiamondLedgerCore.swift"],
+            // UniFFI 0.28's generated bindings are Swift-5-shaped: they use a nonisolated global
+            // `var initializationResult` that Swift 6's strict-concurrency checker rejects
+            // ("not concurrency-safe ... global shared mutable state"). Compile this ONE generated
+            // target in Swift 5 language mode; every hand-written target stays on Swift 6. This is
+            // a real-core/H1 integration finding (the README didn't flag it) — see PR #.
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+
         // MARK: - Core
         // Swift mirror of the Rust CoreApi (UniFFI boundary).
-        // Backed by MockCore until H1; swapped to the real XCFramework at H1 (T071).
+        // `MockCore` (canned, previews/tests) + `DiamondCoreClient` (real core, H1/T071) both
+        // conform to the unchanged `CoreClient` protocol. `DiamondCoreClient` wraps the generated
+        // bindings, so `Core` depends on `DiamondLedgerCoreBindings`.
         .target(
             name: "Core",
+            dependencies: ["DiamondLedgerCoreBindings"],
             path: "Sources/Core"
         ),
 
