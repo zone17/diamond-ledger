@@ -64,6 +64,7 @@ Retrosheet valued beyond SABR) is **confidence-L, untested**.
 | **0006** | **Build authorized ahead of the A1/A3 demand gate → parallel instrument + tripwires** |
 | **0007** | **v1 tech architecture: Rust core + UniFFI parity · two-engine ASR · pinned `cwevent` v0.10.0 · event-sourced SQLite/CloudKit · first slice US1+US2+US3** |
 | **0008** | Cargo **workspace root at repo root** (members must live below root) · toolchain pin bumped 1.83→1.96 (proptest MSRV) |
+| **0009** | **UniFFI wired (H1/T037)**: feature-gated derives + `custom_newtype!` + `CoreFfiError` enum + in-crate bindgen + `make xcframework` (delete-before-regenerate cache guard) · CLI event-log persistence (#128) · #127 trigger-priority reconcile (0 kind-disagreements, SC-003 intact) |
 
 ## 5. Critical invariants (spec 001 — the probe broke these once; keep them)
 
@@ -89,6 +90,7 @@ the underlying detail docs.
 | Discovery relocates the beachhead | `design-patterns/discovery-relocates-the-beachhead.md` |
 | **Shell portability in agent batch automation** (zsh/BSD; spot-check before batching) + gh native sub-issues | `best-practices/shell-portability-in-agent-batch-automation.md` |
 | **Verify generated code with the real toolchain** (not static review/advisory CI) + Cargo workspace gotchas | `best-practices/verify-generated-code-with-real-toolchain.md` |
+| **UniFFI integration gotchas** (bindgen `--library` cache pitfall · newtype→`custom_newtype!` · no fixed arrays · struct-error→enum wrapper · feature-gate + in-crate bindgen) | `best-practices/uniffi-integration-gotchas.md` |
 | **Parallel-squad integration** (advisory CI masks merge failures · worktrees outside the repo · gate the cardinal invariant) | `workflow-issues/parallel-squad-integration.md` |
 | Spec Kit + CI/merge-gate gotchas | `conventions/speckit-branch-naming-and-merge-gotchas.md` |
 | Hook command-string matching pitfalls | `best-practices/hook-command-string-matching-pitfalls.md` |

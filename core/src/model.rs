@@ -33,6 +33,12 @@ use serde::{Deserialize, Serialize};
 #[serde(transparent)]
 pub struct RunnerId(pub u32);
 
+// Integer newtype → underlying builtin on the FFI boundary (I6, integer-only). A
+// single-field tuple struct cannot be a `uniffi::Record`; `custom_newtype!` maps it
+// transparently to its primitive instead (same wire shape as `serde(transparent)`).
+#[cfg(feature = "uniffi")]
+uniffi::custom_newtype!(RunnerId, u32);
+
 // ---------------------------------------------------------------------------
 // Fielding positions
 // ---------------------------------------------------------------------------
@@ -48,6 +54,12 @@ pub struct RunnerId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Position(pub u8);
+
+// Integer newtype → underlying builtin on the FFI boundary (I6, integer-only). A
+// single-field tuple struct cannot be a `uniffi::Record`; `custom_newtype!` maps it
+// transparently to its primitive instead (same wire shape as `serde(transparent)`).
+#[cfg(feature = "uniffi")]
+uniffi::custom_newtype!(Position, u8);
 
 impl Position {
     /// The designated-hitter sentinel (`0`).
@@ -73,6 +85,7 @@ impl Position {
 /// A base on the diamond. `Home` is both the origin of the batter and the
 /// scoring destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum Base {
     /// Home plate — batter origin and scoring destination.
     Home,
@@ -84,6 +97,7 @@ pub enum Base {
 /// Which side of the plate the batter hits from (a pre-play *fact*; an input to
 /// classification's platoon-independent logic, recorded as part of the situation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum BatterHand {
     Left,
     Right,
@@ -101,6 +115,7 @@ pub enum BatterHand {
 /// integers; validation lives in the rules layer so this fact type stays a pure
 /// data carrier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Count {
     pub balls: u8,
     pub strikes: u8,
@@ -115,6 +130,7 @@ pub struct Count {
 /// `None` means the base is empty. The batter is never represented here (they
 /// occupy `Home` only as the catalyst's origin).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Runners {
     pub first: Option<RunnerId>,
     pub second: Option<RunnerId>,
@@ -125,6 +141,7 @@ pub struct Runners {
 /// state a classification reasons from. Together with [`Catalyst`] this forms a
 /// [`NormalizedPlay`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct SituationDiamond {
     /// Runners on base before the play.
     pub runners: Runners,
@@ -144,6 +161,7 @@ pub struct SituationDiamond {
 /// anything outside it lands on [`BatterEvent::Other`] and will classify as
 /// `OutOfFormat` rather than be fabricated into a known event (FR-017).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum BatterEvent {
     Single,
     Double,
@@ -174,6 +192,7 @@ pub enum BatterEvent {
 /// distinguishing a line-drive single from a misplayed pop). `None` for events
 /// with no batted ball (walk, strikeout looking, etc.).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum BallType {
     Ground,
     Line,
@@ -186,6 +205,7 @@ pub enum BallType {
 
 /// Where a runner ended up on the play.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum AdvanceTo {
     /// Advanced (or held) at a base.
     Base(Base),
@@ -199,6 +219,7 @@ pub enum AdvanceTo {
 /// the advance, if any — a fact, not a judgment. Whether that error makes a run
 /// unearned is resolved downstream (I3), not encoded here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Advance {
     /// Which runner advanced. (The batter-runner uses a `RunnerId` assigned when
     /// they become a runner.)
@@ -214,6 +235,7 @@ pub struct Advance {
 /// The **catalyst** (D5, Reisner bottom): the complete fact-record of *what
 /// occurred*. Classification reads only these facts (I1).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Catalyst {
     /// The primary batter outcome.
     pub batter_event: BatterEvent,
@@ -247,6 +269,7 @@ pub struct Catalyst {
 /// play is a judgment, it is flagged as a judgment regardless of this label
 /// (FR-006/FR-006a). Treat it as opaque provenance, never as a control input.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct NormalizedPlay {
     /// Pre-play state (Reisner top).
     pub situation: SituationDiamond,
@@ -268,6 +291,7 @@ pub struct NormalizedPlay {
 /// module). Roughly ~85% `Deterministic` / ~15% `Judgment` / ~5% `OutOfFormat`
 /// on representative corpora.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum Classification {
     /// Facts fully determine the scoring outcome; no human judgment required.
     Deterministic,
@@ -281,6 +305,7 @@ pub enum Classification {
 
 /// The kind of scoring judgment a play's facts demand (data-model §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum JudgmentKind {
     /// Hit vs. error on a ball a fielder touched/misplayed.
     HitVsError,

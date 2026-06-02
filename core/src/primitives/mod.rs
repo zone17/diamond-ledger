@@ -42,6 +42,12 @@ use crate::rules::project_game;
 ///
 /// Thread-safety: wrapped in `Mutex` for `Send + Sync`. MVP uses single-threaded access;
 /// the `Mutex` is a minimal guard for future async surfaces.
+///
+/// Under the `uniffi` feature this is also a UniFFI **Object** (heap-allocated behind
+/// `Arc`, passed by reference). The exported constructor + method wrappers live in the
+/// `#[uniffi::export]` impl block below; they delegate to the inherent `CoreApi`
+/// methods 1:1 (same behavior across CLI/agent/UI — parity, SC-008).
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct DiamondCore {
     inner: Mutex<CoreInner>,
 }
@@ -73,11 +79,159 @@ impl DiamondCore {
             inner: Mutex::new(CoreInner::new()),
         }
     }
+
+    /// Capture the full core state as a serializable snapshot (#128 — CLI persistence).
+    ///
+    /// The snapshot is the append-only event log plus the per-game authority records —
+    /// everything needed to rebuild every game's projection deterministically (I6). The
+    /// `dl` CLI persists this between invocations so a game can be built across separate
+    /// commands. The log stays append-only: `restore` then `record_play` appends, never
+    /// rewrites.
+    #[must_use]
+    pub fn snapshot(&self) -> CoreSnapshot {
+        let inner = self.inner.lock().unwrap();
+        CoreSnapshot {
+            log: inner.log.clone(),
+            authorities: inner.authorities.clone(),
+        }
+    }
+
+    /// Rebuild a core from a previously captured [`CoreSnapshot`] (#128).
+    #[must_use]
+    pub fn restore(snapshot: CoreSnapshot) -> Self {
+        DiamondCore {
+            inner: Mutex::new(CoreInner {
+                log: snapshot.log,
+                authorities: snapshot.authorities,
+            }),
+        }
+    }
+}
+
+/// A serializable snapshot of the whole core (#128 — CLI cross-invocation persistence).
+///
+/// Integer-only / `serde`-faithful (I6): rebuilding from this yields byte-identical
+/// projections. Persisted by the `dl` CLI to `$DL_STATE_FILE`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CoreSnapshot {
+    log: EventLog,
+    authorities: HashMap<u64, GameAuthority>,
 }
 
 impl Default for DiamondCore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UniFFI-exported surface (T037 / H1)
+// ---------------------------------------------------------------------------
+//
+// This block is the language-neutral capability boundary Swift/Kotlin/CLI/agent all
+// call (Art. II parity). Each method delegates 1:1 to the inherent `CoreApi` method
+// and maps the structured `Error` into the throwable `CoreFfiError` (zero info loss:
+// the `code` is preserved). The trait stays plain so the Swift `MockCore` can keep
+// implementing it without the macro (CoreClient.swift T044). The 11 methods are the
+// 7 write/lifecycle primitives + the 4 reads named in the contract.
+#[cfg(feature = "uniffi")]
+#[uniffi::export]
+impl DiamondCore {
+    /// Construct a fresh in-memory core. Foreign callers invoke `DiamondCore()`.
+    #[uniffi::constructor]
+    pub fn ffi_new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self::new())
+    }
+
+    /// See [`CoreApi::create_game`].
+    pub fn ffi_create_game(
+        &self,
+        req: crate::ffi::CreateGameRequest,
+    ) -> crate::ffi::FfiResult<crate::ffi::CreateGameResult> {
+        Ok(<Self as CoreApi>::create_game(self, req)?)
+    }
+
+    /// See [`CoreApi::record_play`].
+    pub fn ffi_record_play(
+        &self,
+        req: crate::ffi::RecordPlayRequest,
+    ) -> crate::ffi::FfiResult<crate::ffi::RecordPlayResult> {
+        Ok(<Self as CoreApi>::record_play(self, req)?)
+    }
+
+    /// See [`CoreApi::confirm_play`].
+    pub fn ffi_confirm_play(
+        &self,
+        req: crate::ffi::ConfirmPlayRequest,
+    ) -> crate::ffi::FfiResult<crate::ffi::ConfirmPlayResult> {
+        Ok(<Self as CoreApi>::confirm_play(self, req)?)
+    }
+
+    /// See [`CoreApi::advance_runner`].
+    pub fn ffi_advance_runner(
+        &self,
+        req: crate::ffi::AdvanceRunnerRequest,
+    ) -> crate::ffi::FfiResult<crate::ffi::AdvanceRunnerResult> {
+        Ok(<Self as CoreApi>::advance_runner(self, req)?)
+    }
+
+    /// See [`CoreApi::resolve_judgment`].
+    pub fn ffi_resolve_judgment(
+        &self,
+        req: crate::ffi::ResolveJudgmentRequest,
+    ) -> crate::ffi::FfiResult<crate::ffi::ResolveJudgmentResult> {
+        Ok(<Self as CoreApi>::resolve_judgment(self, req)?)
+    }
+
+    /// See [`CoreApi::correct_event`].
+    pub fn ffi_correct_event(
+        &self,
+        req: crate::ffi::CorrectEventRequest,
+    ) -> crate::ffi::FfiResult<crate::ffi::CorrectEventResult> {
+        Ok(<Self as CoreApi>::correct_event(self, req)?)
+    }
+
+    /// See [`CoreApi::finalize_scorecard`].
+    pub fn ffi_finalize_scorecard(
+        &self,
+        req: crate::ffi::FinalizeRequest,
+    ) -> crate::ffi::FfiResult<crate::ffi::FinalizeResult> {
+        Ok(<Self as CoreApi>::finalize_scorecard(self, req)?)
+    }
+
+    /// See [`CoreApi::get_game_state`].
+    pub fn ffi_get_game_state(
+        &self,
+        game_id: crate::ffi::GameId,
+    ) -> crate::ffi::FfiResult<crate::ffi::GameState> {
+        Ok(<Self as CoreApi>::get_game_state(self, game_id)?)
+    }
+
+    /// See [`CoreApi::list_game_events`].
+    pub fn ffi_list_game_events(
+        &self,
+        game_id: crate::ffi::GameId,
+    ) -> crate::ffi::FfiResult<Vec<crate::ffi::EventSummary>> {
+        Ok(<Self as CoreApi>::list_game_events(self, game_id)?)
+    }
+
+    /// See [`CoreApi::get_play`].
+    pub fn ffi_get_play(
+        &self,
+        game_id: crate::ffi::GameId,
+        seq: crate::ffi::Seq,
+    ) -> crate::ffi::FfiResult<crate::ffi::Play> {
+        Ok(<Self as CoreApi>::get_play(self, game_id, seq)?)
+    }
+
+    /// See [`CoreApi::get_proof_box`].
+    pub fn ffi_get_proof_box(
+        &self,
+        game_id: crate::ffi::GameId,
+        inning: u8,
+        half: crate::ffi::Half,
+    ) -> crate::ffi::FfiResult<crate::ffi::ProofBox> {
+        Ok(<Self as CoreApi>::get_proof_box(self, game_id, inning, half)?)
     }
 }
 
