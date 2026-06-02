@@ -77,13 +77,19 @@ Retrosheet valued beyond SABR) is **confidence-L, untested**.
 
 ## 6. Critical patterns & learnings index (`docs/solutions/`)
 
+**Canonical index layer (seeded 2026-06-02):** `patterns/critical-patterns.md` (P1 invariants:
+assert-real-signal-not-proxy, fact-derived classification, no-float determinism, owner-as-decider) ·
+`patterns/common-solutions.md` (P2/P3 index + fast-path checklists). Start there; the table below is
+the underlying detail docs.
+
 | Pattern | File |
 |---|---|
 | **Spec-coherence probe** — throwaway agent build to break a spec before production code | `design-patterns/spec-coherence-probe.md` |
 | Discovery relocates the beachhead | `design-patterns/discovery-relocates-the-beachhead.md` |
+| **Shell portability in agent batch automation** (zsh/BSD; spot-check before batching) + gh native sub-issues | `best-practices/shell-portability-in-agent-batch-automation.md` |
 | Spec Kit + CI/merge-gate gotchas | `conventions/speckit-branch-naming-and-merge-gotchas.md` |
 | Hook command-string matching pitfalls | `best-practices/hook-command-string-matching-pitfalls.md` |
-| `/watch-ci` gate choreography | `workflow-issues/watch-ci-gate-choreography.md` |
+| `/watch-ci` gate choreography (+ `skipped`≠`failure`) | `workflow-issues/watch-ci-gate-choreography.md` |
 | Private-repo branch-protection fallback · unauthored template root commit | `conventions/` |
 
 ## 7. Anti-patterns (do not reintroduce)
@@ -108,5 +114,5 @@ plan; run the **spec-coherence probe** before planning. Branch discipline is hoo
 - Authority: `.specify/memory/constitution.md` · Decisions: `DECISIONS.md` · Workflow: `CONTRIBUTING.md`
 - Product: `docs/product/` (PR-FAQ, discovery, experiments) · Spec + prototype: `specs/001-voice-scorebook-core/`
 - Learnings: `docs/solutions/`
-- **Open follow-up (flagged):** seed `docs/solutions/patterns/critical-patterns.md` + `common-solutions.md`
-  (ADR-0001 follow-up) if/when the canonical-pattern-index layer is wanted.
+- **Pattern index layer:** ✅ seeded 2026-06-02 — `docs/solutions/patterns/critical-patterns.md` +
+  `common-solutions.md` (ADR-0001 follow-up done). Keep them current after each `/ce-compound`.

@@ -1,6 +1,7 @@
 ---
 module: development-workflow
 date: 2026-06-01
+last_updated: 2026-06-02
 problem_type: workflow_issue
 component: development_workflow
 severity: medium
@@ -43,6 +44,23 @@ Practical rules learned this session:
   PR (not the branch push) is what triggers a `pull_request` run.
 - Chaining a push and the next command in one bash call does **not** help: the gate is evaluated
   PreToolUse on the *next* call regardless.
+
+### Reading the result: `skipped` is not `failure`
+
+A run can be **green overall while one job is `skipped`**. The repo's `branch-name` CI job is
+`if: github.event_name == 'pull_request'`, so on a **push to `main`** (e.g. after a squash-merge) it
+is correctly **skipped**, not failed. A `gh run watch ... --json` formatter that maps *any*
+non-`success` conclusion to ❌ (`if .conclusion=="success" then "✅" else "❌"`) will mislabel that
+skipped job as a failure and trigger a false alarm. Always read the **run-level** conclusion and the
+**literal** per-job conclusion, and treat the three states distinctly:
+
+```bash
+gh run view "$RUN" --json conclusion --jq '.conclusion'                 # success | failure | ...
+gh run view "$RUN" --json jobs --jq '.jobs[]|"\(.conclusion)\t\(.name)"'  # success | skipped | failure
+```
+
+`skipped` and `success` both mean "nothing is wrong." Only `failure`/`cancelled`/`timed_out` warrant
+investigation — and per project rule, a `main` failure is investigated and reported, never auto-fixed.
 
 ## Why This Matters
 
