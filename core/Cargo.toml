@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    ".",
+    "../adapters/cli",
+    "../adapters/agent",
+]
+
+[package]
+name        = "dl-core"
+version     = "0.1.0"
+edition     = "2021"
+description = "Diamond Ledger — deterministic voice-to-scorebook core (integer/fixed-point only)"
+license     = "UNLICENSED"
+
+# ADR-0007 / D1: This crate is the platform-independent deterministic moat.
+# No f32/f64 anywhere in this crate — enforced by `#![deny(clippy::float_arithmetic)]`
+# in src/lib.rs and the clippy.toml lint config. Ratios (AVG, OBP, …) are adapter-layer
+# concerns. See plan.md "Technical Context" and research.md D1.
+
+[lib]
+name = "dl_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+proptest = "1"
+insta    = { version = "1", features = ["json"] }
