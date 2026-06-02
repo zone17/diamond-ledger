@@ -14,6 +14,17 @@
 
 CARGO ?= cargo
 
+# Host dynamic-library extension for the UniFFI cdylib: .dylib on macOS, .so on Linux.
+# uniffi-bindgen reads metadata from the BUILT host library; the extension is OS-specific
+# (Linux CI builds libdl_core.so, not .dylib). Detected via `uname`.
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+  DYLIB_EXT := dylib
+else
+  DYLIB_EXT := so
+endif
+HOST_DYLIB := target/debug/libdl_core.$(DYLIB_EXT)
+
 help:
 	@echo "Diamond Ledger — make targets:"
 	@echo "  make demo         end-to-end pipeline smoke (build + test + lint + gates)"
@@ -109,13 +120,13 @@ ffi-check:
 # so CI (ubuntu/macos) can assert the bindings generate non-empty (cache-pitfall guard).
 # Output: target/uniffi/swift/dl_core.swift (+ FFI header + modulemap).
 uniffi-bindings:
-	@echo ">> generating Swift bindings from the host dylib (delete-before-regenerate)"
+	@echo ">> generating Swift bindings from the host lib ($(HOST_DYLIB), delete-before-regenerate)"
 	$(CARGO) build -p dl-core --features uniffi --lib
 	@rm -rf target/uniffi/swift && mkdir -p target/uniffi/swift
 	$(CARGO) run -p dl-core --features uniffi --bin uniffi-bindgen -- \
-		generate --library target/debug/libdl_core.dylib --language swift --out-dir target/uniffi/swift
+		generate --library $(HOST_DYLIB) --language swift --out-dir target/uniffi/swift
 	@test -s target/uniffi/swift/dl_core.swift \
-		|| (echo "FAIL: bindgen produced no Swift (cache pitfall — host dylib lacked the feature)"; exit 1)
+		|| (echo "FAIL: bindgen produced no Swift (cache pitfall — host lib lacked the feature)"; exit 1)
 	@echo "OK: target/uniffi/swift/dl_core.swift generated ($$(wc -l < target/uniffi/swift/dl_core.swift) lines)"
 
 # Build the full iOS XCFramework + Swift bindings (device + simulator). Needs Xcode.
