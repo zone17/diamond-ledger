@@ -1,0 +1,85 @@
+{
+  "_version": "1.0.0",
+  "_interface": "evals/INTERFACE.md §2 (gold-game format v1.1.0)",
+  "_task": "T065 — gold game packaging so accuracy.sh (T042) can consume it",
+
+  "game_id": "LAN2024091601",
+  "package_dir": "evals/gold/2024-LAN-NYN-20240916",
+
+  "accuracy_runner_inputs": {
+    "meta_json": "meta.json",
+    "audio": "audio/narration.m4a",
+    "audio_fallback": "audio/narration.txt",
+    "reisner_scorecard": "reisner/scorecard.json",
+    "retrosheet_evn": "retrosheet/LAN2024091601.EVN"
+  },
+
+  "gate_preconditions": {
+    "cwevent_gate_dir": "retrosheet",
+    "cwevent_gate_year": 2024,
+    "expected_csv": "retrosheet/expected.csv",
+    "cwevent_version_pin": "0.10.0"
+  },
+
+  "accuracy_runner_contract": {
+    "h3_ready_field": "meta.json.h3_ready",
+    "field_accuracy_mode_label": "FIELD ACCURACY (gold game: LAN2024091601)",
+    "advisory_mode_label": "SELF-CONSISTENCY (advisory — not field accuracy)",
+    "sc_001_threshold": 0.90,
+    "sc_002_threshold": 0.85,
+    "sc_001_source_field": "reisner_scorecard.innings[*].top.plays[*].play_type_label",
+    "sc_002_source_field": "reisner_scorecard.innings[*].top.plays[*].reisner_cell"
+  },
+
+  "human_handoff_steps": [
+    {
+      "id": "H-1",
+      "description": "Capture or narrate play-by-play audio",
+      "output_file": "audio/narration.m4a",
+      "status": "PENDING"
+    },
+    {
+      "id": "H-2",
+      "description": "Hand-score the game in Reisner notation (independent from H-3)",
+      "output_file": "reisner/scorecard.json",
+      "status": "PENDING"
+    },
+    {
+      "id": "H-3",
+      "description": "Independently produce the Retrosheet EVN (replace scaffold)",
+      "output_file": "retrosheet/LAN2024091601.EVN",
+      "status": "PENDING",
+      "_note": "Current EVN is the harness scaffold. Must be replaced with human-produced file."
+    },
+    {
+      "id": "H-4",
+      "description": "Cross-diff against published Retrosheet file",
+      "output_file": "retrosheet/published.EVN",
+      "status": "PENDING"
+    },
+    {
+      "id": "H-5",
+      "description": "Set meta.json.h3_ready=true after all prior steps complete",
+      "output_field": "meta.json.h3_ready",
+      "status": "PENDING"
+    }
+  ],
+
+  "grammar_constructs_exercised": {
+    "hits": ["S", "S$", "D$", "T$", "HR", "HR/F"],
+    "outs": ["K", "8", "6-3", "4-3", "5-3", "6-4-3", "3"],
+    "walks": ["W"],
+    "errors": ["E6"],
+    "stolen_bases": ["SB3"],
+    "caught_stealing": ["CS2(26)"],
+    "advances": [".1-2", ".1-3", ".1-H", ".2-H", ".3-H"],
+    "modifiers": ["/F", "/L", "/G"],
+    "multi_run_advances": ["HR.1-H", "HR.1-H.2-H"]
+  },
+
+  "judgment_plays_in_game": {
+    "count_approximate": 2,
+    "types": ["HitVsError", "AmbiguousAdvance"],
+    "_note": "Inning 4 top play 3 (E6) is a HitVsError judgment; Inning 6 top play 1 (T9 + 3-H advance after 6-3) has an ambiguous advance. The human scorer's judgment_resolved_as entries in scorecard.json become ground truth for SC-002."
+  }
+}

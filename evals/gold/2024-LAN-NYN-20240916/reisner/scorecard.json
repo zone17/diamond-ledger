@@ -1,0 +1,25 @@
+{
+  "game_id": "LAN2024091601",
+  "scorer": "PLACEHOLDER — human hand-scorer (see HUMAN_HANDOFF.md step H-2)",
+  "scored_at": null,
+  "_status": "HUMAN_HANDOFF_PENDING",
+  "_instructions": [
+    "This file must be produced by a human scorer working independently from the EVN producer.",
+    "See HUMAN_HANDOFF.md step H-2 for the full protocol.",
+    "",
+    "The scorer must:",
+    "  1. Use the LAN2024091601.EVN scaffold (or the published Retrosheet .EVN once downloaded)",
+    "     as the source of play facts.",
+    "  2. Score each play in Reisner notation following the schema in evals/INTERFACE.md §2.2.",
+    "  3. Record judgment calls (HitVsError, etc.) with judgment_resolved_as — not just the outcome.",
+    "  4. Do NOT copy from a prior scoring of this game — independence is required for H3.",
+    "",
+    "Schema reference: evals/INTERFACE.md §2.2",
+    "innings array must cover all 9 innings (top and bottom), one entry per plate appearance.",
+    "",
+    "When complete: validate with",
+    "  python3 -c \"import json; d=json.load(open('scorecard.json')); print('game_id:', d['game_id'], '| innings:', len(d.get('innings', [])))\"",
+    "then set meta.json.scorers.reisner to the scorer's name/handle."
+  ],
+  "innings": []
+}

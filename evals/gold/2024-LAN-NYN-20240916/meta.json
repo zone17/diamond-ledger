@@ -1,0 +1,52 @@
+{
+  "game_id": "LAN2024091601",
+
+  "_game_selection_rationale": [
+    "LAN vs NYN 2024-09-16 is the primary gold-game candidate for these reasons:",
+    "1. PERIOD: 2024 regular season — aligns with the existing retrosheet-fixtures/2024 corpus, so the",
+    "   same TEAM2024 format is exercised end-to-end.",
+    "2. PLAYS: 61 cwevent event rows across 9 full innings. AT-BAT RANGE: 50-70 plate appearances,",
+    "   well within the 50-80 target in BUILD.md. No extra innings, no suspended game complexity.",
+    "3. GRAMMAR COVERAGE: the hand-authored EVN exercises all reduced-grammar constructs:",
+    "   hits (S/D/T/HR with and without fielder), strikeout K, walk W, HP, IW, error E6,",
+    "   stolen base SB3, caught stealing CS2(26), defensive indifference DI,",
+    "   advance strings (.1-2, .1-H, .2-H, .3-H), modifier /F /L /G, sacrifice fly /SF concept,",
+    "   multi-fielder chains 6-4-3 4-3 5-3 6-3 3-6, single-fielder fly 8, inside-park HR/F.",
+    "4. NARRATION-FRIENDLY: 2024 Mets/Dodgers is heavily documented in box scores, play-by-plays,",
+    "   and broadcast footage — easy to narrate from public sources.",
+    "5. BEACHHEAD ALIGNMENT: LAN/NYN is a nationally covered game a serious scorer would recognise,",
+    "   but play complexity stays within the reduced grammar (~95% deterministic, ~5% judgment) —",
+    "   matching the amateur/serious-scorer beachhead population's realistic game.",
+    "6. FREE THIRD CHECK: once the human produces an independent EVN, cross-diff against the",
+    "   published Retrosheet file (download from retrosheet.org/game.htm, 2024 season event files)",
+    "   gives a free third independent validation."
+  ],
+
+  "date": "2024-09-16",
+  "home_team": "LAN",
+  "away_team": "NYN",
+
+  "scorers": {
+    "reisner": "PLACEHOLDER — human scorer (see HUMAN_HANDOFF.md step H-2)",
+    "retrosheet": "PLACEHOLDER — independent scorer (see HUMAN_HANDOFF.md step H-3; MUST differ from reisner scorer or be same scorer on different day)"
+  },
+
+  "cwevent_verdict": {
+    "passed": false,
+    "_note": "Set to false until the HUMAN-produced independent EVN is verified (current EVN is the harness scaffold — see HUMAN_HANDOFF.md). When the human delivers retrosheet/<GAMEID>.EVN and it passes retrosheet-gate.sh with zero stderr warnings, set passed=true and fill in run_at + event_rows_emitted.",
+    "cwevent_version": "0.10.0",
+    "run_at": null,
+    "stderr_clean": null,
+    "event_rows_emitted": null
+  },
+
+  "published_retrosheet_evn": "retrosheet/published.EVN",
+  "_published_evn_note": "Download from https://www.retrosheet.org/game.htm (2024 season, select LAN home games). Rename to published.EVN and place in retrosheet/. The cross-diff step in HUMAN_HANDOFF.md validates our independently-produced EVN against this file.",
+
+  "cross_diff_clean": null,
+
+  "h3_ready": false,
+  "_h3_note": "h3_ready becomes true ONLY when: (1) cwevent_verdict.passed==true on the HUMAN-produced EVN, (2) scorers.reisner != scorers.retrosheet (or documented independence), (3) reisner/scorecard.json is present, (4) audio/narration.m4a or audio/narration.txt is present. Until then all accuracy metrics are SELF-CONSISTENCY (advisory) per INTERFACE.md §3.4.",
+
+  "notes": "Harness scaffold committed 2026-06-02. EVN in retrosheet/ is the harness template — it provides the grammar-correct structure and has passed cwevent Layer 2+3 (61 event rows, zero stderr warnings). The HUMAN steps (H-1 audio, H-2 Reisner hand-score, H-3 independent EVN production) are documented in HUMAN_HANDOFF.md. After the human delivers these artifacts: (a) replace the scaffold EVN with the independently-produced one, (b) regenerate expected.csv, (c) run retrosheet-gate.sh, (d) update cwevent_verdict, scorers, cross_diff_clean, and set h3_ready=true."
+}
