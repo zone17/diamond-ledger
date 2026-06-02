@@ -122,11 +122,28 @@ concurrency bugs. The highest-leverage reviewer targets: cross-language wire for
 *every* boundary of a "never silently X" invariant (not just the obvious one), and async/continuation
 lifecycles.
 
+**A second round made the case overwhelming.** The next four squad PRs (correct_event, GRDB persistence,
+multi-target CI, the real-core swap) each passed CI + their own unit tests, and the review gate caught a
+**real blocker in every one**: a **P0 cardinal violation** (correcting a play *into* a judgment silently
+advanced authoritative state through the undecided call — and the silent-resolution counter was never
+fired on the projection path, so the SC-003 gate passed **vacuously**); two SC-006 **data-loss** paths (a
+read-only fd for `synchronize()` doesn't fsync; non-validating journal load silently skipped a mid-file
+corrupt line → idempotency missed a present seq → duplicate write → replay throws); a **porous FR-022
+gate** (the no-raw-audio check only matched audio-named *receivers*, missing `Data.write(to:)`/`write_all`
+— the most common idioms); and a Card-B **resolve-without-confirm** break. All are contract/invariant
+defects invisible to compilers and unit tests. The vacuous-gate one is the sharpest lesson: **a "never
+silently X" gate is only as strong as its instrumentation** — close the gap *architecturally* (withhold
+the state), don't just trust the counter, and make the gate actually exercise the path.
+
 **Rules:**
 - Run a real review → fix → re-verify → merge gate on each squad PR; do **not** merge on green CI alone.
 - Independently re-verify the *cardinal* invariant on the fixed commit before merge (here: re-run the
   SC-003 gate after the core fixes) — fixes near the invariant can silently regress it.
+- Audit that the invariant gate is **instrumented on every mutation path** (not just the obvious one) —
+  a vacuously-green gate is worse than no gate.
 - Merge order matters when branches share a file: merge the most isolated first, the cross-cutting last.
+- When you swap a real stateful implementation in for a stateless mock, expect a *class* of bugs and
+  test the **real** input path, not idealized proxies — see [[mock-to-real-stateful-core-swap]].
 
 ## 5. Two squads numbered the same ADR — renumber the later merger
 
