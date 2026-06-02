@@ -55,29 +55,5 @@ public enum ParseError: Error, Sendable {
     case emptyInput
 }
 
-// MARK: - Parser placeholder
-
-/// Converts a `Transcript` into a `NormalizedPlay` using a deterministic grammar.
-///
-/// TODO: T049 — implement the reduced grammar parser.
-///   Example reductions:
-///     "ground ball to short" → { "trajectory": "ground_ball", "fielder_primary": "SS" }
-///     "threw him out at first" → { "putout_fielder": "1B", "outs_recorded": "1" }
-///     "ground ball to short, threw him out at first" → { "batter_result": "groundout",
-///       "fielders": "6-3", "outs_recorded": "1" }
-public struct GrammarParser: Sendable {
-    public init() {}
-
-    /// Parse a `Transcript` into a `NormalizedPlay`.
-    ///
-    /// - Parameter transcript: ASR output from `Transcriber` (T046).
-    /// - Returns: `NormalizedPlay` fact map ready for `CoreClient.recordPlay`.
-    /// - Throws: `ParseError.outOfGrammar` if no production matches;
-    ///           `ParseError.ambiguous` if multiple candidates exist (→ clarifying Q, T050).
-    ///
-    /// TODO: T049 — implement grammar productions.
-    public func parse(_ transcript: Transcript) throws -> NormalizedPlay {
-        // Placeholder — T049.
-        throw ParseError.outOfGrammar(transcript: transcript.text)
-    }
-}
+// GrammarParser is implemented in GrammarParser.swift (T049/T050 — DL-102).
+// This file provides the shared types (NormalizedPlay, ParseError) consumed by the parser.

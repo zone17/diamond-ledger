@@ -25,8 +25,15 @@
 /// - TODO: T057 — Export UI.
 /// - TODO: T082 — Share-link action (post-MVP).
 
-import Foundation
+import SwiftUI
 
-// This file is intentionally minimal — it exists only to give the SwiftPM `UI` target
-// at least one compilable Swift source. All real implementation lives in sub-directories
-// created at the tasks listed above.
+// This file provides the UI target's module-level umbrella imports.
+// All real implementation lives in sub-directories:
+//   UI/App/         — DiamondLedgerApp, AppState, MainView
+//   UI/Auth/        — SignInView
+//   UI/NewGame/     — NewGameView
+//   UI/HUD/         — HUDView, OutsDotsView, BaseDiamondView
+//   UI/PushToTalk/  — PushToTalkView, WoZScript
+//   UI/CardA/       — CardAView
+//   UI/CardB/       — CardBView
+//   UI/Clarify/     — ClarifyView, ManualEntryView
