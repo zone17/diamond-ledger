@@ -103,12 +103,24 @@ xcodebuild -project ios/DiamondLedger.xcodeproj -scheme DiamondLedger \
 xcodebuild -scheme DiamondLedger -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test  # 30 tests
 ```
 
-> **Status:** the app **builds clean and runs in the iOS 26 simulator**, and the full XCTest
-> suite passes (**30/30**, incl. the I2 "Card B never auto-resolves" + I5 "unauthorized"
-> invariants), verified via `xcodebuild`. The `ios-build` CI job remains advisory (CI runners
-> would need Xcode + an iOS runtime to make it a hard gate). What's still **stubbed** for this
-> increment: real ASR (a Wizard-of-Oz stub stands in), GRDB-backed persistence (in-memory for
-> now), and the real UniFFI core (MockCore until H1).
+> **Status (DL-B2):** the app **builds clean and runs in the iOS 26 simulator**, and the full
+> XCTest suite passes (**47/47**, up from 30/30, incl. the I2/I5 invariants + new T047/T048
+> engine-selection tests + T056 offline-integrity + T057 finalize/export tests), verified via
+> `xcodebuild`. The `ios-build` CI job remains advisory.
+>
+> **What's real:** the `AppleTranscriber` adapter shape, protocol conformance, contextual biasing,
+> `AssetInventory` preload, `EngineSelector` runtime seam, `ExportView` UI, `FinalizedScorebook`
+> round-trip, and the offline integrity test (100-play game, no data loss, SC-006).
+>
+> **What's stubbed (human handoff required):**
+>   - **Real ASR accuracy** — `AppleTranscriber` compiles and the adapter is wired, but accuracy
+>     testing (mic → `SpeechAnalyzer` → transcript) requires a **physical iPhone + iOS 26 + mic**.
+>     The simulator has no microphone; `isAvailable` returns `false` there (correct behaviour).
+>   - **sherpa-onnx framework** — `SherpaTranscriber` compiles and the stub path works in tests,
+>     but the real decode requires the sherpa-onnx XCFramework + Parakeet ONNX model (see the
+>     handoff checklist in `ios/Sources/Speech/SherpaTranscriber.swift`).
+>   - **GRDB-backed SQLiteEventLog** — T055 / deferred to H1; `InMemoryEventLog` used in tests.
+>   - **Real UniFFI core** — MockCore until H1 (T071).
 
 ---
 
@@ -131,4 +143,7 @@ golden diff. A malformed fixture (`evals/retrosheet-fixtures/malformed/`) must *
 |---|---|---|
 | Deterministic core (engine, judgment, Reisner, Retrosheet emit) | `cargo test` (54), clippy, SC-003 gate — **run in CI as hard gates** | nothing (headless) |
 | Retrosheet export conformance | pinned `cwevent` 3-layer gate — **hard in CI** | `cwevent` locally (optional) |
-| iOS V3 glance app | read-review + 1 fix; tests written | **your Mac + Xcode 16 + iOS 26 sim** |
+| iOS V3 glance app + ASR adapters + Export UI | `xcodebuild test` **47/47** — **build + test pass on Mac** | **your Mac + Xcode + iOS 26 sim** |
+| Apple ASR on-device accuracy (mic → SpeechAnalyzer → transcript) | not testable in sim | **physical iPhone 26+ + mic + iOS 26** |
+| sherpa-onnx real decode (Parakeet model) | stub path tested; real decode needs framework binary | XCFramework download + model asset |
+| SQLite / GRDB crash-safe event log (SC-006 full) | InMemoryEventLog; GRDB deferred to H1 | T055 + device crash test |

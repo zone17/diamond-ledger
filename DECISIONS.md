@@ -6,6 +6,66 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0009 — Two-Engine ASR Adapter Shape + Engine-Selection Seam (T047/T048)
+
+- **Status:** Accepted
+- **Date:** 2026-06-02
+- **Owner:** Squad B (iOS Voice Client)
+- **Relates to:** ADR-0007 (two-engine ASR design decision D2), Story B2 (#78), T047 (#80), T048 (#81)
+
+### Context
+
+ADR-0007 specified a two-engine ASR architecture: Apple `SpeechAnalyzer` (primary, iOS 26+) and
+sherpa-onnx/Parakeet (fallback/portable). This ADR documents the concrete adapter design choices
+made during implementation:
+
+1. **`@available(iOS 26, *)`** on `AppleTranscriber` — the type guard is placed on the class, not
+   individual methods, so callers (EngineSelector) check `#available(iOS 26, *)` once at the
+   selection site rather than every call site.
+
+2. **`SherpaTranscriber` compiled in all targets but `SHERPA_ONNX_ENABLED` gates real decode** —
+   the adapter shape, protocol conformance, and selection logic compile always; the real
+   sherpa-onnx XCFramework is behind a compile flag to avoid a missing-framework build error until
+   the framework binary is fetched and committed to the repo.
+
+3. **`TranscriberEngineSelector` with `nonisolated(unsafe) static var forceStub`** — the debug
+   toggle needs to be mutable from test setUp (serial context) but is never written concurrently
+   in production, making `nonisolated(unsafe)` the correct Swift 6 annotation.
+
+4. **`SherpaStubSeam.isOverrideActive`** — same pattern, test-only mutation.
+
+5. **Integer confidence at the adapter boundary** — both adapters convert their native float
+   confidence to `Int(clamp(native * 100, 0, 100).rounded())` before returning `Transcript`.
+   This eliminates float-precision divergence between engines at the `GrammarParser` threshold.
+
+### Decision
+
+- Both adapters conform to `Transcriber: Sendable` (actor-based, Swift 6 strict concurrency).
+- `EngineSelector.resolve()` returns `any Transcriber` (existential) so call sites remain
+  engine-agnostic.
+- The WoZ stub remains the default in simulator/debug builds (`forceStub = true`), preserving
+  the existing WoZ demo workflow.
+- Real on-device Apple ASR accuracy (mic → `SpeechAnalyzer` → transcript) requires a physical
+  device and microphone. This is a human handoff, documented in `MANUAL-TESTING.md`.
+- The sherpa-onnx framework download + model asset is a human handoff (see `SherpaTranscriber.swift`
+  handoff checklist); the compile-always stub path prevents blocking the build.
+
+### Alternatives Considered
+
+- **Dynamic library dispatch (ObjC `id<Transcriber>`)**: rejected — Swift protocols with
+  `consuming` parameters require value-type dispatch.
+- **Single-engine with fallback inside the engine**: rejected — would couple Apple and sherpa
+  concerns; cleaner as separate conformers behind the selection seam.
+
+### Consequences
+
+- `AppleTranscriber.preloadAssets()` calls the `SFSpeechAnalyzerAssetInventory` shim; the shim
+  is updated to the stable API once the iOS 26 SDK GM releases (tracked TODO in the file).
+- `SherpaTranscriber` is an integration skeleton until the XCFramework is fetched; tests exercise
+  the selection logic and stub path without the real binary.
+
+---
+
 ## ADR-0008 — Cargo Workspace Root at Repo Root; Rust Toolchain Bumped to 1.96
 
 - **Status:** Accepted
