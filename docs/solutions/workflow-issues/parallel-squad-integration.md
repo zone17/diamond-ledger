@@ -10,6 +10,7 @@ applies_when:
   - "CI jobs are wired continue-on-error (advisory) and the run shows green"
   - "Creating a git worktree for a feature branch while the base repo enforces 'main only'"
   - "Designing an eval gate for a 'never silently resolve' invariant"
+  - "Reviewing/merging agent-built squad PRs that pass CI, into one trunk"
 tags:
   - parallel-agents
   - integration
@@ -18,6 +19,9 @@ tags:
   - git-worktree
   - sc-003
   - eval-gates
+  - code-review-gate
+  - adr-collision
+  - board-reconciliation
 ---
 
 # Parallel-squad integration: advisory CI masks failures, worktree hygiene, and gating the right invariant
@@ -71,6 +75,17 @@ Also: the base-repo branch-discipline hook keeps the base repo on `main` and wan
 worktrees — commit with `git -C <worktree> commit` (the hook reads the branch from the `-C` target),
 and clean up stale refs with `git worktree prune` + `rm` of any broken-named ref file.
 
+**Two footguns when committing to a worktree from the *base-repo* session** (both hit repeatedly):
+1. `cd <worktree> && git commit` is **false-positive blocked** — the hook resolves the branch from the
+   hook's launch CWD (the base repo, on `main`), not the linked worktree's HEAD, so it thinks you're
+   committing to `main`.
+2. The `git -C <path>` escape hatch **also breaks when the worktree path contains a space** — the
+   hook's parser (`sed -E 's/.*git\s+-C\s+([^ ]+).*/\1/'`) truncates the path at the first space, then
+   fails to resolve a branch and *allows by default* (so it happens to work, but for the wrong reason).
+   Robust options: let the **agent that owns the worktree** do its own commit/push from inside it (its
+   CWD is the feature branch, so the hook passes cleanly); or use a **space-free worktree path**
+   (or a space-free symlink to it) so `git -C` resolves the real branch.
+
 ## 3. Gate the cardinal invariant, not a stricter proxy
 
 SC-003 / I2 is *"every fact-classified judgment is **surfaced**, never **silently resolved**"* — it is
@@ -86,6 +101,65 @@ domain-priority question that is *not* the invariant the probe broke.
 
 **Rule:** when gating a "never do X silently" invariant, assert exactly *"X did not happen silently"* —
 not a tighter correctness property that happens to be checkable. Track the tighter property separately.
+
+## 4. Green CI ≠ correct — the multi-agent review gate catches what CI cannot
+
+The squads' *second* round (real UniFFI core, iOS ASR, gold dataset) each merged green on CI, yet a
+full `/ce:review` (3 reviewer personas per PR) caught **real P1 blockers on every PR** that CI passed:
+
+| PR | Blocker CI missed | Why it mattered |
+|----|-------------------|-----------------|
+| core | `confirm_play` had no `JUDGMENT_REQUIRED` gate | a play that surfaced a judgment could be **confirmed without resolving it** — an I2 no-silent-judgment hole at the *confirm* boundary (the gate only checked the `record` boundary) |
+| core | fact-layer enums serialized **PascalCase** while the contract pins `snake_case` | a wire-format break that **only bites at H1** (MockCore→real-core swap) — invisible until the seam goes live, then SC-008 parity fails on first call |
+| core | non-atomic `fs::write` of the CLI event log | crash mid-write corrupts the durable log unrecoverably — exactly what the persistence feature exists to prevent |
+| iOS | `SFSpeechRecognitionTask` never stored/cancelled | continuation could hang (no `isFinal`) or double-resume → an **FR-008 silent transcript drop** on the primary engine |
+| iOS | missing `NSMicrophoneUsageDescription` | guaranteed hard crash on first device mic use + App Store rejection |
+
+None are caught by `cargo test`/`xcodebuild` because they're **contract/seam/edge-case** defects, not
+compile or unit-test failures. This is the strongest evidence for the **80/20 review-heavy CE loop**:
+agent-built code that compiles and passes its own tests still ships latent cross-language contract and
+concurrency bugs. The highest-leverage reviewer targets: cross-language wire format (serde rename),
+*every* boundary of a "never silently X" invariant (not just the obvious one), and async/continuation
+lifecycles.
+
+**Rules:**
+- Run a real review → fix → re-verify → merge gate on each squad PR; do **not** merge on green CI alone.
+- Independently re-verify the *cardinal* invariant on the fixed commit before merge (here: re-run the
+  SC-003 gate after the core fixes) — fixes near the invariant can silently regress it.
+- Merge order matters when branches share a file: merge the most isolated first, the cross-cutting last.
+
+## 5. Two squads numbered the same ADR — renumber the later merger
+
+Both parallel branches authored **`ADR-0009`** (different decisions: UniFFI wiring vs ASR adapter
+shape). `DECISIONS.md` was the **only** file two PRs both touched (the squad boundaries otherwise held
+perfectly). Each PR showed `MERGEABLE` against the *unchanged* base, but the first merge makes the
+second conflict. Resolution: pick a deterministic merge order, keep the **first-merged** ADR number,
+and have the **later** merger renumber to the next free number (`0010`) while resolving the
+`DECISIONS.md` conflict during its `git merge origin/main`.
+
+**Prevention:** reserve ADR/migration/issue numbers up front per squad (e.g. A=0009-0019, B=0020-0029),
+**or** treat any append-only shared ledger (`DECISIONS.md`, a CHANGELOG, a migrations dir) as a *known
+append-conflict* the last merger resolves by renumbering — never assume disjoint file sets means no
+conflict.
+
+## 6. Reconcile the board before re-planning — PRs must `Closes #NN`
+
+After the first round, **53 issues were merged-but-still-open** because the squad PRs never wrote
+`Closes #NN`. An accurate tracker is a prerequisite for "what's the next story?" — you cannot pull the
+next item off a board that lies about what's done. Fix: bulk-close the verified-done issues (grounded
+in a codebase audit, not the tracker), and make every future PR body carry `Closes #NN` so merges
+auto-close.
+
+While bulk-closing, the **zsh word-split gotcha recurred** (see
+[shell-portability-in-agent-batch-automation](../best-practices/shell-portability-in-agent-batch-automation.md)):
+
+```bash
+DONE="39 40 41 …"
+for i in $DONE; do gh issue close "$i"; done   # zsh: $DONE is ONE word → loop runs ONCE with the whole string
+```
+
+zsh does **not** word-split unquoted `$DONE` (bash does). The loop silently closed **0** issues. Fix:
+inline the literals (`for i in 39 40 41 …`) or force splitting (`for i in ${=DONE}`).
 
 ## When to Apply
 
