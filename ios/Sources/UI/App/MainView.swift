@@ -33,7 +33,10 @@ struct MainView: View {
             }
             .background(Color(.systemBackground))
             // --- Sheets ---
-            .sheet(item: $state.presentedSheet) { sheet in
+            // onDismiss unsticks the PTT loop if a card (e.g. Card A) is swiped away
+            // instead of being Confirmed/Corrected — otherwise pttState stays `.result`
+            // and the mic button is left disabled.
+            .sheet(item: $state.presentedSheet, onDismiss: { appState.handleSheetDismiss() }) { sheet in
                 sheetContent(for: sheet)
             }
             // --- New Game button (top trailing) ---

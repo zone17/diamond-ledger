@@ -119,6 +119,17 @@ public final class AppState {
         self.core = core
     }
 
+    /// Called when a presented sheet is dismissed (including a Card A swipe-away). Unsticks the
+    /// push-to-talk loop: if a result card was dismissed without an explicit Confirm/Correct/
+    /// Resolve, return to idle and discard the unconfirmed entry (safe — FR-007: state is never
+    /// advanced on an unconfirmed play). No-op when already idle (e.g. right after a confirm/resolve).
+    func handleSheetDismiss() {
+        if pttState == .result {
+            pttState = .idle
+        }
+        activeGame?.pendingResult = nil
+    }
+
     // MARK: - Auth actions
 
     /// Sign in with a development stub (dev only; real sign-in is T081).
