@@ -1,0 +1,16 @@
+[package]
+name        = "dl-agent"
+version     = "0.1.0"
+edition     = "2021"
+description = "Diamond Ledger — agent/API adapter (native or WASM) over dl-core"
+
+# Art. II parity: agents call the same four primitives as humans via the iOS app.
+# This adapter exposes the core over an HTTP or WASM boundary.
+# This is a thin client of dl-core — no business logic lives here.
+
+[[bin]]
+name = "dl-agent"
+path = "src/main.rs"
+
+[dependencies]
+dl-core = { path = "../../core" }

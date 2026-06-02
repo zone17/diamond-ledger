@@ -1,0 +1,15 @@
+[package]
+name        = "dl-cli"
+version     = "0.1.0"
+edition     = "2021"
+description = "Diamond Ledger — CLI adapter (agent/API parity surface over dl-core)"
+
+# Art. II parity: the same four primitives callable from the command line.
+# This is a thin client of dl-core — no business logic lives here.
+
+[[bin]]
+name = "dl"
+path = "src/main.rs"
+
+[dependencies]
+dl-core = { path = "../../core" }

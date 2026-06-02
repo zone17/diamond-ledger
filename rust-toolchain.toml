@@ -1,0 +1,7 @@
+[toolchain]
+# Pinned for reproducibility (ADR-0007 / Art. XXXV). Verified to build the whole workspace
+# (core + adapters) AND the dev-dependency tree (proptest, insta) plus the no-float clippy
+# gate. 1.83 builds the lib but not the dev-deps (proptest MSRV is 1.85+), so the pin is a
+# current stable. Bump deliberately, re-verifying `cargo check --workspace --all-targets`.
+channel = "1.96.0"
+components = ["clippy"]

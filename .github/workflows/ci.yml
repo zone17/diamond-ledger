@@ -25,7 +25,7 @@ jobs:
     name: Constitution & decisions integrity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       - name: Constitution present and well-formed (Articles XVI, XL)
         run: |
           set -euo pipefail
@@ -62,7 +62,7 @@ jobs:
     name: Secret scan (Articles XXVI, XXXVI)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           fetch-depth: 0
       - name: gitleaks (full history)
@@ -75,6 +75,101 @@ jobs:
     name: Compound-loop hooks (ADR-0003)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       - name: Run compound-hook regression tests
         run: bash .claude/hooks/test-compound-hooks.sh
+
+  # ---------------------------------------------------------------------------
+  # Advisory jobs — Phase A skeleton (T004, ADR-0007)
+  #
+  # These jobs are PLACEHOLDERS wired with continue-on-error: true so they do
+  # not break the pipeline while the Rust toolchain, eval runners, and cwevent
+  # build are being stood up.  Each job is documented with its final intent so
+  # the guard rail is visible from day one.  Remove continue-on-error once the
+  # job is fully wired and green.
+  # ---------------------------------------------------------------------------
+
+  core-build:
+    name: Rust core — cargo check (ADR-0007 / T002 / T016)
+    runs-on: ubuntu-latest
+    # Advisory: toolchain setup is in progress; do not block merges yet.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Install pinned Rust toolchain
+        # Reads the channel from the repo-root rust-toolchain.toml (workspace root).
+        run: |
+          if [ -f rust-toolchain.toml ]; then
+            rustup show
+          else
+            echo "rust-toolchain.toml not yet present — skipping toolchain install (placeholder)"
+          fi
+      - name: cargo check (integer/fixed-point core, no f32/f64)
+        # Checks the whole workspace (core + adapters) from the repo-root Cargo.toml.
+        run: |
+          if [ -f Cargo.toml ]; then
+            cargo check --workspace
+          else
+            echo "Cargo.toml (workspace root) not yet present — skipping cargo check (placeholder)"
+          fi
+
+  core-eval:
+    name: Rust core — eval harness (T004 / T041 / T042 / T043)
+    runs-on: ubuntu-latest
+    # Advisory: eval runners do not exist yet; placeholder only.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Run eval runners when present
+        # Final intent: invoke evals/runners/judgment-gate.sh (SC-003 hard-fail),
+        # evals/runners/accuracy.sh (SC-001/SC-002, advisory until gold lands),
+        # and evals/runners/proof-box.sh (Layer-1 offline check).
+        # All three become CI hard-fails once wired (remove continue-on-error).
+        run: |
+          if [ -f evals/runners/judgment-gate.sh ]; then
+            bash evals/runners/judgment-gate.sh
+          else
+            echo "evals/runners/ not yet present — skipping eval harness (placeholder)"
+          fi
+
+  retrosheet-gate:
+    name: Retrosheet / cwevent 3-layer gate (D4 / T059 / T060)
+    runs-on: ubuntu-latest
+    # Advisory: cwevent build + fixtures are not yet wired; placeholder only.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: cwevent gate (pinned v0.10.0, stderr-driven)
+        # Final intent:
+        #   1. Build Chadwick cwevent v0.10.0 from SHA256-pinned tarball (autotools).
+        #   2. Run evals/runners/retrosheet-gate.sh against evals/retrosheet-fixtures/.
+        #   3. Gate logic: FAIL if stderr matches WARNING|Invalid|Can't find|could not open
+        #      OR zero event rows emitted — NOT on exit code alone (cwevent exits 0 on
+        #      malformed plays; see research.md D4 for the load-bearing finding).
+        #   4. Layer 3: golden diff of cwevent output vs evals/retrosheet-fixtures/expected.csv.
+        run: |
+          if [ -f evals/runners/retrosheet-gate.sh ]; then
+            bash evals/runners/retrosheet-gate.sh
+          else
+            echo "retrosheet-gate.sh not yet present — skipping cwevent gate (placeholder)"
+            echo "Pinned cwevent version: v0.10.0 (Chadwick, SHA256-verified, autotools build)"
+          fi
+
+  ios-build:
+    name: iOS app — xcodebuild (T003 / Story B1)
+    runs-on: macos-latest
+    # Advisory: iOS project scaffold is not yet present; placeholder only.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: xcodebuild (Swift 6, min iOS 26)
+        # Final intent: build the ios/ Swift 6 app (min iOS 26) + run XCTest suite.
+        # Requires the UniFFI XCFramework to be pre-built (or fetched from cache)
+        # and placed in ios/Sources/Core/ before xcodebuild runs.
+        run: |
+          if [ -d ios ] && ls ios/*.xcodeproj 2>/dev/null || ls ios/*.xcworkspace 2>/dev/null; then
+            xcodebuild -scheme DiamondLedger -sdk iphonesimulator -destination \
+              'platform=iOS Simulator,name=iPhone 16' build
+          else
+            echo "ios/ Xcode project not yet present — skipping iOS build (placeholder)"
+          fi

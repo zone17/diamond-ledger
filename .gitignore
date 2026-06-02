@@ -33,3 +33,10 @@ coverage/
 .cache/
 __pycache__/
 *.pyc
+
+# Rust / Cargo build output (commit Cargo.lock, ignore target/)
+/target/
+**/target/
+# Swift / SwiftPM build output
+.build/
+*.xcodeproj/xcuserdata/

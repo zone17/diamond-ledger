@@ -1,0 +1,13 @@
+# Workspace root for the Diamond Ledger Rust monorepo (ADR-0007 / PLAT-009).
+#
+# The workspace root lives at the REPO ROOT (not in core/) because Cargo requires every
+# workspace member to live hierarchically BELOW the workspace root. The members are the
+# deterministic core plus its thin agent-parity adapters, which are siblings under the
+# repo root per plan.md's source tree.
+[workspace]
+resolver = "2"
+members = [
+    "core",
+    "adapters/cli",
+    "adapters/agent",
+]

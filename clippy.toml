@@ -1,0 +1,11 @@
+# Diamond Ledger — dl-core Clippy configuration
+#
+# ADR-0007 / D1: The deterministic Rust core is INTEGER/FIXED-POINT ONLY.
+# No f32 or f64 in core — byte-identical determinism is a hard requirement
+# (FR-003 / I6 / plan.md "Technical Context"). Stats that require rationals
+# (AVG, OBP, …) are computed in the adapter/UI layer, NOT here.
+#
+# `float-arithmetic` fires on any float literal, cast, or arithmetic expression
+# involving f32/f64. Combined with `#![deny(clippy::float_arithmetic)]` in
+# lib.rs this makes the no-float rule a hard compile-time gate in CI.
+disallowed-types = []
