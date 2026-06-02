@@ -126,7 +126,7 @@ struct PushToTalkView: View {
 
     private var buttonFill: Color {
         switch appState.pttState {
-        case .idle:       return .tint
+        case .idle:       return .accentColor
         case .listening:  return .red
         case .processing: return .secondary
         case .result:     return .green
