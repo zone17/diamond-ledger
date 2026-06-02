@@ -6,6 +6,117 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0013 — Multi-Target CI Matrix + Hard-Fail Gate Wiring + Privacy Check (T068/T069/T070)
+
+- **Status:** Accepted
+- **Date:** 2026-06-02
+- **Owner:** Squad C (Software Factory)
+- **Implements:** T068 (#112), T069 (#113), T070 (#115)
+- **Tickets:** DL-112, DL-113, DL-115
+
+### Context
+
+ADR-0007 established Rust + UniFFI as the single artifact cross-compiled to iOS, Android, CLI,
+and WASM (agent-native parity, Art. II). ADR-0009 wired the UniFFI surface and the
+delete-before-regenerate XCFramework cache guard. Three follow-up factory tasks remained:
+
+1. **T068**: The `core-build` job proved the host build; no CI job proved the UniFFI surface
+   compiles for any non-host target triple.
+2. **T069**: Several gates existed in the YAML but were either still carrying `continue-on-error`
+   or had not been audited since the core landed green on main.
+3. **T070**: FR-022 (process-don't-store) and FR-029 (COPPA) had no automated enforcement path;
+   a developer could add a raw-PCM write with no CI signal.
+
+### Decisions
+
+**T068 — Multi-target build matrix:**
+
+A `cross-compile-matrix` job (needs: `core-build`) runs `cargo build -p dl-core --features uniffi`
+across five target triples in a `strategy.matrix`:
+
+- `aarch64-linux-android` and `armv7-linux-androideabi`: ubuntu-latest runner, `cargo-ndk` v3.5.4
+  (pinned, `--locked`), Android NDK from `$ANDROID_NDK_ROOT` (pre-installed on GitHub runners).
+- `wasm32-unknown-unknown`: ubuntu-latest, no UniFFI feature (UniFFI proc-macros have no WASM
+  surface; the goal is proving the integer-only core compiles to WASM).
+- `aarch64-apple-ios` and `aarch64-apple-ios-sim`: macos-latest, `continue-on-error: true`
+  (advisory). GitHub-hosted macOS runners do not ship the iOS-26 SDK (Xcode 26.x) as of
+  2026-06-02. These legs prove the Rust cross-compile itself works when the SDK is available;
+  promotion to hard gate requires a macOS runner with Xcode 26.x.
+
+`fail-fast: false` is set so all matrix legs report in a single run rather than stopping on
+the first advisory iOS failure.
+
+**XCFramework cache note (ADR-0009 guard):** the full XCFramework assembly (`make xcframework`)
+requires Xcode and is handled by the `ios-build` advisory job. When that job is promoted to
+a hard gate, its steps must restore the XCFramework from a cache keyed on `Cargo.lock` +
+`build-xcframework.sh` checksum, OR rebuild it from scratch — always deleting the output
+directory first to defeat the cache pitfall (non-uniffi dylib → zero bindgen output).
+
+**T069 — Hard-fail gate audit:**
+
+Reviewed every job for spurious `continue-on-error`. Findings:
+- `retrosheet-gate`: already hard (removed in a prior PR). No change.
+- `core-build` (clippy, UniFFI surface, bindgen non-empty): hard. No change.
+- `core-eval` (judgment SC-003, proof-box, parity): hard. Accuracy remains advisory by design
+  (ADVISORY until gold/H3). No change.
+- `ios-build`: intentionally advisory; comment updated with explicit promotion checklist.
+- `cross-compile-matrix` iOS legs: advisory with `continue-on-error: true` at job level via
+  `matrix.advisory` boolean. All other legs are hard-fail.
+- No gates were demoted. The no-float clippy gate, determinism check, judgment gate (SC-003),
+  and cwevent retrosheet gate are all confirmed hard-fails on main.
+
+**Security hardening (Article XXVI / ADR-0002):** all `${{ matrix.* }}` and
+`${{ github.head_ref }}` expressions that were previously interpolated directly into `run:`
+shell text have been moved to `env:` assignments (safe indirection pattern). The
+`github.head_ref` value was already safe in the prior workflow; this PR makes the pattern
+consistent across all new matrix steps.
+
+**T070 — Privacy CI check:**
+
+A new script `scripts/check-no-raw-audio.sh` and a CI step in the `secret-scan` job enforce
+FR-022 (process-don't-store) and FR-029 (COPPA) as hard-fails:
+
+- Scans `core/`, `ios/`, `adapters/`, `android/` for raw-PCM persistence patterns across
+  Swift, Kotlin, and Rust source files (8 POSIX-ERE patterns covering `pcmBuffer.write`,
+  `saveAudio*`, `FileManager` copies of audio paths, `fwrite`/`write` on audio-named fds,
+  SQLite/GRDB inserts of audio blobs, UserDefaults audio sets, CloudKit audio record saves).
+- Comment lines are filtered to reduce false positives; any real match exits 1 with a
+  `::error::` annotation giving the exact file and line.
+- COPPA structural check: if `ios/Sources/Auth/` exists, at least one Swift file must contain
+  a COPPA/consent/parental-gating marker — hard-fail if absent. Currently passes
+  (marker present in `Auth.swift`).
+- The script is also runnable locally (`bash scripts/check-no-raw-audio.sh`).
+
+### Alternatives Considered
+
+- **Android: cross-compilation without cargo-ndk (manual linker config):** cargo-ndk is the
+  de facto standard and handles the NDK sysroot selection; rejected raw linker config as
+  fragile and harder to maintain.
+- **Run iOS cross-compile on ubuntu with a cross-compiler:** the iOS target triple
+  (`aarch64-apple-ios`) requires Apple's SDK and linker; a Linux cross-compiler cannot
+  produce a valid iOS static lib. The advisory macOS runner is the only viable path.
+- **Privacy check via semgrep:** semgrep is more powerful but adds a non-trivial dependency
+  and startup cost. The grep-based patterns are sufficient for the narrow FR-022 guard and
+  are transparent/auditable without a separate tool.
+
+### Consequences
+
+- All UniFFI-targeted platform triples are now exercised in CI (Android: hard; WASM: hard;
+  iOS: advisory with clear promotion path).
+- The no-float determinism gate, judgment gate, retrosheet gate, and privacy gate are all
+  confirmed hard-fails. No gate silently passes a bad state.
+- `scripts/check-no-raw-audio.sh` is the canonical FR-022 enforcement artifact; it must be
+  updated when new source directories are added to the workspace.
+- The iOS advisory legs block the matrix summary until the Xcode 26 SDK is available on
+  GitHub runners; track this against T068 promotion.
+
+### Impact
+
+- **Security (Article XXVI):** workflow expressions moved through `env:` (safe indirection).
+- **Privacy (FR-022 / COPPA):** raw-audio persistence is now a CI hard-fail.
+- **Reproducibility (Article XXXV):** `cargo-ndk` pinned at v3.5.4 `--locked`.
+- **Agent-native (Art. II):** parity across iOS/Android/WASM/CLI is now mechanically
+  verified in CI, not just asserted by design.
 ## ADR-0012 — correct_event (US4) Append-Only Correction + get_proof_box Historical Replay-Up-To
 
 - **Status:** Accepted
