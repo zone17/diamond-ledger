@@ -82,8 +82,23 @@ private func makePayload(seq: UInt64, type eventType: String, corrId: String) th
     ])
 }
 
+/// Error thrown by `scoreGame` when the mock core behaves unexpectedly.
+private enum ScoreGameError: Error, CustomStringConvertible {
+    case missingJudgment(play: Int, corrId: String)
+    var description: String {
+        switch self {
+        case .missingJudgment(let play, let corrId):
+            return "scoreGame: play \(play) (\(corrId)) was routed as judgment but recordResult.judgment is nil — MockCore invariant violated (I2)"
+        }
+    }
+}
+
 /// Score `count` plays against `core` + `log`, alternating between deterministic (Card A)
 /// and judgment (Card B) plays. Returns the live projection for comparison.
+///
+/// The `recordResult.judgment` field is accessed via a safe `guard let` — a nil judgment on
+/// a play expected to be Card B is a `ScoreGameError.missingJudgment` (not a force-unwrap crash),
+/// so the test fails with a meaningful message rather than an uninformative `EXC_BAD_INSTRUCTION`.
 private func scoreGame(
     count: Int,
     gameId: String,
@@ -112,10 +127,14 @@ private func scoreGame(
 
         let eventType: String
         if isJudgment {
-            // Resolve the judgment immediately.
+            // Safe unwrap: a nil judgment here means MockCore violated I2 (Card B path must
+            // always return an open judgment). Fail fast with a descriptive error.
+            guard let judgment = recordResult.judgment else {
+                throw ScoreGameError.missingJudgment(play: i, corrId: corrId)
+            }
             _ = try await core.resolveJudgment(
                 gameId: gameId,
-                decisionId: recordResult.judgment!.id,
+                decisionId: judgment.id,
                 chosen: ScoringCall(token: "hit", label: "Hit"),
                 ownerId: ownerId,
                 correlationId: "\(corrId)-resolve"
@@ -695,26 +714,27 @@ final class GRDBCorruptionDetectionTests: XCTestCase {
         let garbledData = Data([0xFF, 0xFE, 0x00, 0x01, 0x02, 0x03])  // invalid UTF-8 sequence
         try garbledData.write(to: journalURL)
 
-        // replay on a non-existent-but-garbled file must throw, not return [].
+        // replay on a garbled journal file must throw — never silently return [].
+        // The real intent: the store must not fabricate an empty game when a journal file exists.
+        // An empty [] return would be silent data loss; the correct behaviour is a thrown error.
         do {
             let events = try await log.replay(gameId: gameId)
-            // If we land here with an empty array, that is a fabricated-empty-game failure.
-            XCTAssertFalse(events.isEmpty || true,
-                "GRDBEventLog must NOT return empty array when journal file exists but is unreadable — this is silent data loss")
-            // If events are non-empty somehow, the test was supposed to throw.
-            XCTFail("Expected EventLogError.unreadableJournal; got \(events.count) events instead")
+            // If we reach here, replay did NOT throw — that is the silent-data-loss failure.
+            XCTFail("Expected EventLogError to be thrown for garbled journal; got \(events.count) events instead — " +
+                    "returning [] for an existing-but-unreadable journal is silent data loss")
         } catch let e as EventLogError {
-            if case .unreadableJournal = e {
-                // Expected: clear error, not silent empty.
-            } else if case .corruptRecord = e {
-                // Also acceptable: the garbled bytes decode as valid UTF-8 in some OS versions.
-                // What matters is that an error was thrown, not that events = [] was returned.
-            } else {
-                XCTFail("Expected EventLogError.unreadableJournal or .corruptRecord, got \(e)")
+            switch e {
+            case .unreadableJournal:
+                // Primary expected path: journal is not valid UTF-8.
+                break
+            case .corruptRecord:
+                // Acceptable: garbled bytes happened to be valid UTF-8 but no valid JSON records.
+                break
+            case .ioError:
+                XCTFail("Expected .unreadableJournal or .corruptRecord for garbled journal, got .ioError: \(e)")
             }
         } catch {
-            // Any error is acceptable here — what's NOT acceptable is an empty []  return.
-            // The test only fails if we fell through to the XCTAssertFalse above.
+            XCTFail("Expected EventLogError for garbled journal, got untyped error: \(error)")
         }
     }
 
@@ -756,6 +776,148 @@ final class GRDBCorruptionDetectionTests: XCTestCase {
         let replayed = try await log.replay(gameId: gameId)
         XCTAssertEqual(replayed.count, 10,
             "WAL mismatch: replay must return 10 events; got \(replayed.count)")
+    }
+
+    // MARK: - Mid-file corruption idempotency (P1-B regression)
+
+    /// Verifies that a CRC-corrupt record in the MIDDLE of the journal causes `append` to
+    /// throw rather than silently miss the corrupt record during the idempotency check.
+    ///
+    /// **The data-loss scenario this prevents (P1-B):**
+    ///   1. Journal has records: [seq=1, seq=2(corrupt), seq=3, seq=4, …, seq=N]
+    ///   2. Old code: `loadJournal(validateCRC: false)` silently skips seq=2 and returns
+    ///      [1, 3, 4, …, N]. The idempotency check sees seq=3 present → fine.
+    ///      BUT if a caller appends seq=2 again (re-replay), the check sees seq=2 absent
+    ///      → writes a DUPLICATE seq=2 → `replay(validateCRC:true)` throws corruptRecord
+    ///      on the duplicate → the whole game looks lost.
+    ///   3. Fixed code: `loadJournal(validateCRC: false)` throws `corruptRecord` for the
+    ///      mid-file corrupt line → `append` propagates the error → the caller knows the
+    ///      journal is suspect and must call `recoverFromCorruption` before continuing.
+    ///
+    /// This test writes 10 events, corrupts the CRC of seq=5 (mid-file), then asserts:
+    ///   1. `append(seq=11)` throws `EventLogError.corruptRecord` (not a silent duplicate write).
+    ///   2. After `recoverFromCorruption`, `append(seq=11)` succeeds and the journal has
+    ///      the 9 good records plus the new event (total 10).
+    ///   3. The replayed projection is correct: seqs 1…4, 6…11 (seq=5 trimmed by recovery).
+    func testCorruption_midFileCorrupt_appendThrowsNotDuplicate() async throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dl-midfile-corrupt-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let core = MockCore()
+        let log = GRDBEventLog(directory: tmpDir)
+        let gameId = "midfile-corrupt-game"
+        let ownerId = "midfile-owner"
+
+        _ = try await core.createGame(homeTeam: "MidHome", visitorTeam: "MidAway",
+                                      ownerId: ownerId, correlationId: "mid-create")
+
+        // Write 10 events (seqs 1…10).
+        let (_, _) = try await scoreGame(
+            count: 10, gameId: gameId, ownerId: ownerId, core: core, log: log
+        )
+
+        // Corrupt line 5 (index 4, 0-based) with a JSON-UNPARSEABLE replacement.
+        // This is the P1-B scenario: a mid-file line that cannot be decoded as JournalRecord.
+        // Old code: loadJournal(validateCRC:false) silently continued past it, causing the
+        // idempotency check to miss the seqs below → potential duplicate on re-append.
+        // Fixed code: mid-file unparseable line → throw corruptRecord, never silently skip.
+        let journalURL = tmpDir.appendingPathComponent("\(gameId).ndjson")
+        let journalContent = try String(contentsOf: journalURL, encoding: .utf8)
+        var lines = journalContent.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        XCTAssertEqual(lines.count, 10, "Expected 10 lines before corruption")
+
+        // Replace line 5 (index 4) with invalid JSON that cannot be decoded as JournalRecord.
+        lines[4] = "{\"truncated_mid_write\":true}"  // valid JSON but wrong shape — decode fails
+        try (lines.joined(separator: "\n") + "\n").data(using: .utf8)!.write(to: journalURL)
+
+        // append(seq=11) must throw corruptRecord — not silently write past the corrupt line.
+        let newPayload = try makePayload(seq: 11, type: "PlayConfirmed", corrId: "mid-11")
+        let newEvent = GameEvent(seq: 11, gameId: gameId, eventType: "PlayConfirmed", payload: newPayload)
+
+        do {
+            try await log.append(newEvent)
+            XCTFail("P1-B: append after mid-file corruption must throw corruptRecord, not succeed silently")
+        } catch let e as EventLogError {
+            if case .corruptRecord = e {
+                // Expected: the corrupt mid-file line is detected during idempotency check.
+            } else {
+                XCTFail("P1-B: expected EventLogError.corruptRecord, got \(e)")
+            }
+        }
+
+        // After recovery, append(seq=11) must succeed.
+        let report = try await log.recoverFromCorruption(gameId: gameId)
+        XCTAssertEqual(report.goodRecords, 9,
+            "P1-B recovery: expected 9 good records (1…4, 6…10) after trimming seq=5")
+        XCTAssertEqual(report.trimmedRecords, 1,
+            "P1-B recovery: expected 1 trimmed record (seq=5)")
+
+        // Now append seq=11 — must succeed after recovery.
+        try await log.append(newEvent)
+
+        // Final replay: seqs 1…4, 6…10, 11 (seq=5 was trimmed, seq=11 added).
+        let finalReplayed = try await log.replay(gameId: gameId)
+        XCTAssertEqual(finalReplayed.count, 10,
+            "P1-B post-recovery: expected 10 events (9 recovered + 1 new); got \(finalReplayed.count)")
+
+        let replayedSeqs = finalReplayed.map(\.seq)
+        let expectedSeqs: [UInt64] = [1, 2, 3, 4, 6, 7, 8, 9, 10, 11]
+        XCTAssertEqual(replayedSeqs, expectedSeqs,
+            "P1-B post-recovery: seqs must be 1…4, 6…10, 11 after trimming seq=5 and appending seq=11")
+
+        // Critically: no duplicate seqs.
+        XCTAssertEqual(Set(replayedSeqs).count, replayedSeqs.count,
+            "P1-B: no duplicate seqs in recovered journal")
+    }
+
+    // MARK: - all-corrupt recovery zeroes WAL (P2-1 regression)
+
+    /// Verifies that when `recoverFromCorruption` trims ALL records (all corrupt), the WAL is
+    /// removed so that `latestSeq` returns nil rather than a stale non-nil seq.
+    func testCorruption_allCorrupt_recovery_clearsWAL() async throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dl-allcorrupt-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let core = MockCore()
+        let log = GRDBEventLog(directory: tmpDir)
+        let gameId = "allcorrupt-game"
+        let ownerId = "allcorrupt-owner"
+
+        _ = try await core.createGame(homeTeam: "ACHome", visitorTeam: "ACAway",
+                                      ownerId: ownerId, correlationId: "ac-create")
+
+        // Write 5 events.
+        let (_, _) = try await scoreGame(
+            count: 5, gameId: gameId, ownerId: ownerId, core: core, log: log
+        )
+
+        // Verify WAL exists before corruption.
+        let walPath = tmpDir.appendingPathComponent("\(gameId).wal").path
+        XCTAssertTrue(FileManager.default.fileExists(atPath: walPath),
+            "WAL must exist after writing 5 events")
+
+        // Corrupt ALL records: replace the entire journal with garbage lines.
+        let journalURL = tmpDir.appendingPathComponent("\(gameId).ndjson")
+        let allGarbage = (1...5).map { _ in "{\"bad\":\"data\",\"crc32\":0}" }.joined(separator: "\n") + "\n"
+        try allGarbage.data(using: .utf8)!.write(to: journalURL)
+
+        // recoverFromCorruption must trim all 5 records and remove the WAL.
+        let report = try await log.recoverFromCorruption(gameId: gameId)
+        XCTAssertEqual(report.goodRecords, 0,
+            "All-corrupt recovery: 0 good records expected; got \(report.goodRecords)")
+        XCTAssertEqual(report.trimmedRecords, 5,
+            "All-corrupt recovery: 5 trimmed records expected; got \(report.trimmedRecords)")
+        XCTAssertNil(report.highestRecoveredSeq,
+            "All-corrupt recovery: highestRecoveredSeq must be nil")
+
+        // WAL must be removed — latestSeq must return nil, not a stale value.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: walPath),
+            "P2-1: WAL must be removed after all-corrupt recovery to prevent stale latestSeq")
+        let latestAfterRecovery = await log.latestSeq(gameId: gameId)
+        XCTAssertNil(latestAfterRecovery,
+            "P2-1: latestSeq must be nil after all-corrupt recovery; got \(String(describing: latestAfterRecovery))")
     }
 }
 

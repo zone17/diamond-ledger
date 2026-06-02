@@ -17,10 +17,10 @@
 ///      observes the append as complete.
 ///
 ///   **WAL mode:**
-///   A `.wal` sidecar records the highest successfully-written seq for each game. On open,
-///   the store reads the WAL to fast-path `latestSeq` and to validate the journal. If the
-///   journal's last line is truncated (OS crash mid-write), it is detected and trimmed; the
-///   WAL's seq is the recovery watermark.
+///   A `.wal` sidecar records the highest successfully-written seq for each game, enabling an
+///   O(1) fast path for `latestSeq`. If the WAL was partially written (crash between journal
+///   sync and WAL update), `latestSeq` detects WAL > journal max and falls back to the journal
+///   silently — the journal is always the authoritative source of truth.
 ///
 ///   **Corruption detection:**
 ///   Each record line carries a CRC-32 checksum. On replay, any line failing the checksum
@@ -58,16 +58,19 @@ import Foundation
 /// Typed errors from `GRDBEventLog`.
 ///
 /// All errors surface a human-readable message; no error is silently swallowed.
-/// Callers must handle `corruptRecord` and `walMismatch` by initiating recovery
-/// (see `recoverFromCorruption(gameId:)`) rather than treating them as an empty log.
+/// Callers must handle `corruptRecord` by initiating recovery via
+/// `recoverFromCorruption(gameId:)` rather than treating it as an empty log.
+///
+/// **WAL mismatch** (WAL claims a higher seq than the journal contains) is handled silently
+/// inside `latestSeq` — the journal is authoritative and the WAL is ignored when they
+/// disagree. This is the correct crash-recovery behaviour: the WAL write races with the
+/// journal sync; on crash the journal wins. A separate `walMismatch` error case would require
+/// `latestSeq` to be `throws`, which would change the `EventLogStore` protocol. The silent
+/// fallback is safe because the journal is the source of truth for all reads (P2-2 resolution).
 public enum EventLogError: Error, Sendable, CustomStringConvertible {
-    /// The journal file contains a line that fails CRC-32 verification.
+    /// The journal file contains a line that fails CRC-32 verification or JSON decode.
     /// Associates the seq number of the corrupt record (if parseable) and the raw line.
     case corruptRecord(seq: UInt64?, line: String)
-
-    /// The WAL metadata disagrees with the recovered journal (e.g. seq in WAL > max seq in
-    /// journal). Indicates a partially-written WAL update, not data loss in the journal itself.
-    case walMismatch(walSeq: UInt64, journalSeq: UInt64)
 
     /// The journal file exists but cannot be decoded (e.g. wrong encoding, truncated header).
     case unreadableJournal(path: String, reason: String)
@@ -78,9 +81,7 @@ public enum EventLogError: Error, Sendable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .corruptRecord(let seq, let line):
-            return "GRDBEventLog: corrupt record (seq=\(seq.map(String.init) ?? "?")) — CRC mismatch. Line: \(line.prefix(120))"
-        case .walMismatch(let w, let j):
-            return "GRDBEventLog: WAL seq \(w) > journal max seq \(j) — WAL was partially written; using journal as source of truth."
+            return "GRDBEventLog: corrupt record (seq=\(seq.map(String.init) ?? "?")) — CRC mismatch or decode failure. Line: \(line.prefix(120))"
         case .unreadableJournal(let path, let reason):
             return "GRDBEventLog: journal at \(path) is unreadable — \(reason). This is a non-recoverable error; do not fabricate an empty game."
         case .ioError(let e):
@@ -252,14 +253,19 @@ public actor GRDBEventLog: EventLogStore {
     ///
     /// Fast path: reads the WAL metadata if available (O(1)), falls back to scanning
     /// the journal (O(n)) if the WAL is absent or stale.
+    ///
+    /// WAL mismatch handling: if the WAL claims a higher seq than the journal contains (partial
+    /// WAL write after a crash), the journal value is used silently — the journal is always the
+    /// source of truth. No error is thrown because `latestSeq` is non-throwing in the protocol.
     public func latestSeq(gameId: String) async -> UInt64? {
         // Try WAL fast path.
         if let wal = try? loadWAL(gameId: gameId) {
             // Validate WAL against journal to detect partial WAL writes.
+            // If WAL claims a seq > journal max, the WAL was partially written after a crash;
+            // the journal is the source of truth, so we use the journal max (silently).
             if let journalRecords = try? loadJournal(gameId: gameId, validateCRC: false),
                let journalMax = journalRecords.map(\.seq).max() {
                 if wal.highestSeq > journalMax {
-                    // WAL was partially written after a crash; fall back to journal.
                     return journalMax
                 }
                 return max(wal.highestSeq, journalMax)
@@ -320,10 +326,16 @@ public actor GRDBEventLog: EventLogStore {
         let rewriteData = (rewritten + (goodRecords.isEmpty ? "" : "\n")).data(using: .utf8) ?? Data()
         try rewriteData.write(to: journalURL, options: .atomic)
 
-        // Update WAL.
+        // Update WAL — or remove it if all records were trimmed.
+        // P2-1 fix: if goodRecords is empty, a stale WAL would cause `latestSeq` to return a
+        // non-nil value for a game that now has no committed records. Remove the WAL so
+        // `latestSeq` correctly returns nil and callers cannot observe phantom events.
         let highestSeq = goodRecords.map(\.seq).max()
         if let highest = highestSeq {
             try writeWAL(gameId: gameId, highestSeq: highest, eventCount: goodRecords.count)
+        } else {
+            // All records trimmed — remove any stale WAL.
+            try? FileManager.default.removeItem(at: walURL(gameId: gameId))
         }
 
         return RecoveryReport(
@@ -483,12 +495,14 @@ public actor GRDBEventLog: EventLogStore {
                 // New journal: write line to .tmp, then rename to journal (atomic creation).
                 try lineData.write(to: tmpURL, options: .atomic)
                 try FileManager.default.moveItem(at: tmpURL, to: journalURL)
-                // Sync the newly-created file.
-                let handle = try FileHandle(forReadingFrom: journalURL)
+                // Sync the newly-created file with a WRITABLE handle.
+                // A read-only fd does NOT flush dirty page-cache data — fdatasync on a read fd
+                // is a no-op for data durability (it only syncs metadata). Open for writing
+                // so that synchronize() (→ fdatasync) actually makes the first event durable
+                // on power loss.  P1-A fix.
+                let handle = try FileHandle(forWritingTo: journalURL)
                 defer { try? handle.close() }
-                // Note: synchronize on a read handle flushes directory entries on Darwin.
-                // For the new-file case the `.atomic` write in the `.tmp` step already
-                // guaranteed durability before the rename; this is belt-and-suspenders.
+                try handle.synchronize()
             }
         } catch let e as EventLogError {
             throw e
@@ -501,9 +515,26 @@ public actor GRDBEventLog: EventLogStore {
 
     /// Read and optionally CRC-validate all records for `gameId`.
     ///
-    /// - If `validateCRC` is true and any record fails, throws `EventLogError.corruptRecord`.
-    /// - Truncated final line (partial write from a crash) is detected by JSON decode failure
-    ///   and treated as a trimmed record when `validateCRC` is false; throws when true.
+    /// **Unparseable-line policy (P1-B fix):**
+    ///
+    ///   Only the *last* line in the journal may be silently skipped on a non-validating read.
+    ///   A truncated last line is the normal result of an OS crash mid-append: the journal is
+    ///   still coherent up to the last durable line, and `append()` uses this path for
+    ///   idempotency checking.
+    ///
+    ///   An unparseable line *before* the last line cannot be a simple truncation — it indicates
+    ///   a corrupt mid-file record. If `loadJournal` silently skipped it, `append()`'s
+    ///   idempotency check would miss the seqs that follow that line in the file, potentially
+    ///   writing a duplicate. Therefore:
+    ///
+    ///   - `validateCRC: false` (idempotency / WAL path): throw `corruptRecord` for any
+    ///     unparseable line that is NOT the last line. Silently skip ONLY the last line (may be
+    ///     a truncated partial write from a crash).
+    ///   - `validateCRC: true` (replay path): throw `corruptRecord` for any line that fails
+    ///     JSON decode OR CRC verification, regardless of position.
+    ///
+    ///   Callers that need a best-effort read past corruption must call
+    ///   `recoverFromCorruption(gameId:)` first, then replay the recovered journal.
     private func loadJournal(gameId: String, validateCRC: Bool) throws -> [JournalRecord] {
         let url = journalURL(gameId: gameId)
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
@@ -515,16 +546,26 @@ public actor GRDBEventLog: EventLogStore {
             throw EventLogError.unreadableJournal(path: url.path, reason: error.localizedDescription)
         }
 
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: true)
+        let lastIndex = lines.indices.last
+
         var records: [JournalRecord] = []
-        for (lineIndex, rawLine) in content.split(separator: "\n", omittingEmptySubsequences: true).enumerated() {
+        for (lineIndex, rawLine) in lines.enumerated() {
             let lineStr = String(rawLine)
             guard let record = try? decoder.decode(JournalRecord.self, from: Data(lineStr.utf8)) else {
-                if validateCRC {
-                    // Truncated or corrupt line — surface as corrupt.
-                    throw EventLogError.corruptRecord(seq: nil, line: "Line \(lineIndex + 1) failed JSON decode: \(lineStr.prefix(80))")
+                let isLastLine = lineIndex == lastIndex
+                if isLastLine && !validateCRC {
+                    // Last line only: may be a truncated partial write from a crash.
+                    // Safe to skip on non-validating reads (idempotency / WAL path).
+                    break
                 }
-                // Non-validating read: skip unparseable line (truncated partial write).
-                continue
+                // Mid-file or validating-read: cannot safely skip — this is a corrupt record.
+                // Silently continuing would cause the idempotency check to miss seqs that
+                // follow this line, potentially producing duplicate records on the next append.
+                throw EventLogError.corruptRecord(
+                    seq: nil,
+                    line: "Line \(lineIndex + 1) failed JSON decode: \(lineStr.prefix(80))"
+                )
             }
 
             if validateCRC {
