@@ -1,0 +1,44 @@
+HUMAN HANDOFF PENDING — see HUMAN_HANDOFF.md step H-1
+======================================================
+
+This directory must contain EXACTLY ONE of:
+  narration.m4a   — preferred: recorded audio narration (see protocol below)
+  narration.txt   — fallback: verbatim transcript if audio is unavailable
+
+Until one of these files is present, meta.json.h3_ready MUST remain false and
+accuracy.sh will report SELF-CONSISTENCY (advisory) mode.
+
+NARRATION PROTOCOL (step H-1)
+------------------------------
+Game: LAN (Dodgers) vs NYN (Mets), 2024-09-16, Dodger Stadium
+Retrosheet game ID: LAN2024091601
+
+OPTION A — Record audio narration (preferred):
+  1. Download or obtain the play-by-play from a public source
+     (Baseball Reference: https://www.baseball-reference.com/boxes/LAN/LAN202409160.shtml
+      or Retrosheet: https://www.retrosheet.org/game.htm → 2024 season → LAN home games).
+  2. For each plate appearance, speak naturally as if you were a scorer describing the play,
+     e.g.: "Ground ball to shortstop, threw him out at first."
+     Each utterance should be 2–10 seconds, representing a SINGLE plate appearance.
+  3. Record a single audio file covering all plays in order.
+     Preferred format: .m4a (AAC), mono, 44.1 kHz, 128 kbps.
+  4. Save as: audio/narration.m4a
+  5. Optionally record one file per play: audio/play-001.m4a, audio/play-002.m4a, etc.
+     (plays numbered 1-based, top to bottom across all innings)
+
+OPTION B — Verbatim transcript (if audio unavailable):
+  1. Produce a text transcript in the format:
+       Inning <N> <top|bottom>, play <seq>: <narration>
+     Example:
+       Inning 1 top, play 1: Ground ball to shortstop, threw him out at first.
+       Inning 1 top, play 2: Pop fly to center, caught for the out.
+  2. Each line is one plate appearance. Judgment plays should be described as ambiguous
+     (e.g., "Ground ball to shortstop, ball glanced off his glove, batter reached first —
+      could be a hit or an error").
+  3. Save as: audio/narration.txt
+
+IMPORTANT: The narration must be produced BEFORE or INDEPENDENTLY of the Reisner hand-scoring
+(step H-2). The scorer in H-2 should ideally be scoring from this audio, not from the EVN.
+This independence is what makes H3 field accuracy rather than self-consistency.
+
+DELETE THIS FILE once narration.m4a or narration.txt is present.
