@@ -4,14 +4,17 @@
 //! replaying confirmed events from the event log (FR-003). The 3rd-out ends a half-inning;
 //! runner advancement is forced (deterministic) or flagged ambiguous→judgment (FR-009).
 
+use std::collections::HashMap;
+
 use crate::eventlog::{Event, EventLog, LogRow};
 use crate::ffi::{
-    ActiveFielder, GameId, GameState, Half, InningLine, LineScore, PitchMark,
+    ActiveFielder, GameId, GameState, Half, InningLine, LineScore, PitchMark, ProofBox,
 };
 use crate::model::{
     AdvanceTo, Base, BatterEvent, BatterHand, Catalyst, Count, NormalizedPlay, RunnerId,
     Runners, SituationDiamond,
 };
+use crate::reisner::compute_proof_box;
 
 // ---------------------------------------------------------------------------
 // Per-half-inning tracking
@@ -82,6 +85,12 @@ pub struct GameProjection {
     pub active_fielders: Vec<ActiveFielder>,
     /// The last count seen (for state snapshot).
     pub count: Count,
+    /// Archive of CLOSED half-innings' contexts, keyed by [`half_index`] (ADR-0012).
+    ///
+    /// `end_half_inning` inserts the just-completed half's [`HalfInningCtx`] here before
+    /// resetting `current_half`, so [`project_half_inning_proof_box`] can rebuild any
+    /// past half's proof box from replay alone (replay-up-to) without mutating history.
+    pub completed_halves: HashMap<u32, HalfInningCtx>,
 }
 
 impl Default for GameProjection {
@@ -98,6 +107,7 @@ impl Default for GameProjection {
             pitch_sequence: Vec::new(),
             active_fielders: Vec::new(),
             count: Count { balls: 0, strikes: 0 },
+            completed_halves: HashMap::new(),
         }
     }
 }
@@ -329,6 +339,15 @@ impl GameProjection {
         // Count stranded (runners physically on base at 3rd out).
         self.current_half.stranded = self.runners.len() as u32;
 
+        // Archive the CLOSED half-inning's context for historical replay (ADR-0012),
+        // keyed by the half-index of the half that just ended (BEFORE the flip below).
+        // This is the single source of truth for `get_proof_box` on a past half: the
+        // tallies captured here are exactly what `finalize_scorecard` balances (SC-011),
+        // and replaying the same confirmed log reproduces them byte-identically (I6).
+        let closed_key = half_index(self.inning, self.half);
+        self.completed_halves
+            .insert(closed_key, self.current_half.clone());
+
         // Clear runners.
         self.runners.clear();
         self.outs = 0;
@@ -415,26 +434,52 @@ impl GameProjection {
 // Project from event log
 // ---------------------------------------------------------------------------
 
+/// Build the correction-override map for a game: `corrected_seq → amended_play`.
+///
+/// Corrections are **append-only** (FR-013): an `EventCorrected` never mutates the
+/// original `PlayRecorded` row. Instead, replay substitutes the amended facts for the
+/// corrected seq's original facts. If a seq is corrected more than once, the LATEST
+/// correction (highest correction-event seq) wins — they are scanned in seq order so the
+/// last write to the map is the latest. This keeps history intact (the originals remain
+/// in the log) while the projection reflects the current amended facts (FR-012).
+fn correction_overrides(log: &EventLog, game_id: GameId) -> HashMap<u64, NormalizedPlay> {
+    let mut overrides: HashMap<u64, NormalizedPlay> = HashMap::new();
+    for row in log.all_rows(game_id) {
+        if let Event::EventCorrected(c) = &row.event {
+            overrides.insert(c.corrects_seq, c.amended_play.clone());
+        }
+    }
+    overrides
+}
+
 /// Build a [`GameProjection`] by replaying confirmed events for a game.
 ///
 /// This is the deterministic replay function (FR-003/I6): same events → same result.
+/// Corrections are honored append-only: a corrected play's amended facts replace the
+/// original facts during replay (FR-012/013), the original row is never mutated.
 pub fn project_game(log: &EventLog, game_id: GameId) -> GameProjection {
+    let overrides = correction_overrides(log, game_id);
     let mut proj = GameProjection::default();
     for row in log.confirmed_rows(game_id) {
-        apply_row(&mut proj, row);
+        apply_row(&mut proj, row, &overrides);
     }
     proj
 }
 
 /// Apply a single confirmed log row to a projection (pure function of the row).
-fn apply_row(proj: &mut GameProjection, row: &LogRow) {
+///
+/// `overrides` carries any append-only corrections: when a `PlayRecorded` row's seq has
+/// an override, the amended facts are projected instead of the original (FR-012/013).
+fn apply_row(proj: &mut GameProjection, row: &LogRow, overrides: &HashMap<u64, NormalizedPlay>) {
     match &row.event {
         Event::GameStarted(_) => {
             // Reset to initial state (already default).
             *proj = GameProjection::default();
         }
         Event::PlayRecorded(p) => {
-            proj.apply_play(&p.play, row.seq);
+            // Honor an append-only correction for this seq, if any (FR-012/013).
+            let play = overrides.get(&row.seq).unwrap_or(&p.play);
+            proj.apply_play(play, row.seq);
         }
         Event::PlayConfirmed(_) => {
             // State already applied when PlayRecorded was processed.
@@ -468,13 +513,69 @@ fn apply_row(proj: &mut GameProjection, row: &LogRow) {
             }
         }
         Event::EventCorrected(_) => {
-            // Post-MVP: correct_event triggers a full replay from the correction point.
-            // For MVP, we skip correction replay.
+            // A correction does not itself mutate the projection: it is applied during
+            // replay by the `overrides` map substituting the amended facts for the
+            // corrected `PlayRecorded` seq (FR-012/013). The `EventCorrected` row is a
+            // pure append-only audit marker; replaying it is a no-op so history stays intact.
         }
         Event::GameFinalized(_) => {
             // No state change needed.
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Historical half-inning proof box (replay-up-to — ADR-0012)
+// ---------------------------------------------------------------------------
+
+/// Half-inning ordering index: top of an inning precedes its bottom, earlier innings
+/// precede later ones. Used to compare a requested half-inning against the projection's
+/// current position (and to bucket each play into the half it was scored in).
+fn half_index(inning: u8, half: Half) -> u32 {
+    (u32::from(inning) << 1) | u32::from(half == Half::Bottom)
+}
+
+/// Public alias for [`half_index`] — the deterministic half-inning ordering key shared by
+/// historical proof-box replay and `correct_event`'s per-half error/PB context (I6).
+#[must_use]
+pub fn half_index_of(inning: u8, half: Half) -> u32 {
+    half_index(inning, half)
+}
+
+/// Rebuild the **closed** proof box for any PAST half-inning by replaying the confirmed
+/// event log up to that half-inning's third out (ADR-0012 — replay-up-to).
+///
+/// The live [`GameProjection`] only carries the *current* half-inning's tallies; once a
+/// half ends, `end_half_inning` archives its closed [`HalfInningCtx`] into
+/// `completed_halves` (keyed by [`half_index`]) and resets `current_half`. So a query for
+/// a past half is answered by replaying deterministically and reading the archived
+/// context — exactly the tallies `finalize_scorecard` saw for that half (SC-011).
+///
+/// Returns `Some(ProofBox)` for a half that was reached and CLOSED in the log; `None`
+/// when the requested half is the current (still-open) half or has not been played yet —
+/// the caller handles those (live projection / future-zeros) so this function speaks only
+/// to genuine historical replay.
+///
+/// Corrections are honored: replay uses the same append-only override map as
+/// [`project_game`], so a correction that changes a past half's tallies is reflected here
+/// too (FR-012).
+pub fn project_half_inning_proof_box(
+    log: &EventLog,
+    game_id: GameId,
+    inning: u8,
+    half: Half,
+) -> Option<ProofBox> {
+    let overrides = correction_overrides(log, game_id);
+    let target = half_index(inning, half);
+
+    let mut proj = GameProjection::default();
+    for row in log.confirmed_rows(game_id) {
+        apply_row(&mut proj, row, &overrides);
+    }
+
+    proj.completed_halves
+        .get(&target)
+        .map(|ctx| compute_proof_box(ctx, inning, half))
 }
 
 // ---------------------------------------------------------------------------
@@ -585,5 +686,47 @@ mod tests {
         );
         proj.apply_play(&play, 1);
         assert_eq!(proj.current_half.runs, 1);
+    }
+
+    /// ADR-0012: ending a half-inning archives its CLOSED context into `completed_halves`
+    /// (keyed by half_index), so a past half's tallies survive the `current_half` reset.
+    #[test]
+    fn end_half_inning_archives_closed_context() {
+        let mut proj = GameProjection::default();
+        // 3 strikeouts close the top of the 1st.
+        for i in 0..3u32 {
+            let play = make_play(
+                BatterEvent::Strikeout,
+                vec![Advance {
+                    runner: RunnerId(i + 1),
+                    from: Base::Home,
+                    to: AdvanceTo::Out,
+                    by_error: None,
+                }],
+            );
+            proj.apply_play(&play, i as u64);
+        }
+        // current_half was reset (we are now in the bottom of the 1st).
+        assert_eq!(proj.half, Half::Bottom);
+        assert_eq!(proj.current_half.putouts, 0, "current half reset after the close");
+
+        // The closed top-1st is archived with its real tallies.
+        let key = half_index_of(1, Half::Top);
+        let archived = proj
+            .completed_halves
+            .get(&key)
+            .expect("closed top-1st archived");
+        assert_eq!(archived.ab, 3, "three at-bats archived");
+        assert_eq!(archived.putouts, 3, "three putouts archived");
+        assert_eq!(archived.stranded, 0, "nobody stranded on a 1-2-3");
+    }
+
+    /// `half_index_of` orders top-before-bottom within an inning and earlier-before-later
+    /// across innings — the deterministic key historical replay buckets by.
+    #[test]
+    fn half_index_orders_correctly() {
+        assert!(half_index_of(1, Half::Top) < half_index_of(1, Half::Bottom));
+        assert!(half_index_of(1, Half::Bottom) < half_index_of(2, Half::Top));
+        assert!(half_index_of(9, Half::Top) < half_index_of(9, Half::Bottom));
     }
 }
