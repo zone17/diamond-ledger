@@ -22,3 +22,20 @@ pub mod primitives;
 pub mod reisner;
 pub mod retrosheet;
 pub mod rules;
+
+// ---------------------------------------------------------------------------
+// UniFFI scaffolding (T037 / H1) — opt-in via the `uniffi` feature.
+// ---------------------------------------------------------------------------
+//
+// The proc-macro path (no UDL file): `setup_scaffolding!` emits the component
+// metadata + the `uniffi_bindgen` checksum symbols the generated Swift/Kotlin
+// bindings link against. It is feature-gated so the pure deterministic core (and
+// the no-float clippy gate, the CLI/agent adapters, and `cargo test`) build with
+// zero FFI coupling by default. The XCFramework build and `uniffi-bindgen` turn
+// the feature on (`--features uniffi`).
+//
+// All `#[uniffi::...]` annotations across `ffi.rs`, `model.rs`, and
+// `primitives/mod.rs` are likewise `#[cfg_attr(feature = "uniffi", ...)]`, so they
+// vanish entirely in the default build.
+#[cfg(feature = "uniffi")]
+uniffi::setup_scaffolding!();

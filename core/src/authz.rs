@@ -4,10 +4,12 @@
 //! "owner-as-decider": the authenticated owner (or an explicitly authorized agent) is the
 //! only valid caller. Multi-role/org permissions are deferred (FR-020).
 
+use serde::{Deserialize, Serialize};
+
 use crate::ffi::{Actor, Error, ErrorCode};
 
 /// The authority model for a game (v1: owner id + authorized agent ids).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameAuthority {
     /// The owner id who created the game.
     pub owner_id: String,

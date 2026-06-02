@@ -94,95 +94,125 @@ pub fn classify_with_context(play: &NormalizedPlay, ctx: &ClassifyContext) -> Cl
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // JUDGMENT TRIGGER PRIORITY (established by adversarial corpus):
+    // JUDGMENT TRIGGER PRIORITY (established by the adversarial corpus; #127 reconcile):
     //
     //   1. EarnedVsUnearned  — inning context + run scores (most specific context)
-    //   2. ContestedCredit   — multi-fielder relay / DP credit
-    //   3. HitVsError        — fielder touch + batter reaches
-    //   4. AmbiguousAdvance  — non-scoring 2+ base advance without attributed error
+    //   2. AmbiguousAdvance  — the advance ITSELF is what's contested:
+    //        (a) error-enabled extra-base advance (overthrow: hit-vs-error on the BASES)
+    //        (b) deflection-enabled scoring advance (≥2 fielders touched the ball)
+    //        (c) non-scoring baserunner 2+ bases without error
+    //        (d) batter 2+ bases on a non-clean-XBH without error
+    //   3. ContestedCredit   — multi-fielder relay/DP CREDIT (who is charged/credited)
+    //   4. HitVsError        — fielder touch + batter reaches (the at-bat hit-vs-error)
     //
-    // The corpus (evals/judgment-corpus/seed.jsonl) establishes this ordering by
-    // having entries where multiple triggers could fire — the expected classification
-    // determines which takes precedence.
+    // Ordering rationale (all four kinds still SURFACE a judgment, so SC-003/I2 holds
+    // regardless of kind — the kind only decides WHICH question the scorer is asked):
+    // AmbiguousAdvance precedes ContestedCredit/HitVsError because when an error or a
+    // multi-fielder deflection ENABLED the advance, the open question is the advance
+    // attribution (how many bases are hit vs error), not the at-bat credit. This makes
+    // the classifier agree with corpus-019 (deflected scoring advance) and corpus-020
+    // (overthrow extra-base advance), which earlier mis-fired as ContestedCredit /
+    // HitVsError. See #127 and docs/solutions for the call.
     // ─────────────────────────────────────────────────────────────────────────
+
+    let run_scores = cat.advances.iter().any(|a| {
+        matches!(a.to, crate::model::AdvanceTo::Base(crate::model::Base::Home))
+    });
 
     // ── 1. EarnedVsUnearned trigger (I3/FR-010a) ──────────────────────────────
     // Any run that scores in a half-inning that has an error or passed ball MUST be
     // flagged PENDING (no Rule 9.16 in v1). This has the highest priority because the
     // inning context is the most specific constraint.
-    if ctx.inning_has_error_or_pb {
-        let run_scores = cat.advances.iter().any(|a| {
-            matches!(a.to, crate::model::AdvanceTo::Base(crate::model::Base::Home))
-        });
-        if run_scores {
-            return Classification::Judgment(JudgmentKind::EarnedVsUnearned);
-        }
+    if ctx.inning_has_error_or_pb && run_scores {
+        return Classification::Judgment(JudgmentKind::EarnedVsUnearned);
     }
 
-    // ── 2. ContestedCredit trigger ─────────────────────────────────────────────
-    // Two patterns:
-    // (a) 2+ fielders + run scores + ball touched → relay RBI contested.
-    // (b) 3+ fielders in chain + 2+ runner outs → DP/TP credit contested.
-    {
-        let run_scores = cat.advances.iter().any(|a| {
-            matches!(a.to, crate::model::AdvanceTo::Base(crate::model::Base::Home))
-        });
-        let relay_rbi_contested = cat.fielders.len() >= 2
-            && run_scores
-            && !cat.touched_or_misplayed_by.is_empty();
-        let dp_credit_contested = cat.fielders.len() >= 3
-            && cat.advances.iter().filter(|a| matches!(a.to, crate::model::AdvanceTo::Out)).count() >= 2;
-        if relay_rbi_contested || dp_credit_contested {
-            return Classification::Judgment(JudgmentKind::ContestedCredit);
-        }
-    }
-
-    // ── 3. AmbiguousAdvance trigger ────────────────────────────────────────────
-    // Checked BEFORE HitVsError because ambiguous advances are the dominant judgment
-    // concern when a runner moves unexpectedly far (corpus priority, established by
-    // seeds 010/011 which have both HitVsError facts AND AmbiguousAdvance triggers).
-    //
-    // Pattern (a): Baserunner advances to a non-scoring base 2+ beyond starting without error.
-    //   e.g., runner on first → third (2 steps): AmbiguousAdvance.
-    //   Scoring advances (to Home) are excluded — those are EarnedVsUnearned territory.
-    //
-    // Pattern (b): Batter advances to second+ on a non-Double/Triple/HR without error.
-    //   e.g., batter reaches second on a FieldedOut deflection: AmbiguousAdvance.
+    // ── 2. AmbiguousAdvance trigger ────────────────────────────────────────────
+    // The contested thing is the ADVANCE attribution. Checked before ContestedCredit
+    // and HitVsError (#127): when a misplay/overthrow enabled the advance, "how many
+    // bases are a hit vs an error" is the scorer's call, not the at-bat credit.
     {
         let is_home_run = cat.batter_event == BatterEvent::HomeRun;
         let is_clean_extra_base_hit = matches!(
             cat.batter_event,
             BatterEvent::Double | BatterEvent::Triple | BatterEvent::HomeRun
         );
+        // (b) Deflection-enabled scoring advance: the ball was touched/misplayed by
+        // 2+ fielders AND a run scored. The deflection makes the advance attribution
+        // (clean hit vs misplay-enabled) ambiguous → AmbiguousAdvance, NOT a relay-RBI
+        // ContestedCredit (which needs a single clean relay). Distinguishes corpus-019
+        // (touched=[8,4]) from corpus-013 (touched=[9], one fielder → ContestedCredit).
+        if run_scores && cat.touched_or_misplayed_by.len() >= 2 {
+            return Classification::Judgment(JudgmentKind::AmbiguousAdvance);
+        }
         if !is_home_run {
             for adv in &cat.advances {
-                if adv.by_error.is_none() {
-                    // Pattern (a): baserunner to a non-scoring base 2+ steps without error.
-                    if adv.from != crate::model::Base::Home {
-                        let goes_to_home = matches!(adv.to, crate::model::AdvanceTo::Base(crate::model::Base::Home));
-                        if !goes_to_home {
-                            let excess = base_distance(adv.from, adv.to);
-                            if excess >= 2 {
-                                return Classification::Judgment(JudgmentKind::AmbiguousAdvance);
-                            }
-                        }
+                // (a) Error-enabled extra-base advance by the BATTER-RUNNER (the overthrow
+                // case): an error is attributed on a batter advance that moved 2+ bases.
+                // How many of those bases are a hit vs an error is the scorer's call →
+                // AmbiguousAdvance (corpus-020). Restricted to `from == Home` so that an
+                // error advancing a *prior* runner while the batter cleanly reached first
+                // stays the at-bat HitVsError (corpus-004), not an ambiguous advance.
+                if adv.by_error.is_some() {
+                    if adv.from == crate::model::Base::Home && base_distance(adv.from, adv.to) >= 2 {
+                        return Classification::Judgment(JudgmentKind::AmbiguousAdvance);
                     }
-                    // Pattern (b): batter advances to second+ on a non-clean-extra-base-hit.
-                    if adv.from == crate::model::Base::Home && !is_clean_extra_base_hit {
-                        let dist = base_distance(adv.from, adv.to);
-                        if dist >= 2 {
-                            return Classification::Judgment(JudgmentKind::AmbiguousAdvance);
-                        }
+                    continue;
+                }
+                // (c) Non-scoring baserunner 2+ bases without error.
+                if adv.from != crate::model::Base::Home {
+                    let goes_to_home = matches!(adv.to, crate::model::AdvanceTo::Base(crate::model::Base::Home));
+                    if !goes_to_home && base_distance(adv.from, adv.to) >= 2 {
+                        return Classification::Judgment(JudgmentKind::AmbiguousAdvance);
                     }
                 }
+                // (d) Batter 2+ bases on a non-clean-extra-base-hit without error.
+                if adv.from == crate::model::Base::Home
+                    && !is_clean_extra_base_hit
+                    && base_distance(adv.from, adv.to) >= 2
+                {
+                    return Classification::Judgment(JudgmentKind::AmbiguousAdvance);
+                }
             }
+        }
+    }
+
+    // ── 3. ContestedCredit trigger ─────────────────────────────────────────────
+    // The contested thing is the fielding CREDIT (which fielder is charged/credited),
+    // not the advance. Three patterns:
+    // (a) single-deflection relay RBI: 2+ fielders + run scores + exactly one fielder
+    //     touched (a 2+-fielder deflection scoring advance is AmbiguousAdvance above).
+    // (b) 3+ fielders in chain + 2+ runner outs → DP/TP credit contested.
+    // (c) safe batter on a multi-fielder THROW chain (a throw was made to retire the
+    //     batter but they reached): the call is error-on-the-receiver vs hit vs FC —
+    //     a contested credit among fielders. Distinguishes corpus-015 (batter_event
+    //     `Single` + fld=[9,3], a throw to first) from corpus-001 (`FieldedOut` +
+    //     fld=[6,3]) which is the at-bat HitVsError below.
+    {
+        let relay_rbi_contested = cat.fielders.len() >= 2
+            && run_scores
+            && !cat.touched_or_misplayed_by.is_empty();
+        let dp_credit_contested = cat.fielders.len() >= 3
+            && cat.advances.iter().filter(|a| matches!(a.to, crate::model::AdvanceTo::Out)).count() >= 2;
+        let batter_reached_safe = cat.advances.iter().any(|a| {
+            a.from == crate::model::Base::Home && matches!(a.to, crate::model::AdvanceTo::Base(_))
+        });
+        let safe_throw_chain_contested = cat.fielders.len() >= 2
+            && batter_reached_safe
+            && !run_scores
+            && matches!(
+                cat.batter_event,
+                BatterEvent::Single | BatterEvent::FieldersChoice | BatterEvent::Error
+            );
+        if relay_rbi_contested || dp_credit_contested || safe_throw_chain_contested {
+            return Classification::Judgment(JudgmentKind::ContestedCredit);
         }
     }
 
     // ── 4. HitVsError trigger (I1/FR-006) ─────────────────────────────────────
     // Fielder touched or misplayed the ball AND the batter-runner reached base safely.
     // Fact-derived; fires regardless of any audit_label (FR-006a).
-    // NOTE: Runs after AmbiguousAdvance (corpus priority).
+    // NOTE: Runs after AmbiguousAdvance + ContestedCredit (corpus priority, #127).
     let batter_reached = cat.advances.iter().any(|a| {
         a.from == crate::model::Base::Home && matches!(a.to, crate::model::AdvanceTo::Base(_))
     });
@@ -466,6 +496,191 @@ mod tests {
         assert_eq!(
             classify(&play),
             Classification::Judgment(JudgmentKind::AmbiguousAdvance)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #127 — trigger-priority reconciliation (corpus-015 / 019 / 020).
+    // All three still surface as JUDGMENTS (SC-003 holds); these lock in the
+    // fact-justified KIND each play's facts demand.
+    // -----------------------------------------------------------------------
+
+    /// corpus-020: batter-runner advances 2+ bases with an error on the advance
+    /// (the overthrow) → AmbiguousAdvance, NOT HitVsError.
+    #[test]
+    fn overthrow_extra_base_batter_advance_is_ambiguous_advance() {
+        let play = NormalizedPlay {
+            situation: base_situation(),
+            catalyst: Catalyst {
+                batter_event: BatterEvent::FieldedOut,
+                fielders: vec![Position(5), Position(3)],
+                ball_type: BallType::Ground,
+                advances: vec![Advance {
+                    runner: RunnerId(0),
+                    from: crate::model::Base::Home,
+                    to: AdvanceTo::Base(crate::model::Base::Third),
+                    by_error: Some(Position(5)),
+                }],
+                touched_or_misplayed_by: vec![Position(5)],
+            },
+            audit_label: Some("single".into()),
+        };
+        assert_eq!(
+            classify(&play),
+            Classification::Judgment(JudgmentKind::AmbiguousAdvance),
+            "Overthrow extra-base batter advance is AmbiguousAdvance (#127 / corpus-020)"
+        );
+    }
+
+    /// corpus-004 guard: an error advancing a PRIOR runner while the batter cleanly
+    /// reaches first stays HitVsError (the at-bat is the call), NOT AmbiguousAdvance.
+    #[test]
+    fn prior_runner_error_advance_stays_hit_vs_error() {
+        let play = NormalizedPlay {
+            situation: base_situation(),
+            catalyst: Catalyst {
+                batter_event: BatterEvent::FieldedOut,
+                fielders: vec![Position(9)],
+                ball_type: BallType::Fly,
+                advances: vec![
+                    Advance {
+                        runner: RunnerId(0),
+                        from: crate::model::Base::Home,
+                        to: AdvanceTo::Base(crate::model::Base::First),
+                        by_error: None,
+                    },
+                    Advance {
+                        runner: RunnerId(1),
+                        from: crate::model::Base::First,
+                        to: AdvanceTo::Base(crate::model::Base::Third),
+                        by_error: Some(Position(9)),
+                    },
+                ],
+                touched_or_misplayed_by: vec![Position(9)],
+            },
+            audit_label: None,
+        };
+        assert_eq!(
+            classify(&play),
+            Classification::Judgment(JudgmentKind::HitVsError),
+            "Prior-runner error advance keeps the at-bat HitVsError (#127 / corpus-004 guard)"
+        );
+    }
+
+    /// corpus-019: a scoring advance where the ball was touched/misplayed by 2+
+    /// fielders (a deflection) → AmbiguousAdvance, NOT a relay-RBI ContestedCredit.
+    #[test]
+    fn deflection_scoring_advance_is_ambiguous_advance() {
+        let play = NormalizedPlay {
+            situation: base_situation(),
+            catalyst: Catalyst {
+                batter_event: BatterEvent::Single,
+                fielders: vec![Position(8), Position(4)],
+                ball_type: BallType::Ground,
+                advances: vec![
+                    Advance {
+                        runner: RunnerId(0),
+                        from: crate::model::Base::Home,
+                        to: AdvanceTo::Base(crate::model::Base::First),
+                        by_error: None,
+                    },
+                    Advance {
+                        runner: RunnerId(2),
+                        from: crate::model::Base::Second,
+                        to: AdvanceTo::Base(crate::model::Base::Home),
+                        by_error: None,
+                    },
+                ],
+                touched_or_misplayed_by: vec![Position(8), Position(4)],
+            },
+            audit_label: Some("single".into()),
+        };
+        assert_eq!(
+            classify(&play),
+            Classification::Judgment(JudgmentKind::AmbiguousAdvance),
+            "2-fielder deflection scoring advance is AmbiguousAdvance (#127 / corpus-019)"
+        );
+    }
+
+    /// corpus-013 guard: a single-fielder-touch scoring advance with 2 fielders in the
+    /// chain stays a relay-RBI ContestedCredit (only ONE fielder touched).
+    #[test]
+    fn single_touch_relay_rbi_stays_contested_credit() {
+        let play = NormalizedPlay {
+            situation: base_situation(),
+            catalyst: Catalyst {
+                batter_event: BatterEvent::SacFly,
+                fielders: vec![Position(9), Position(2)],
+                ball_type: BallType::Fly,
+                advances: vec![Advance {
+                    runner: RunnerId(3),
+                    from: crate::model::Base::Third,
+                    to: AdvanceTo::Base(crate::model::Base::Home),
+                    by_error: None,
+                }],
+                touched_or_misplayed_by: vec![Position(9)],
+            },
+            audit_label: None,
+        };
+        assert_eq!(
+            classify(&play),
+            Classification::Judgment(JudgmentKind::ContestedCredit),
+            "Single-touch relay RBI stays ContestedCredit (#127 / corpus-013 guard)"
+        );
+    }
+
+    /// corpus-015: a safe batter on a multi-fielder throw chain (a throw was made to
+    /// retire the batter, who reached) → ContestedCredit, NOT HitVsError.
+    #[test]
+    fn safe_batter_throw_chain_is_contested_credit() {
+        let play = NormalizedPlay {
+            situation: base_situation(),
+            catalyst: Catalyst {
+                batter_event: BatterEvent::Single,
+                fielders: vec![Position(9), Position(3)],
+                ball_type: BallType::Ground,
+                advances: vec![Advance {
+                    runner: RunnerId(0),
+                    from: crate::model::Base::Home,
+                    to: AdvanceTo::Base(crate::model::Base::First),
+                    by_error: None,
+                }],
+                touched_or_misplayed_by: vec![Position(9)],
+            },
+            audit_label: Some("single".into()),
+        };
+        assert_eq!(
+            classify(&play),
+            Classification::Judgment(JudgmentKind::ContestedCredit),
+            "Safe batter on a 2-fielder throw chain is ContestedCredit (#127 / corpus-015)"
+        );
+    }
+
+    /// corpus-001 guard: a `FieldedOut` where the batter reached after a fielder touch
+    /// stays HitVsError (the at-bat hit-vs-error), distinct from corpus-015's `Single`
+    /// throw-chain ContestedCredit.
+    #[test]
+    fn fielded_out_batter_reached_stays_hit_vs_error() {
+        let play = NormalizedPlay {
+            situation: base_situation(),
+            catalyst: Catalyst {
+                batter_event: BatterEvent::FieldedOut,
+                fielders: vec![Position(6), Position(3)],
+                ball_type: BallType::Ground,
+                advances: vec![Advance {
+                    runner: RunnerId(0),
+                    from: crate::model::Base::Home,
+                    to: AdvanceTo::Base(crate::model::Base::First),
+                    by_error: None,
+                }],
+                touched_or_misplayed_by: vec![Position(6)],
+            },
+            audit_label: None,
+        };
+        assert_eq!(
+            classify(&play),
+            Classification::Judgment(JudgmentKind::HitVsError),
+            "FieldedOut + batter reached stays HitVsError (#127 / corpus-001 guard)"
         );
     }
 }

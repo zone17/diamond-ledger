@@ -348,29 +348,70 @@ jobs:
         # Reads deny rules from clippy.toml at workspace root.
         run: |
           if [ -f Cargo.toml ] && [ -f clippy.toml ]; then
-            cargo clippy --workspace -- -D warnings 2>&1
+            cargo clippy --workspace --all-targets -- -D warnings 2>&1
           else
             echo "clippy.toml or Cargo.toml not present — no-float gate advisory (placeholder)"
           fi
+      - name: UniFFI surface compiles + no-float holds with the feature (T037 / H1)
+        # The FFI boundary types + the exported DiamondCore impl must compile under the
+        # uniffi feature AND still pass the no-float clippy gate (the integer-only seam).
+        run: |
+          if [ -f Cargo.toml ]; then
+            cargo build -p dl-core --features uniffi
+            cargo clippy -p dl-core --features uniffi --all-targets -- -D warnings
+          fi
+      - name: UniFFI Swift bindings generate non-empty (T037 — cache-pitfall guard)
+        # Rebuilds the host dylib WITH the feature, then generates Swift bindings and
+        # asserts they are non-empty. Catches the silent cache pitfall where a non-uniffi
+        # dylib makes bindgen emit zero files. (Full XCFramework needs Xcode — macOS only.)
+        run: |
+          if [ -f Cargo.toml ]; then
+            make uniffi-bindings
+          fi
 
   core-eval:
-    name: Rust core — eval harness (T004 / T041 / T042 / T043)
+    name: Rust core — eval harness (T040/T041/T042/T043)
     runs-on: ubuntu-latest
-    # ENFORCING (DL-104): the SC-003 judgment gate (judgment-gate.sh over the full
-    # corpus) is green on main; this is now a hard gate. The gate resolves a relative
-    # CORPUS_PATH against the repo root, so it is CWD-independent.
+    # ENFORCING: SC-003 judgment (T041), proof-box Layer-1 (T043), and parity SC-008
+    # (T040) are hard gates; accuracy (T042) is advisory until a real gold game lands
+    # (h3_ready, H3). The judgment gate resolves a relative CORPUS_PATH against the repo
+    # root, so it is CWD-independent.
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      - name: Run eval runners when present
-        # Final intent: invoke evals/runners/judgment-gate.sh (SC-003 hard-fail),
-        # evals/runners/accuracy.sh (SC-001/SC-002, advisory until gold lands),
-        # and evals/runners/proof-box.sh (Layer-1 offline check).
-        # All three become CI hard-fails once wired (remove continue-on-error).
+      - name: Install pinned Rust toolchain
+        # proof-box.sh / parity.sh invoke cargo; read the channel from rust-toolchain.toml.
+        run: |
+          if [ -f rust-toolchain.toml ]; then rustup show; fi
+      - name: SC-003 judgment gate (T041 — HARD-FAIL)
         run: |
           if [ -f evals/runners/judgment-gate.sh ]; then
             bash evals/runners/judgment-gate.sh evals/judgment-corpus/corpus.jsonl
           else
             echo "evals/runners/judgment-gate.sh not yet present (Squad A T041) — skipping"
+          fi
+      - name: Proof-box Layer-1 gate (T043 — HARD-FAIL)
+        # AB+BB+Sac+HBP+INT == R+PO+LOB on the core's projection (SC-011 / INTERFACE.md §3.3 L1).
+        run: |
+          if [ -f evals/runners/proof-box.sh ]; then
+            bash evals/runners/proof-box.sh
+          else
+            echo "evals/runners/proof-box.sh not yet present (Squad A T043) — skipping"
+          fi
+      - name: Parity gate (T040 — HARD-FAIL, SC-008)
+        # CLI/agent path (persisted) vs UI/core path (in-memory replay): byte-identical.
+        run: |
+          if [ -f evals/runners/parity.sh ]; then
+            bash evals/runners/parity.sh
+          else
+            echo "evals/runners/parity.sh not yet present (Squad A T040) — skipping"
+          fi
+      - name: Accuracy gate (T042 — ADVISORY until gold/H3)
+        # SELF-CONSISTENCY mode (exit 0) until a real gold game has h3_ready=true.
+        run: |
+          if [ -f evals/runners/accuracy.sh ]; then
+            bash evals/runners/accuracy.sh
+          else
+            echo "evals/runners/accuracy.sh not yet present (Squad A T042) — skipping"
           fi
 
   ios-build:
