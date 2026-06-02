@@ -42,6 +42,19 @@ public enum CoreError: Error, Sendable {
     case internalError(String)
 }
 
+extension CoreError: LocalizedError {
+    /// Surface the core's actual message (carried in each case's associated value) so the UI shows
+    /// the real reason — e.g. "invalid fielder position" — instead of Foundation's opaque default
+    /// "The operation couldn't be completed. (Core.CoreError error 4.)" for a bare enum error.
+    public var errorDescription: String? {
+        switch self {
+        case .unauthorized(let m), .judgmentRequired(let m), .proofBoxImbalance(let m),
+             .notFound(let m), .invalidState(let m), .internalError(let m):
+            return m
+        }
+    }
+}
+
 /// Opaque game-state snapshot returned by the core after each primitive.
 /// Full structure is defined in `core/src/model.rs` (T012) and the FFI surface (T007).
 /// TODO: replace with the generated UniFFI struct at H1 (T044 / T071).

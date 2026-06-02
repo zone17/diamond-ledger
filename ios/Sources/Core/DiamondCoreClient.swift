@@ -487,11 +487,17 @@ enum FactBridge {
         }
     }
 
-    /// Parse a "6-3" style fielder chain into positions. Returns nil on empty/garbage.
+    /// Parse a fielder chain into positions. Each fielder is a single position digit (1-9, 0=DH),
+    /// so this handles BOTH the WoZ format `"6-3"` AND the grammar parser's concatenated `"63"`
+    /// (the plain-mic path emits the latter via `parseFielderSequence`'s `.joined()`). Splitting on
+    /// `-`/space alone produced `Position(63)` for `"63"` — an out-of-range position the real core
+    /// rejects (the H1 root cause of `CoreError 4`). Treat every digit as one fielder instead.
+    /// Returns nil on empty/garbage so the caller can fall back to a sensible default chain.
     private static func parseFielders(_ s: String?) -> [Position]? {
         guard let s, !s.isEmpty else { return nil }
-        let parts = s.split(whereSeparator: { $0 == "-" || $0 == " " })
-        let positions = parts.compactMap { UInt8($0).map { Position($0) } }
+        let positions = s.compactMap { $0.wholeNumberValue }   // each digit char → a position
+            .filter { (0...9).contains($0) }                    // valid baseball positions only
+            .map { Position(UInt8($0)) }
         return positions.isEmpty ? nil : positions
     }
 
