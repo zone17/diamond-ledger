@@ -170,9 +170,12 @@ jobs:
 
           echo "=== Verifying cwevent binary ==="
           CWEVENT="${INSTALL_PREFIX}/bin/cwevent"
-          CWEVENT_VER="$("$CWEVENT" 2>&1 || true | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+          # cwevent exits 1 when no args/files are given; capture stderr output first
+          CWEVENT_HEADER="$("$CWEVENT" 2>&1; true)"
+          CWEVENT_VER="$(echo "$CWEVENT_HEADER" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
           if [[ "$CWEVENT_VER" != "0.10.0" ]]; then
             echo "::error::cwevent version mismatch: expected 0.10.0, got '$CWEVENT_VER'"
+            echo "Binary header: $CWEVENT_HEADER"
             exit 1
           fi
           echo "cwevent $CWEVENT_VER built and verified ✓"
