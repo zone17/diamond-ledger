@@ -32,3 +32,8 @@ targets:
         SWIFT_VERSION: "6.0"
         CURRENT_PROJECT_VERSION: "1"
         MARKETING_VERSION: "1.0"
+        # Usage-description strings. Required for real mic + on-device speech recognition —
+        # without these, the first AVAudioSession/SFSpeechRecognizer request hard-crashes on
+        # device (TCC). Surfaced in the GENERATE_INFOPLIST_FILE-synthesized Info.plist.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Diamond Ledger uses the microphone to capture your spoken play calls so it can score the game by voice."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Diamond Ledger transcribes your spoken play calls on-device to turn them into scorebook entries."

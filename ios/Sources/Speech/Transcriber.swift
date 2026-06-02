@@ -131,6 +131,30 @@ public enum TranscriberEngine: String, Sendable, Codable {
     case apple
     /// sherpa-onnx / Parakeet portable (fallback / Android). T048.
     case sherpa
+    /// Wizard-of-Oz / canned `StubTranscriber` — NOT a real ASR engine. Reported distinctly so
+    /// observability never mistakes the stub/fallback path for real Apple recognition (ADR-0010).
+    case stub
+}
+
+// MARK: - Confidence mapping (shared by all adapters)
+
+/// Single shared conversion from a native float confidence/posterior in [0.0, 1.0] to the
+/// integer 0…100 scale used at the `Transcript` boundary (see `Transcript.confidence`).
+///
+/// Both `AppleTranscriber` (SFSpeechRecognizer segment confidence) and `SherpaTranscriber`
+/// (Parakeet posterior) use THIS one helper so the two engines can never diverge on rounding at
+/// the `GrammarParser` integer threshold. Exposed `public` so unit tests can pin the boundaries
+/// (0.0→0, 0.695→70, 0.705→71, 1.0→100).
+///
+/// Formula: `Int((clamp(native, 0, 1) * 100).rounded())` (banker's? no — `.rounded()` is
+/// round-half-away-from-zero, so 0.705·100 = 70.5 → 71 and 0.695·100 = 69.499.. → 69; see the
+/// boundary test for the exact float behaviour).
+public enum ConfidenceMapping {
+    /// Maps a native float confidence in [0.0, 1.0] to an integer percentage in [0, 100].
+    public static func toInt(_ native: Float) -> Int {
+        let clamped = min(max(native, 0.0), 1.0)
+        return Int((clamped * 100.0).rounded())
+    }
 }
 
 // MARK: - Transcriber errors

@@ -42,24 +42,31 @@ import Foundation
 /// Resolves the best available `Transcriber` conformer for the current device/OS/config.
 public enum TranscriberEngineSelector {
 
-    // MARK: - Debug toggle
+    // MARK: - Debug toggle (test/demo seam — excluded from release builds)
 
+#if DEBUG
     /// Force the selector to return `StubTranscriber` regardless of device capabilities.
     ///
-    /// Intended for Wizard-of-Oz demo builds and simulator testing. **MUST NOT** be `true`
-    /// in production builds. Check `isStubForced` before shipping.
+    /// Intended for Wizard-of-Oz demo builds and simulator testing. This is a **DEBUG-only seam**
+    /// — it is compiled out of release builds entirely, so a production build can never be stuck
+    /// on the stub via this flag.
     ///
     /// Swift 6 note: `nonisolated(unsafe)` is used here because this flag is written only
     /// from tests / debug code in a non-concurrent setup phase, making the data race safe
     /// in practice. Production code should treat this as read-only.
     public nonisolated(unsafe) static var forceStub: Bool = {
-        // Default to `true` in simulator/debug builds; `false` on device release builds.
+        // Default to `true` in simulator/debug builds.
 #if targetEnvironment(simulator)
         return true
 #else
         return false
 #endif
     }()
+#else
+    /// Release builds: the stub-force seam does not exist. `resolve()` always evaluates the real
+    /// engine chain. Kept as a compile-time constant `false` so call sites need no `#if` fences.
+    public static let forceStub: Bool = false
+#endif
 
     // MARK: - Resolve
 
@@ -105,7 +112,7 @@ public enum TranscriberEngineSelector {
     /// Returns the `TranscriberEngine` that `resolve()` would select (without constructing
     /// the full transcriber). Useful for logging and diagnostics.
     public static func resolvedEngineKind() async -> TranscriberEngine {
-        if forceStub { return .apple }   // stub stands in for primary in WoZ mode
+        if forceStub { return .stub }   // WoZ / debug stub — reported distinctly (ADR-0010)
 
         if #available(iOS 26, *) {
             let apple = AppleTranscriber()
@@ -115,7 +122,7 @@ public enum TranscriberEngineSelector {
         let sherpa = SherpaTranscriber()
         if await sherpa.isAvailable { return .sherpa }
 
-        return .apple  // stub acts as apple for observability purposes
+        return .stub  // last-resort fallback is the stub — never a lie about real ASR
     }
 
     // MARK: - Private

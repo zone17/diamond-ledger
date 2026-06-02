@@ -105,13 +105,13 @@ public actor SherpaTranscriber: Transcriber {
     /// exercise the selection seam without a real model file.
     public var isAvailable: Bool {
         get async {
-#if targetEnvironment(simulator)
-            // Simulator: report available when the model bundle is present,
-            // OR when the SHERPA_STUB_AVAILABLE test-seam override is active.
+#if targetEnvironment(simulator) && DEBUG
+            // Simulator + DEBUG: report available when the model bundle is present,
+            // OR when the SherpaStubSeam test-seam override is active (DEBUG-only).
             return SherpaModelBundle.isModelBundlePresent(named: modelConfig.bundleName)
                 || SherpaStubSeam.isOverrideActive
 #else
-            // Device: model bundle must be present for on-device inference.
+            // Device, or any release build: model bundle must be present for on-device inference.
             return SherpaModelBundle.isModelBundlePresent(named: modelConfig.bundleName)
 #endif
         }
@@ -193,7 +193,7 @@ public actor SherpaTranscriber: Transcriber {
         //   recognizer.inputFinished()
         //   let result = recognizer.getResult()
         //
-        //   let confidence = mapConfidence(result.confidence)   // Float → Int (0…100)
+        //   let confidence = ConfidenceMapping.toInt(result.confidence)  // Float → Int (0…100)
         //   return Transcript(text: result.text, confidence: confidence,
         //                     engine: .sherpa, finalizedAt: Date())
         //
@@ -221,13 +221,8 @@ public actor SherpaTranscriber: Transcriber {
 #endif
     }
 
-    // MARK: - Private: Confidence mapping
-
-    /// Maps a native posterior score (sherpa-onnx) in [0.0, 1.0] to integer [0, 100].
-    private nonisolated func mapConfidence(_ native: Float) -> Int {
-        let clamped = min(max(native, 0.0), 1.0)
-        return Int((clamped * 100.0).rounded())
-    }
+    // Confidence mapping is shared across adapters — see `ConfidenceMapping.toInt` in
+    // Transcriber.swift (single source of truth so Apple/Sherpa never diverge on rounding).
 }
 
 // MARK: - SherpaModelBundle
@@ -280,8 +275,12 @@ public enum SherpaStub {
     public static let stubConfidence = 80
 }
 
-/// Test-seam override: set `isOverrideActive = true` in test setUp to make
+#if DEBUG
+/// Test-seam override (DEBUG-only): set `isOverrideActive = true` in test setUp to make
 /// `SherpaTranscriber.isAvailable` return `true` in simulator tests even without a model file.
+///
+/// Compiled out of release builds entirely so availability in production reflects only a real
+/// model bundle's presence (ADR-0010).
 public enum SherpaStubSeam {
     /// Set to `true` in test code to override the model-presence check.
     ///
@@ -289,3 +288,4 @@ public enum SherpaStubSeam {
     /// mutated from test setUp/tearDown (serial context) and never concurrently.
     public nonisolated(unsafe) static var isOverrideActive: Bool = false
 }
+#endif

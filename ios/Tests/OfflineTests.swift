@@ -39,8 +39,6 @@ import Foundation
 @testable import Auth
 @testable import Persistence
 @testable import DiamondSpeech
-@testable import Core
-@testable import Persistence
 
 // MARK: - Offline integrity test (T056 / SC-006)
 
@@ -301,6 +299,16 @@ final class OfflineIntegrityTests: XCTestCase {
     ///   - Wire `SQLiteEventLog` at T055 (Squad B) or T071 (H1).
     ///   - Re-run `OfflineTests` with `SQLiteEventLog` substituted for `InMemoryEventLog`.
     ///   - Add a crash-safety device test to `MANUAL-TESTING.md` (xcode-simctl kill + re-launch).
+    ///
+    /// **SC-006 coverage caveat (strengthen at H1):** today this test proves the *iOS log layer*
+    /// (append/replay/idempotency/latest-seq) against `InMemoryEventLog` + `MockCore`. It does
+    /// NOT yet assert the deeper SC-006 guarantee that the persisted **core sequence** (the
+    /// event-sourced `recordedSeq` chain from the real Rust core) replays to a byte-identical
+    /// `GameState`. MockCore returns canned seqs, so the `coreSeq` we record is not a real
+    /// monotonic core chain. At H1 (real UniFFI core + `SQLiteEventLog`) this suite must be
+    /// strengthened to assert: (1) `coreSeq` is strictly increasing with no gaps, and
+    /// (2) replaying the persisted log through the real core reproduces the same final
+    /// `GameState` (parity with `evals/runners/parity.sh`).
     func testNote_humanHandoff_sqliteCrashSafetyRequired() {
         // This test intentionally passes — it is a documentation anchor.
         // See the comment above for the human handoff items.
@@ -326,8 +334,13 @@ final class EngineSelectionTests: XCTestCase {
         // StubTranscriber always reports available.
         let available = await transcriber.isAvailable
         XCTAssertTrue(available, "StubTranscriber must always be available")
-        XCTAssertEqual(transcriber.engine, .apple,
-            "StubTranscriber.engine is .apple (it stands in for the primary engine in WoZ mode)")
+        XCTAssertEqual(transcriber.engine, .stub,
+            "StubTranscriber.engine must be .stub — observability must not report it as real Apple ASR (ADR-0010)")
+
+        // The selector's no-construct engine-kind query must agree (forceStub → .stub).
+        let kind = await TranscriberEngineSelector.resolvedEngineKind()
+        XCTAssertEqual(kind, .stub,
+            "resolvedEngineKind() must return .stub under forceStub, not .apple (ADR-0010)")
     }
 
     // MARK: - Sherpa fallback: isAvailable false when no model
@@ -471,6 +484,43 @@ final class EngineSelectionTests: XCTestCase {
             "WoZ script must propagate through EngineSelector to StubTranscriber")
         XCTAssertEqual(transcript.text, WoZScript.misplayedGrounder.cannedTranscript,
             "WoZ transcript text must match the selected script")
+    }
+}
+
+// MARK: - Confidence mapping boundary tests (shared Apple+Sherpa helper)
+
+/// Pins the boundary behaviour of `ConfidenceMapping.toInt` — the single shared float→int
+/// confidence conversion used by BOTH `AppleTranscriber` and `SherpaTranscriber`. Because the
+/// FR-008 ambiguity gate in `GrammarParser` is an integer comparison, the exact rounding at the
+/// .5 boundary is load-bearing and must be identical across engines.
+final class ConfidenceMappingTests: XCTestCase {
+
+    func testToInt_boundaries() {
+        // Lower bound and clamp below zero.
+        XCTAssertEqual(ConfidenceMapping.toInt(0.0), 0, "0.0 → 0")
+        XCTAssertEqual(ConfidenceMapping.toInt(-0.25), 0, "negative input clamps to 0")
+
+        // Rounding around the 70/71 boundary (round-half-away-from-zero on the *100 product):
+        //   0.695 * 100 = 69.5 → 70
+        //   0.705 * 100 = 70.5 → 71
+        XCTAssertEqual(ConfidenceMapping.toInt(0.695), 70, "0.695 → 70 (69.5 rounds to 70)")
+        XCTAssertEqual(ConfidenceMapping.toInt(0.705), 71, "0.705 → 71 (70.5 rounds to 71)")
+
+        // Upper bound and clamp above one.
+        XCTAssertEqual(ConfidenceMapping.toInt(1.0), 100, "1.0 → 100")
+        XCTAssertEqual(ConfidenceMapping.toInt(1.5), 100, "input above 1.0 clamps to 100")
+
+        // Midpoint sanity.
+        XCTAssertEqual(ConfidenceMapping.toInt(0.5), 50, "0.5 → 50")
+    }
+
+    /// The mapped value is always a valid `Transcript.confidence` (0…100) for any finite input.
+    func testToInt_alwaysInRange() {
+        for raw in stride(from: Float(-0.5), through: Float(1.5), by: 0.013) {
+            let mapped = ConfidenceMapping.toInt(raw)
+            XCTAssertTrue((0...100).contains(mapped),
+                "mapped confidence \(mapped) for input \(raw) must be in 0...100")
+        }
     }
 }
 

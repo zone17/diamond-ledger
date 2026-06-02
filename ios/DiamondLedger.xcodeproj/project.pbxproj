@@ -192,6 +192,8 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Diamond Ledger uses the microphone to capture your spoken play calls so it can score the game by voice.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Diamond Ledger transcribes your spoken play calls on-device to turn them into scorebook entries.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -276,6 +278,8 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Diamond Ledger uses the microphone to capture your spoken play calls so it can score the game by voice.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Diamond Ledger transcribes your spoken play calls on-device to turn them into scorebook entries.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (

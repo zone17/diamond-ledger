@@ -65,11 +65,11 @@ Every primitive is JSON-in / JSON-out and callable from the CLI exactly as the a
 calls it (Art. II parity). `record-play` takes a **normalized-play JSON** (natural-language
 parsing lives in the iOS adapter, not the core).
 
-> ⚠️ **Current limitation (tracked):** the CLI is **in-memory per process** — it does not
-> yet persist game state between invocations, so you can't build up a game across separate
-> `dl` commands. A stateful CLI session (persist to a file) is a tracked follow-up. For now
-> the CLI demonstrates each primitive in a single call; the full game loop is exercised by
-> the engine tests (`make test`) and, interactively, by the iOS app.
+> ✅ **CLI persistence (ADR-0009, #128):** the `dl` CLI now **persists the append-only event log
+> to a state file** (`$DL_STATE_FILE`, default `./.dl-state.json`) between invocations, so you can
+> build up a game across separate `dl` commands. Each primitive loads the log, appends, and saves
+> (append-only — nothing is rewritten). The full game loop is also exercised by the engine tests
+> (`make test`) and, interactively, by the iOS app.
 
 ---
 
@@ -109,18 +109,26 @@ xcodebuild -scheme DiamondLedger -destination 'platform=iOS Simulator,name=iPhon
 > `xcodebuild`. The `ios-build` CI job remains advisory.
 >
 > **What's real:** the `AppleTranscriber` adapter shape, protocol conformance, contextual biasing,
-> `AssetInventory` preload, `EngineSelector` runtime seam, `ExportView` UI, `FinalizedScorebook`
-> round-trip, and the offline integrity test (100-play game, no data loss, SC-006).
+> the `EngineSelector` runtime seam, `ExportView` UI, `FinalizedScorebook` round-trip, and the
+> offline integrity test (100-play game, no data loss, SC-006).
 >
 > **What's stubbed (human handoff required):**
->   - **Real ASR accuracy** — `AppleTranscriber` compiles and the adapter is wired, but accuracy
->     testing (mic → `SpeechAnalyzer` → transcript) requires a **physical iPhone + iOS 26 + mic**.
->     The simulator has no microphone; `isAvailable` returns `false` there (correct behaviour).
+>   - **Real ASR accuracy + the SpeechAnalyzer/AssetInventory migration** — `AppleTranscriber`
+>     currently uses the **legacy `SFSpeechRecognizer`** API; `preloadAssets()` only requests
+>     authorization (NOT a real `AssetInventory` model preload, FR-021). Accuracy testing
+>     (mic → transcript) requires a **physical iPhone + iOS 26 + mic**; the simulator has no
+>     microphone, so `isAvailable` returns `false` there (correct behaviour). The real
+>     `SpeechAnalyzer` + `AssetInventory` preload is a pending on-device handoff (see the
+>     `#warning` in `AppleTranscriber.swift` and ADR-0010).
 >   - **sherpa-onnx framework** — `SherpaTranscriber` compiles and the stub path works in tests,
->     but the real decode requires the sherpa-onnx XCFramework + Parakeet ONNX model (see the
+>     but the real decode requires the sherpa-onnx XCFramework + Parakeet ONNX model bundle (see the
 >     handoff checklist in `ios/Sources/Speech/SherpaTranscriber.swift`).
 >   - **GRDB-backed SQLiteEventLog** — T055 / deferred to H1; `InMemoryEventLog` used in tests.
 >   - **Real UniFFI core** — MockCore until H1 (T071).
+>
+> **Pre-ship / on-device human handoffs (one-liner):** COPPA consent gate (FR-029 / T081), real
+> on-device ASR accuracy, and the sherpa model bundle are all pre-ship/on-device handoffs — none
+> are exercisable headlessly in the simulator and each needs a human + device before shipping.
 
 ---
 
@@ -144,6 +152,8 @@ golden diff. A malformed fixture (`evals/retrosheet-fixtures/malformed/`) must *
 | Deterministic core (engine, judgment, Reisner, Retrosheet emit) | `cargo test` (54), clippy, SC-003 gate — **run in CI as hard gates** | nothing (headless) |
 | Retrosheet export conformance | pinned `cwevent` 3-layer gate — **hard in CI** | `cwevent` locally (optional) |
 | iOS V3 glance app + ASR adapters + Export UI | `xcodebuild test` **47/47** — **build + test pass on Mac** | **your Mac + Xcode + iOS 26 sim** |
-| Apple ASR on-device accuracy (mic → SpeechAnalyzer → transcript) | not testable in sim | **physical iPhone 26+ + mic + iOS 26** |
+| Apple ASR on-device accuracy (mic → transcript; legacy SFSpeechRecognizer today) | not testable in sim | **physical iPhone 26+ + mic + iOS 26** |
+| Real SpeechAnalyzer + AssetInventory preload (FR-021) | not implemented (legacy SFSpeechRecognizer; `preloadAssets` = auth only) | on-device handoff — see `#warning` / ADR-0010 |
 | sherpa-onnx real decode (Parakeet model) | stub path tested; real decode needs framework binary | XCFramework download + model asset |
 | SQLite / GRDB crash-safe event log (SC-006 full) | InMemoryEventLog; GRDB deferred to H1 | T055 + device crash test |
+| COPPA consent gate (FR-029 / T081) | not implemented | pre-ship human handoff |

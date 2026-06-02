@@ -7,7 +7,7 @@
 ```
 confirm_play(
   game_id: GameId,
-  confirms_seq: u64,                 // the recorded play's seq (record_play.recorded_seq)
+  confirms_seq: Seq,                 // the recorded play's seq (record_play.recorded_seq)
   idempotency_key: string,
   actor: Actor
 ) -> ConfirmPlayResult

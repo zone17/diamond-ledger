@@ -30,13 +30,22 @@
 //! (requests, results, projected state, errors). Classification is always
 //! fact-derived; nothing here lets a caller assert a play's nature (I1/FR-006).
 //!
-//! ## UniFFI (later — do NOT wire now)
+//! ## UniFFI (wired at H1 — T037 / ADR-0009)
 //!
-//! T010/T037 will export this surface via UniFFI to Swift/Kotlin/CLI/agent from
-//! one artifact. The `// UNIFFI-EXPORT` markers below indicate exactly where the
-//! `#[uniffi::export]` / `#[derive(uniffi::Record)]` / `#[derive(uniffi::Enum)]`
-//! / `#[derive(uniffi::Error)]` macros will attach. They are intentionally NOT
-//! applied here — this task delivers the plain-Rust schema only.
+//! This surface is exported via UniFFI to Swift/Kotlin/CLI/agent from one artifact.
+//! Every boundary type carries `#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]`
+//! (structs) or `derive(uniffi::Enum)` (enums); the integer newtypes use
+//! `uniffi::custom_newtype!` (mapped to their underlying integer); the structured
+//! [`Error`] is a `uniffi::Record` thrown via the [`CoreFfiError`] enum (a
+//! `uniffi::Error` must be an enum). The exported [`crate::primitives::DiamondCore`]
+//! `impl` carries `#[uniffi::export]`. The original `// UNIFFI-EXPORT:` marker comments
+//! are retained below as provenance next to each applied derive.
+//!
+//! All annotations are **feature-gated**: with the default (no `uniffi`) build they
+//! vanish entirely, so the deterministic core, the no-float clippy gate, and the
+//! CLI/agent adapters have zero FFI coupling. The `uniffi` feature is enabled only for
+//! binding generation (`uniffi-bindgen`) and the iOS XCFramework
+//! (`scripts/build-xcframework.sh`).
 
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +67,12 @@ use crate::model::{
 #[serde(transparent)]
 pub struct GameId(pub u64);
 
+// Integer newtype → underlying builtin on the FFI boundary (I6, integer-only). A
+// single-field tuple struct cannot be a `uniffi::Record`; `custom_newtype!` maps it
+// transparently to its primitive instead (same wire shape as `serde(transparent)`).
+#[cfg(feature = "uniffi")]
+uniffi::custom_newtype!(GameId, u64);
+
 /// Monotonic per-game event sequence number (the replay order, `seq`).
 ///
 /// Returned by writes (`recorded_seq`, `applied_seq`, `correction_seq`) and used
@@ -66,10 +81,17 @@ pub struct GameId(pub u64);
 #[serde(transparent)]
 pub struct Seq(pub u64);
 
+// Integer newtype → underlying builtin on the FFI boundary (I6, integer-only). A
+// single-field tuple struct cannot be a `uniffi::Record`; `custom_newtype!` maps it
+// transparently to its primitive instead (same wire shape as `serde(transparent)`).
+#[cfg(feature = "uniffi")]
+uniffi::custom_newtype!(Seq, u64);
+
 /// Whether the caller is a human operator or an authorized agent (data-model §2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Enum)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ActorKind {
     Human,
     Agent,
@@ -82,6 +104,7 @@ pub enum ActorKind {
 /// "decider" string (the probe gap closed in the contracts README).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Actor {
     pub kind: ActorKind,
     /// Stable account / agent identity string (owner id, agent id, …).
@@ -102,6 +125,7 @@ pub struct Actor {
 /// concern (`Substitution`, FR-002) and are not carried on this create-time slot.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct LineupSlot {
     /// Batting order: `1..=9`, or `0` for the DH slot.
     pub batting_order: u8,
@@ -118,6 +142,7 @@ pub struct LineupSlot {
 /// starting batting order.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Team {
     /// Stable team identifier.
     pub id: String,
@@ -140,6 +165,7 @@ pub struct Team {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Enum)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ErrorCode {
     /// Authority check failed (I5/FR-020). No state change.
     Unauthorized,
@@ -171,6 +197,7 @@ pub enum ErrorCode {
 /// keys: `field`, `expected`, `got`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ErrorDetail {
     pub key: String,
     pub value: String,
@@ -181,6 +208,7 @@ pub struct ErrorDetail {
 /// optional structured `details`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Error)] #[uniffi(flat_error)]  (or a Record-style error)
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Error {
     pub code: ErrorCode,
     pub message: String,
@@ -231,6 +259,49 @@ impl std::error::Error for Error {}
 /// The boundary result alias every primitive / read returns.
 pub type CoreResult<T> = core::result::Result<T, Error>;
 
+// ---------------------------------------------------------------------------
+// Throwable FFI error (UniFFI, T037)
+// ---------------------------------------------------------------------------
+
+/// The throwable error UniFFI surfaces to Swift/Kotlin for the exported methods.
+///
+/// `uniffi::Error` must derive on an **enum** (a struct cannot be thrown), so this
+/// single-variant wrapper carries the full structured [`Error`] record across the
+/// boundary with **zero information loss**: callers read `err.code` (the stable
+/// machine signal — Art. I), `err.message`, `err.retryable`, and `err.details`.
+/// The `From<Error>` makes `core_result?` ergonomics work in the exported impl.
+///
+/// Only present in the `uniffi` build (the pure core throws plain [`Error`]).
+#[cfg(feature = "uniffi")]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Error)]
+pub enum CoreFfiError {
+    /// The structured boundary error (code + message + retryable + details).
+    Core(Error),
+}
+
+#[cfg(feature = "uniffi")]
+impl core::fmt::Display for CoreFfiError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            CoreFfiError::Core(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+#[cfg(feature = "uniffi")]
+impl std::error::Error for CoreFfiError {}
+
+#[cfg(feature = "uniffi")]
+impl From<Error> for CoreFfiError {
+    fn from(e: Error) -> Self {
+        CoreFfiError::Core(e)
+    }
+}
+
+/// The result alias the UniFFI-exported methods return (throws [`CoreFfiError`]).
+#[cfg(feature = "uniffi")]
+pub type FfiResult<T> = core::result::Result<T, CoreFfiError>;
+
 // ===========================================================================
 // Loop-control & shared boundary enums
 // ===========================================================================
@@ -240,6 +311,7 @@ pub type CoreResult<T> = core::result::Result<T, Error>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Enum)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum Needs {
     /// Nothing further — the step is complete.
     None,
@@ -255,6 +327,7 @@ pub enum Needs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Enum)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum Half {
     #[default]
     Top,
@@ -269,6 +342,7 @@ pub enum Half {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Enum)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum EarnedUnearned {
     Earned,
     Unearned,
@@ -284,6 +358,7 @@ pub enum EarnedUnearned {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Enum)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum JudgmentStatus {
     /// Awaiting a decider's call.
     Open,
@@ -299,6 +374,7 @@ pub enum JudgmentStatus {
 /// grammar-neutral; the rules layer owns the mapping to concrete outcomes.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Call {
     /// Stable identifier for the call (e.g. `"hit"`, `"error:6"`).
     pub token: String,
@@ -309,6 +385,7 @@ pub struct Call {
 /// The core's recommended call plus a one-line rationale (US2).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Recommendation {
     pub call: Call,
     pub one_line_reason: String,
@@ -322,6 +399,7 @@ pub struct Recommendation {
 /// [`Needs::Judgment`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct JudgmentDecision {
     /// Stable id for the decision within the game's log.
     pub id: u64,
@@ -344,6 +422,7 @@ pub struct JudgmentDecision {
 /// One side's runs/hits/errors for a single inning of the line score.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct InningLine {
     pub runs: u32,
     pub hits: u32,
@@ -353,6 +432,7 @@ pub struct InningLine {
 /// The per-side line score: one [`InningLine`] per inning played, in order.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct LineScore {
     /// Visiting side, inning-by-inning (index 0 = 1st inning).
     pub visitor: Vec<InningLine>,
@@ -366,6 +446,7 @@ pub struct LineScore {
 /// integer/discrete with no enum churn at the FFI seam.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct PitchMark {
     pub mark: String,
 }
@@ -373,6 +454,7 @@ pub struct PitchMark {
 /// Which roster player currently occupies a fielding position.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ActiveFielder {
     pub position: Position,
     /// Stable player id occupying the position.
@@ -386,6 +468,7 @@ pub struct ActiveFielder {
 /// not yet applied (FR-007).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct GameState {
     pub inning: u8,
     pub half: Half,
@@ -395,8 +478,12 @@ pub struct GameState {
     /// Outs before the next play (`0..=2`; a 3rd out ends the half-inning).
     pub outs: u8,
     pub line_score: LineScore,
-    /// Current batting-order index per side (`[visitor, home]`, `1..=9`/`0`=DH).
-    pub batting_index: [u8; 2],
+    /// Current batting-order index per side, `[visitor, home]` (`1..=9`/`0`=DH).
+    ///
+    /// A 2-element `Vec` (always exactly `[visitor, home]`), not a `[u8; 2]`: UniFFI
+    /// has no fixed-size-array type, so the boundary uses a length-2 `Vec` to stay
+    /// language-neutral. Internally the rules projection keeps a `[u8; 2]`.
+    pub batting_index: Vec<u8>,
     pub pitch_sequence: Vec<PitchMark>,
     pub active_fielders: Vec<ActiveFielder>,
 }
@@ -409,6 +496,7 @@ pub struct GameState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Enum)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum RunnerFate {
     /// Crossed the plate; `rbi` records whether it was an RBI.
     Scored { rbi: bool },
@@ -422,6 +510,7 @@ pub enum RunnerFate {
 /// (data-model §4).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ReisnerCell {
     /// Pre-rendered situation-diamond glyphs.
     pub situation_diamond: String,
@@ -439,6 +528,7 @@ pub struct ReisnerCell {
 /// `finalize_scorecard` **fails** if any proof box does not balance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ProofBox {
     pub inning: u8,
     pub half: Half,
@@ -456,6 +546,7 @@ pub struct ProofBox {
 /// The rendered human-readable scorebook (the official human record, US3).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ReisnerScorebook {
     /// One rendered cell per recorded play, in order.
     pub cells: Vec<ReisnerCell>,
@@ -473,6 +564,7 @@ pub struct ReisnerScorebook {
 /// `sub`/`com`/`data`); `fields` are the comma-separated values for the row.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct RetrosheetRecord {
     pub record_type: String,
     pub fields: Vec<String>,
@@ -481,6 +573,7 @@ pub struct RetrosheetRecord {
 /// A reference to a play in the event log (for invalidation / out-of-format lists).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct PlayRef {
     pub game_id: GameId,
     pub seq: Seq,
@@ -489,6 +582,7 @@ pub struct PlayRef {
 /// A reference to a judgment decision (for the unresolved list).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct DecisionRef {
     pub game_id: GameId,
     pub decision_id: u64,
@@ -502,6 +596,7 @@ pub struct DecisionRef {
 /// `out_of_format_flags`, never fabricated into a `play` record (FR-017).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct RetrosheetExport {
     pub records: Vec<RetrosheetRecord>,
     pub out_of_format_flags: Vec<PlayRef>,
@@ -536,6 +631,7 @@ pub struct RetrosheetExport {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Enum)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum PlayInput {
     /// Spoken/typed description; parsed to facts by an adapter's grammar. The
     /// pure core rejects this with [`ErrorCode::TranscriptNotSupported`].
@@ -554,6 +650,7 @@ pub enum PlayInput {
 /// `game_id` this returns (I5).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct CreateGameRequest {
     pub home: Team,
     pub visitor: Team,
@@ -568,6 +665,7 @@ pub struct CreateGameRequest {
 /// 1st, no outs, empty bases) for the new `game_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct CreateGameResult {
     pub game_id: GameId,
     pub state: GameState,
@@ -582,10 +680,11 @@ pub struct CreateGameResult {
 /// `recorded_seq` returned by the prior `record_play`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ConfirmPlayRequest {
     pub game_id: GameId,
     /// The recorded play's `seq` being confirmed (FR-007).
-    pub confirms_seq: u64,
+    pub confirms_seq: Seq,
     pub idempotency_key: String,
     pub actor: Actor,
 }
@@ -596,6 +695,7 @@ pub struct ConfirmPlayRequest {
 /// confirmed play is applied — no longer a preview.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ConfirmPlayResult {
     pub state: GameState,
 }
@@ -610,6 +710,7 @@ pub struct ConfirmPlayResult {
 /// judgment surfaced in its recommendation / alternatives.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ResolveJudgmentRequest {
     pub game_id: GameId,
     /// The open decision's id (from [`JudgmentDecision::id`]).
@@ -628,6 +729,7 @@ pub struct ResolveJudgmentRequest {
 /// the request `actor`). `state` reflects the resolved call.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ResolveJudgmentResult {
     pub decision: JudgmentDecision,
     pub state: GameState,
@@ -638,6 +740,7 @@ pub struct ResolveJudgmentResult {
 /// Request for [`CoreApi::record_play`] (`contracts/record_play.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct RecordPlayRequest {
     pub game_id: GameId,
     pub input: PlayInput,
@@ -653,6 +756,7 @@ pub struct RecordPlayRequest {
 /// iff `classification` is a [`Classification::Judgment`] (`needs = Judgment`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct RecordPlayResult {
     pub recorded_seq: Seq,
     pub normalized: NormalizedPlay,
@@ -678,6 +782,7 @@ pub struct RecordPlayResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Enum)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum AdvanceOutcome {
     /// Advanced (or held) at a base.
     Base(Base),
@@ -701,6 +806,7 @@ impl From<AdvanceOutcome> for AdvanceTo {
 /// The advance delta for [`CoreApi::advance_runner`] (`contracts/advance_runner.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct AdvanceDelta {
     pub runner: RunnerId,
     pub from: Base,
@@ -713,6 +819,7 @@ pub struct AdvanceDelta {
 /// Request for [`CoreApi::advance_runner`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct AdvanceRunnerRequest {
     pub game_id: GameId,
     pub advance: AdvanceDelta,
@@ -727,6 +834,7 @@ pub struct AdvanceRunnerRequest {
 /// `needs = Judgment` — never an assumed advance (FR-009).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct AdvanceRunnerResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_seq: Option<Seq>,
@@ -741,6 +849,7 @@ pub struct AdvanceRunnerResult {
 /// One preserved prior version of a corrected play (append-only history, FR-013).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Version {
     pub seq: Seq,
     pub normalized: NormalizedPlay,
@@ -750,6 +859,7 @@ pub struct Version {
 /// Request for [`CoreApi::correct_event`] (`contracts/correct_event.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct CorrectEventRequest {
     pub game_id: GameId,
     /// The prior event being amended (else `NOT_FOUND`).
@@ -768,6 +878,7 @@ pub struct CorrectEventRequest {
 /// discarded (FR-014).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct CorrectEventResult {
     pub correction_seq: Seq,
     pub amended: NormalizedPlay,
@@ -785,6 +896,7 @@ pub struct CorrectEventResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Enum)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum FinalizeMode {
     /// The official, exportable record (Tier 3).
     Final,
@@ -795,6 +907,7 @@ pub enum FinalizeMode {
 /// Request for [`CoreApi::finalize_scorecard`] (`contracts/finalize_scorecard.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct FinalizeRequest {
     pub game_id: GameId,
     pub mode: FinalizeMode,
@@ -805,6 +918,7 @@ pub struct FinalizeRequest {
 /// The unresolved-items bundle reported by a finalize (non-blocking, FR-010a).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Unresolved {
     /// e.g. earned/unearned still `Pending` (I3) — reported, not blocking.
     pub pending_judgments: Vec<DecisionRef>,
@@ -818,6 +932,7 @@ pub struct Unresolved {
 /// is reported under `unresolved`, not blocking (FR-010a).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct FinalizeResult {
     pub scorebook: ReisnerScorebook,
     pub retrosheet: RetrosheetExport,
@@ -832,6 +947,7 @@ pub struct FinalizeResult {
 /// One row of the event log for [`CoreApi::list_game_events`] (audit/replay view).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct EventSummary {
     pub seq: Seq,
     /// Event type keyword (e.g. `"PlayRecorded"`, `"EventCorrected"`).
@@ -845,6 +961,7 @@ pub struct EventSummary {
 /// A recorded play as returned by [`CoreApi::get_play`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Play {
     pub seq: Seq,
     pub normalized: NormalizedPlay,

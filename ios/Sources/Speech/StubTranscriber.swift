@@ -33,24 +33,18 @@ public enum WoZScript: String, CaseIterable, Sendable {
         case .misplayedGrounder:  return "Card B — Misplayed grounder (Hit vs Error)"
         }
     }
-
-    /// Normalized facts passed to CoreClient.recordPlay.
-    public var normalizedFacts: [String: String] {
-        switch self {
-        case .groundOut63:
-            return ["batter_result": "groundout", "fielders": "6-3", "outs_recorded": "1"]
-        case .misplayedGrounder:
-            // The explicit script marker MockCore keys on to route Card B (P2 fix).
-            return ["script": "misplayed-grounder"]
-        }
-    }
 }
+
+// NOTE: The WoZ → normalized-facts mapping (including the MockCore `"script"` routing marker)
+// deliberately does NOT live here. The production Speech module must not depend on MockCore
+// internals (ADR-0010). That translation lives in the WoZ/test-harness layer that drives the
+// stub — see `WoZScript+Facts.swift` in the UI/PushToTalk target.
 
 // MARK: - StubTranscriber
 
 public actor StubTranscriber: Transcriber {
 
-    public let engine: TranscriberEngine = .apple  // stub stands in for the primary engine
+    public let engine: TranscriberEngine = .stub  // canned WoZ engine — not real ASR (ADR-0010)
 
     private let script: WoZScript
 

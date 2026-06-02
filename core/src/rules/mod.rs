@@ -129,7 +129,9 @@ impl GameProjection {
             bases,
             outs: self.outs,
             line_score: self.line_score.clone(),
-            batting_index: self.batting_index,
+            // Internal fixed `[u8; 2]` → length-2 `Vec` at the FFI boundary (UniFFI has
+            // no fixed-array type). Order is preserved: `[visitor, home]`.
+            batting_index: self.batting_index.to_vec(),
             pitch_sequence: self.pitch_sequence.clone(),
             active_fielders: self.active_fielders.clone(),
         }

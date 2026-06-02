@@ -118,7 +118,7 @@ pub struct LogRow {
 // EventLog
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct EventLog {
     games: HashMap<u64, Vec<LogRow>>,
     idempotency: HashMap<u64, HashMap<String, u64>>,

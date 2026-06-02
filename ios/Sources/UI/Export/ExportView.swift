@@ -58,6 +58,8 @@ public struct ExportView: View {
     @State private var phase: ExportPhase = .idle
     @State private var showShareSheet: Bool = false
     @State private var shareItems: [Any] = []
+    /// Temp `.evn` file backing the current share, if any. Deleted when the share completes.
+    @State private var sharedTempFileURL: URL?
     @State private var showRetrosheetPreview: Bool = false
     @State private var showReisnerPreview: Bool = false
 
@@ -85,7 +87,11 @@ public struct ExportView: View {
         .presentationDragIndicator(.visible)
         .presentationDetents([.large])
         .sheet(isPresented: $showShareSheet) {
-            ActivityView(activityItems: shareItems)
+            ActivityView(activityItems: shareItems) {
+                // Share finished (completed or cancelled): clean up the temp .evn file so we
+                // don't leak files into the temporary directory across exports.
+                cleanupSharedTempFile()
+            }
         }
         .task {
             // Auto-trigger finalization when the sheet opens.
@@ -369,7 +375,9 @@ public struct ExportView: View {
         } catch CoreError.unauthorized(let detail) {
             phase = .failed("Authorization error: \(detail)")
         } catch {
-            phase = .failed("Could not generate scorecard: \(error.localizedDescription)")
+            // Don't leak raw engine/error text to the scorer — show a generic, actionable message.
+            // (The underlying error is still available to logs/observability via T023.)
+            phase = .failed("Something went wrong while generating your scorecard. Please try again.")
         }
     }
 
@@ -381,6 +389,9 @@ public struct ExportView: View {
         \(book.retrosheetEvents)
         """
 
+        // Clean up any temp file from a previous share before creating a new one.
+        cleanupSharedTempFile()
+
         // Write to a temporary file so the share sheet can offer "Save to Files".
         let tmpURL = FileManager.default
             .temporaryDirectory
@@ -389,28 +400,47 @@ public struct ExportView: View {
         do {
             try fileContent.write(to: tmpURL, atomically: true, encoding: .utf8)
         } catch {
-            // Fallback: share as plain text.
+            // Fallback: share as plain text (no temp file to track).
+            sharedTempFileURL = nil
             shareItems = [fileContent, RetroAttribution.shortNotice]
             return
         }
 
+        // Track the temp file so it can be deleted when the share completes.
+        sharedTempFileURL = tmpURL
         // Share: the .evn file + human Reisner book as text + attribution.
         shareItems = [tmpURL, book.reisnerBook, RetroAttribution.shortNotice]
+    }
+
+    /// Deletes the temp `.evn` file backing the most recent share, if present. Idempotent.
+    private func cleanupSharedTempFile() {
+        guard let url = sharedTempFileURL else { return }
+        sharedTempFileURL = nil
+        try? FileManager.default.removeItem(at: url)
     }
 }
 
 // MARK: - ActivityView (UIActivityViewController wrapper)
 
 /// SwiftUI wrapper for `UIActivityViewController` (the iOS share sheet).
+///
+/// Invokes `onComplete` once the share finishes (whether the user completed an activity or
+/// cancelled) so the caller can clean up any temp file backing the share.
 struct ActivityView: UIViewControllerRepresentable {
     let activityItems: [Any]
     let applicationActivities: [UIActivity]? = nil
+    /// Called when the activity sheet completes or is dismissed. Always fires exactly once.
+    var onComplete: (() -> Void)? = nil
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(
+        let controller = UIActivityViewController(
             activityItems: activityItems,
             applicationActivities: applicationActivities
         )
+        controller.completionWithItemsHandler = { _, _, _, _ in
+            onComplete?()
+        }
+        return controller
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}

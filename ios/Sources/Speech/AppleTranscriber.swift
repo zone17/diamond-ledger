@@ -1,13 +1,23 @@
 /// AppleTranscriber.swift — T047 (Squad B, Story B2)
 ///
-/// `Transcriber` conformer backed by Apple's `SpeechAnalyzer` / `DictationTranscriber` API
-/// (iOS 26+, primary on-device engine — ADR-0007, D2).
+/// `Transcriber` conformer for the Apple on-device path (primary engine — ADR-0007/ADR-0010, D2).
 ///
-/// ## Capabilities
-///   - On-device, offline transcription via `SpeechAnalyzer` (no network round-trips).
-///   - Contextual phrase biasing via `SpeechAnalyzerOptions.contextualStrings` — the baseball
+/// ## Honest status (read this first)
+///   This adapter **currently uses the legacy `SFSpeechRecognizer` API**, not iOS 26's
+///   `SpeechAnalyzer`. It requests on-device recognition (`requiresOnDeviceRecognition = true`)
+///   and applies `contextualStrings`, but:
+///     - It does **not** use `SpeechAnalyzer` / `DictationTranscriber`.
+///     - `preloadAssets()` only requests **authorization** — it does NOT perform a real
+///       `AssetInventory` model preload (FR-021). That is a pending on-device handoff.
+///   The real `SpeechAnalyzer` + `AssetInventory` migration is tracked as a follow-up (see the
+///   `#warning` below and ADR-0010). Do not read the type names here as a claim of SpeechAnalyzer
+///   usage.
+///
+/// ## Capabilities (as implemented today)
+///   - On-device transcription via legacy `SFSpeechRecognizer` (no network when
+///     `requiresOnDeviceRecognition` is honoured by the OS).
+///   - Contextual phrase biasing via `SFSpeechRecognitionRequest.contextualStrings` — the baseball
 ///     lexicon plus the current game roster are injected before each `transcribe` call.
-///   - `AssetInventory` preload over Wi-Fi so the ASR model is ready for fully-offline use.
 ///   - Confidence reported as integer 0…100 (see `Transcript.confidence` contract).
 ///
 /// ## Concurrency (Swift 6 / actor isolation)
@@ -46,6 +56,8 @@ import Speech
 ///
 /// **Availability gate:** check `isAvailable` before constructing. On pre-26 OS
 /// `isAvailable` returns `false` and `transcribe(buffer:)` throws `TranscriberError.engineUnavailable`.
+#warning("AppleTranscriber: uses legacy SFSpeechRecognizer; real SpeechAnalyzer/AssetInventory preload (FR-021) pending — see follow-up (ADR-0010)")
+
 @available(iOS 26, *)
 public actor AppleTranscriber: Transcriber {
 
@@ -81,22 +93,21 @@ public actor AppleTranscriber: Transcriber {
 
     // MARK: - Transcriber: preloadAssets
 
-    /// Preloads `SpeechAnalyzer` model assets over Wi-Fi using `AssetInventory` so that
-    /// on-device inference is available offline (FR-021).
+    /// Requests speech-recognition **authorization**.
     ///
-    /// Safe to call multiple times — idempotent after the first successful preload request.
+    /// HONEST STATUS: this does NOT perform a real `AssetInventory` model preload. The legacy
+    /// `SFSpeechRecognizer` path has no public asset-preload API; the real `SpeechAnalyzer` +
+    /// `AssetInventory.requestPreparation(...)` preload (FR-021) is a pending on-device handoff
+    /// (see the file-level `#warning` and ADR-0010). For now this only drives the authorization
+    /// prompt so the first `transcribe` call isn't blocked on permission.
+    ///
+    /// Safe to call multiple times — idempotent after the first request.
     public func preloadAssets() async throws {
         guard !assetPreloadRequested else { return }
         assetPreloadRequested = true
 
-        // AssetInventory.preload schedules a background download of any missing model assets.
-        // It is a no-op if the assets are already present on the device.
-        //
-        // The type is @available(iOS 26, *) so we are always on iOS 26+ here — no OS check.
-        let inventory = SFSpeechAnalyzerAssetInventory.shared
-        // Request the on-device model to be available offline.
-        // This initiates a background download if the asset is not yet installed.
-        try await inventory.requestPreparation(for: .currentLocale)
+        // Authorization only — NOT a model asset preload. See doc comment + #warning.
+        try await SpeechAuthorization.request()
     }
 
     // MARK: - Transcriber: setContextualStrings
@@ -168,8 +179,8 @@ public actor AppleTranscriber: Transcriber {
         // the AVAudioPCMBuffer into the on-device engine.
         let result = try await performOnDeviceTranscription(buffer: pcmBuffer, options: options)
 
-        // Map native float confidence → integer (0…100).
-        let intConfidence = mapConfidence(result.confidence)
+        // Map native float confidence → integer (0…100) via the shared helper.
+        let intConfidence = ConfidenceMapping.toInt(result.confidence)
 
         // rawBytes is no longer referenced after this point; it goes out of scope here.
         _ = capturedAt  // used only for Transcript.finalizedAt below
@@ -214,37 +225,76 @@ public actor AppleTranscriber: Transcriber {
         request.append(buffer)
         request.endAudio()
 
-        // Resolve using a continuation so we can bridge the callback API.
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(String, Float), Error>) in
-            // Use the default locale-matched recognizer with on-device constraint.
-            guard let recognizer = SFSpeechRecognizer(locale: Locale.current),
-                  recognizer.isAvailable else {
-                continuation.resume(throwing: TranscriberError.engineUnavailable(.apple))
-                return
-            }
+        // Resolve via the recognizer's callback API, bridged into a checked continuation.
+        //
+        // Three hazards this implementation defends against:
+        //   (a) DOUBLE-RESUME — `recognitionTask` can fire its callback multiple times
+        //       (partial results, then a terminal error/final). A `resumed` guard ensures the
+        //       continuation resumes exactly once; later callbacks are ignored.
+        //   (b) HANG-FOREVER — if no `isFinal` result and no error ever arrive, the continuation
+        //       would never resume. The task is stored and cancelled via `withTaskCancellationHandler`
+        //       so a cancelled enclosing Task resumes with `CancellationError()` and stops the task.
+        //   (c) SILENT DROP (FR-008) — a terminal result that is final-but-empty (no segments / no
+        //       text) is treated as a thrown error, never a silently-returned empty transcript.
+        //
+        // `recognizer` and `recognitionTask` are retained for the lifetime of the continuation
+        // (captured by the callback closure / the cancellation handler) so they are not deallocated
+        // before the callback fires.
+        guard let recognizer = SFSpeechRecognizer(locale: Locale.current),
+              recognizer.isAvailable else {
+            throw TranscriberError.engineUnavailable(.apple)
+        }
 
-            recognizer.recognitionTask(with: request) { result, error in
-                if let error {
-                    continuation.resume(throwing: TranscriberError.transcriptionFailed(error.localizedDescription))
-                    return
+        // Single-resume guard + the live task handle + the continuation, all behind one lock so
+        // the recognizer callback (on its own queue) and the cancellation handler (any thread)
+        // can never double-resume.
+        let state = ContinuationState()
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(String, Float), Error>) in
+                // Register the continuation first so cancellation that races the task creation
+                // still has something to resume.
+                state.attach(continuation)
+
+                let task = recognizer.recognitionTask(with: request) { result, error in
+                    // Keep `recognizer` alive until the callback fires (it owns the task).
+                    withExtendedLifetime(recognizer) {}
+                    // (a) error path — resume once, then bail.
+                    if let error {
+                        state.finish(
+                            .failure(TranscriberError.transcriptionFailed(error.localizedDescription)))
+                        return
+                    }
+                    // Non-final partial result: wait for the terminal callback.
+                    guard let result, result.isFinal else { return }
+
+                    let bestTranscription = result.bestTranscription
+                    let text = bestTranscription.formattedString
+                    let segments = bestTranscription.segments
+
+                    // (c) FR-008: a final-but-empty result is an error, never a silent empty drop.
+                    guard !segments.isEmpty,
+                          !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        state.finish(
+                            .failure(TranscriberError.transcriptionFailed(
+                                "Speech recognizer returned a final result with no recognized speech")))
+                        return
+                    }
+
+                    // SFTranscriptionSegment.confidence is a Float in [0, 1].
+                    // Aggregate: minimum per-segment confidence (conservative — if any segment is
+                    // uncertain, the transcript is uncertain).
+                    let minConfidence = segments.map(\.confidence).min() ?? 0.0
+                    state.finish(.success((text, minConfidence)))
                 }
-                guard let result, result.isFinal else { return }
-
-                let bestTranscription = result.bestTranscription
-                let text = bestTranscription.formattedString
-
-                // SFTranscriptionSegment.confidence is a Float in [0, 1].
-                // Aggregate: use the minimum per-segment confidence as the transcript confidence
-                // (conservative — if any segment is uncertain, the transcript is uncertain).
-                let minConfidence: Float
-                if bestTranscription.segments.isEmpty {
-                    minConfidence = 0.0
-                } else {
-                    minConfidence = bestTranscription.segments.map(\.confidence).min() ?? 0.0
-                }
-
-                continuation.resume(returning: (text, minConfidence))
+                // Store the task so cancellation can reach it. If the enclosing Task was already
+                // cancelled before this point, `store` cancels it immediately.
+                state.store(task)
             }
+        } onCancel: {
+            // (b) cancellation: stop the recognizer task and resume the continuation exactly once
+            // with a CancellationError.
+            state.cancel()
         }
     }
 
@@ -291,52 +341,94 @@ public actor AppleTranscriber: Transcriber {
         return pcmBuffer
     }
 
-    // MARK: - Private: Confidence mapping
+    // Confidence mapping is shared across adapters — see `ConfidenceMapping.toInt` in
+    // Transcriber.swift (single source of truth so Apple/Sherpa never diverge on rounding).
+}
 
-    /// Maps a native `Float` confidence from `SpeechAnalyzer` [0.0, 1.0] to an integer [0, 100].
-    ///
-    /// Contract from `Transcript.confidence`:
-    ///     `Int(clamp(nativeConfidence * 100, 0, 100).rounded())`
-    ///
-    /// Float precision is resolved at this boundary — the Parse layer only sees integers.
-    private func mapConfidence(_ native: Float) -> Int {
-        let clamped = min(max(native, 0.0), 1.0)
-        return Int((clamped * 100).rounded())
+// MARK: - ContinuationState (single-resume bridge for the recognizer callback)
+
+/// Thread-safe coordinator that guarantees a `CheckedContinuation` resumes **exactly once** when
+/// bridging Apple's multi-callback `recognitionTask(with:)` API, and that the underlying
+/// `SFSpeechRecognitionTask` is cancelled on Task cancellation.
+///
+/// Why a lock and `@unchecked Sendable`: the recognizer invokes its result handler on its own
+/// dispatch queue, and `withTaskCancellationHandler`'s `onCancel` may run on any thread. Both can
+/// race to resume. A single `NSLock` serializes `finish`/`cancel` and the `resumed` flag so the
+/// continuation is resumed once and the recognizer task is torn down deterministically.
+@available(iOS 26, *)
+private final class ContinuationState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resumed = false
+    private var continuation: CheckedContinuation<(String, Float), Error>?
+    private var task: SFSpeechRecognitionTask?
+    private var cancelledBeforeStore = false
+
+    /// Register the continuation. Called once, synchronously, before the recognizer task starts.
+    func attach(_ continuation: CheckedContinuation<(String, Float), Error>) {
+        lock.lock(); defer { lock.unlock() }
+        self.continuation = continuation
+    }
+
+    /// Store the live recognizer task. If cancellation/finish already arrived before the task was
+    /// stored, cancel it immediately so the recognizer doesn't keep running orphaned.
+    func store(_ task: SFSpeechRecognitionTask) {
+        lock.lock()
+        if cancelledBeforeStore || resumed {
+            lock.unlock()
+            task.cancel()
+            return
+        }
+        self.task = task
+        lock.unlock()
+    }
+
+    /// Resume the continuation exactly once with a terminal result. Cancels the recognizer task.
+    func finish(_ result: Result<(String, Float), Error>) {
+        lock.lock()
+        if resumed {
+            lock.unlock()
+            return
+        }
+        resumed = true
+        let cont = continuation
+        let liveTask = task
+        continuation = nil
+        task = nil
+        lock.unlock()
+
+        liveTask?.cancel()
+        switch result {
+        case .success(let value): cont?.resume(returning: value)
+        case .failure(let error): cont?.resume(throwing: error)
+        }
+    }
+
+    /// Cancellation entry point: resume once with `CancellationError()` and cancel the task.
+    func cancel() {
+        lock.lock()
+        guard task != nil || continuation != nil else {
+            // Task not stored yet — remember so `store` cancels on arrival.
+            cancelledBeforeStore = true
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+        finish(.failure(CancellationError()))
     }
 }
 
-// MARK: - SFSpeechAnalyzerAssetInventory shim (iOS 26 API surface)
+// MARK: - SpeechAuthorization (authorization only — NOT an asset preload)
 
-/// Shim namespace for the iOS 26 `SpeechAnalyzer` AssetInventory preload API.
+/// Thin wrapper over `SFSpeechRecognizer.requestAuthorization`.
 ///
-/// `SFSpeechAnalyzerAssetInventory` is the iOS 26 API for managing on-device ASR model assets.
-/// The `.currentLocale` asset request schedules a background download over Wi-Fi if the model
-/// is not already installed, enabling fully-offline inference (FR-021).
-///
-/// This enum-based shim provides the static `shared` + `requestPreparation(for:)` interface
-/// that `AppleTranscriber.preloadAssets()` calls. At compile time on pre-iOS-26 SDKs this
-/// falls through to the no-op `else` branch.
-///
-/// TODO: Verify exact API name in Xcode 26 / iOS 26 SDK and update if the framework name
-/// differs (e.g. `SFSpeechRecognizer.prepareForSpeechRecognition()` on the stable SDK).
+/// This is **only** the authorization gate. It is deliberately NOT named after `AssetInventory`
+/// or `SpeechAnalyzer` because it does not preload any model assets. The real `SpeechAnalyzer`
+/// `AssetInventory.requestPreparation(...)` preload (FR-021) is a pending on-device handoff
+/// tracked by the file-level `#warning` and ADR-0010.
 @available(iOS 26, *)
-private enum SFSpeechAnalyzerAssetInventory {
-    static var shared: SFSpeechAnalyzerAssetInventory.Type { SFSpeechAnalyzerAssetInventory.self }
-
-    enum AssetLocale { case currentLocale }
-
-    static func requestPreparation(for locale: AssetLocale) async throws {
-        // On iOS 26, SFSpeechRecognizer.requestAuthorization is the primary gate.
-        // The actual asset-preload call is performed here:
-        //
-        //   try await SpeechAnalyzer.assetInventory.prepareAsset(for: .currentLocale)
-        //
-        // The stable API name is pending final iOS 26 SDK release. Use the best available
-        // API at this release level: requestAuthorization as the preload trigger.
-        //
-        // TODO: Replace with the stable SpeechAnalyzer.AssetInventory API once the iOS 26
-        // SDK is finalized (expected Xcode 26 GM). Track via ADR-0007 / T047.
-        return try await withCheckedThrowingContinuation { continuation in
+private enum SpeechAuthorization {
+    static func request() async throws {
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             SFSpeechRecognizer.requestAuthorization { status in
                 switch status {
                 case .authorized, .notDetermined:

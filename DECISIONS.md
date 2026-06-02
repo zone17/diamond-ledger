@@ -6,7 +6,89 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
-## ADR-0009 — Two-Engine ASR Adapter Shape + Engine-Selection Seam (T047/T048)
+## ADR-0009 — UniFFI Wiring (H1) + CLI Event-Log Persistence
+
+- **Status:** Accepted
+- **Date:** 2026-06-02
+- **Owner:** Squad A (Deterministic Core & Agent Parity)
+- **Implements:** ADR-0007 (Rust + UniFFI) · T037 (#67) · #128 · #65 (Story A8)
+- **Tickets:** DL-A8-uniffi-h1 — #67 #70 #71 #73 #74 #127 #128
+
+### Context
+
+ADR-0007 chose Rust + UniFFI to expose ONE deterministic core to iOS/Android/CLI/agent from a
+single artifact (parity, Art. II). The boundary schema (`core/src/ffi.rs`) was authored with
+`// UNIFFI-EXPORT` marker comments but the macros were intentionally not applied (handoff H1,
+T037). This ADR records the actual wiring decisions, plus a small supporting change (#128) that
+makes the `dl` CLI a real cross-invocation agent surface.
+
+### Decision
+
+1. **New dependency: `uniffi` v0.28** (pinned, Art. XXXV), `optional = true` behind a
+   **`uniffi` cargo feature**. The pure deterministic core (and the no-float clippy gate, the
+   adapters, `cargo test`) build with **zero FFI coupling by default**; the feature is enabled
+   only for binding generation / the iOS XCFramework. All annotations are
+   `#[cfg_attr(feature = "uniffi", derive(...))]`, so they vanish in the default build.
+2. **Newtypes** (`GameId`/`Seq`/`RunnerId`/`Position`, all integer-only, I6) are exported via
+   `uniffi::custom_newtype!` (mapped to their underlying integer) — a single-field tuple struct
+   cannot be a `uniffi::Record`.
+3. **`GameState.batting_index` changed `[u8; 2]` → `Vec<u8>`** at the FFI boundary only (UniFFI
+   has no fixed-array type); the internal rules projection keeps `[u8; 2]`. The `Vec` is always
+   length-2 `[visitor, home]`. JSON shape is unchanged for existing serde consumers in practice
+   (array of two ints).
+4. **Throwable error:** a `uniffi::Error` must be an enum, but the structured boundary `Error`
+   is a struct (Art. I machine-readable code). Resolution: `Error` is a `uniffi::Record`; a thin
+   `CoreFfiError::Core(Error)` enum is what the exported methods throw — **zero info loss**
+   (`code` preserved).
+5. **In-crate `uniffi-bindgen` binary** (`required-features = ["uniffi"]`) so the generator is
+   ALWAYS the same UniFFI version as the proc-macros (avoids silent version skew).
+6. **`scripts/build-xcframework.sh`** (`make xcframework`) builds device + simulator static libs,
+   generates Swift (and optionally Kotlin) bindings, and assembles a `.xcframework`. It rebuilds
+   the host dylib WITH the feature immediately before bindgen and **deletes the output dir before
+   regenerating** to defeat the cache pitfall (a non-uniffi dylib makes bindgen silently emit zero
+   files). Generated artifacts are `.gitignore`d; `ios/Generated/README.md` documents consumption
+   (T071/T044).
+7. **#128 — CLI persistence:** `EventLog`/`GameAuthority` are now `serde`-serializable;
+   `DiamondCore::snapshot()/restore()` capture/rebuild the whole core. The `dl` CLI persists the
+   append-only log to `$DL_STATE_FILE` (default `./.dl-state.json`) so a game is built across
+   separate invocations. The log stays append-only (load → primitive appends; nothing rewritten).
+8. **#127 — judgment trigger-priority reconciliation:** the classifier's trigger order was refined
+   (AmbiguousAdvance before ContestedCredit/HitVsError when a misplay/overthrow/deflection enabled
+   the advance; a safe multi-fielder throw chain is ContestedCredit) so all 20 corpus entries match
+   their expected KIND. All entries still SURFACE as judgments, so SC-003/I2 holds regardless; this
+   was an accuracy-of-kind change, NOT a silent-resolution change. No corpus edits were needed.
+
+### Alternatives Considered
+
+- **UDL file instead of proc-macros.** Rejected: proc-macros reuse the existing typed schema
+  in-place; a UDL would duplicate it and drift.
+- **Annotate types unconditionally (no feature gate).** Rejected: would couple the deterministic
+  moat (and the no-float gate) to UniFFI and pull `uniffi` into every build.
+- **Edit Squad C's `corpus.jsonl` to resolve #127.** Rejected: the facts justified a classifier
+  refinement; touching C's H3-adjacent corpus risked a merge conflict for no benefit.
+
+### Consequences
+
+- The iOS `MockCore` → real-core swap (T071/T044) is unblocked: run `make xcframework`, add the
+  binary target + generated Swift to `ios/Package.swift` (see `ios/Generated/README.md`).
+- Determinism/parity is provable end-to-end: `evals/runners/parity.sh` asserts the CLI/agent path
+  and the in-memory core path produce byte-identical `GameState` (SC-008).
+- **Known limitation (documented handoff):** `get_proof_box` returns a zeroed box for a *past*
+  half-inning (it projects only the current half). Historical-inning proof boxes need replay-up-to;
+  finalize already balances the current half (SC-011). Tracked for a follow-up.
+- **Reversibility:** high — the `uniffi` feature is off by default; removing the feature, the
+  script, and the `$DL_STATE_FILE` load/save reverts cleanly.
+
+### Impact
+
+- **Reproducibility (Art. XXXV):** `uniffi` and the iOS targets are pinned; bindgen is in-crate.
+- **No-float (I6):** the FFI surface compiles AND passes `clippy -D warnings` under the feature.
+- **Agent-native (Art. II):** the `dl` CLI is now a real cross-invocation agent surface; parity is
+  gated in CI.
+
+---
+
+## ADR-0010 — Two-Engine ASR Adapter Shape + Engine-Selection Seam (T047/T048)
 
 - **Status:** Accepted
 - **Date:** 2026-06-02
@@ -30,12 +112,14 @@ made during implementation:
 
 3. **`TranscriberEngineSelector` with `nonisolated(unsafe) static var forceStub`** — the debug
    toggle needs to be mutable from test setUp (serial context) but is never written concurrently
-   in production, making `nonisolated(unsafe)` the correct Swift 6 annotation.
+   in production, making `nonisolated(unsafe)` the correct Swift 6 annotation. The seam is
+   `#if DEBUG`-guarded so it is excluded from release builds.
 
-4. **`SherpaStubSeam.isOverrideActive`** — same pattern, test-only mutation.
+4. **`SherpaStubSeam.isOverrideActive`** — same pattern, test-only mutation, also `#if DEBUG`-guarded.
 
 5. **Integer confidence at the adapter boundary** — both adapters convert their native float
-   confidence to `Int(clamp(native * 100, 0, 100).rounded())` before returning `Transcript`.
+   confidence to an integer percentage via a single shared `mapConfidence` helper
+   (`Int((clamp(native, 0, 1) * 100).rounded())`) before returning `Transcript`.
    This eliminates float-precision divergence between engines at the `GrammarParser` threshold.
 
 ### Decision
@@ -44,7 +128,8 @@ made during implementation:
 - `EngineSelector.resolve()` returns `any Transcriber` (existential) so call sites remain
   engine-agnostic.
 - The WoZ stub remains the default in simulator/debug builds (`forceStub = true`), preserving
-  the existing WoZ demo workflow.
+  the existing WoZ demo workflow. The stub reports a distinct `.stub` engine kind (not `.apple`)
+  so observability reflects reality.
 - Real on-device Apple ASR accuracy (mic → `SpeechAnalyzer` → transcript) requires a physical
   device and microphone. This is a human handoff, documented in `MANUAL-TESTING.md`.
 - The sherpa-onnx framework download + model asset is a human handoff (see `SherpaTranscriber.swift`
@@ -59,10 +144,19 @@ made during implementation:
 
 ### Consequences
 
-- `AppleTranscriber.preloadAssets()` calls the `SFSpeechAnalyzerAssetInventory` shim; the shim
-  is updated to the stable API once the iOS 26 SDK GM releases (tracked TODO in the file).
+- `AppleTranscriber` uses **legacy `SFSpeechRecognizer`** today; `preloadAssets()` only requests
+  authorization. Real `SpeechAnalyzer`/`AssetInventory` preload (FR-021) is a pending on-device
+  handoff, flagged with a `#warning` in the file and a follow-up issue.
 - `SherpaTranscriber` is an integration skeleton until the XCFramework is fetched; tests exercise
   the selection logic and stub path without the real binary.
+- The WoZ fact-mapping (`misplayed-grounder` → MockCore routing) lives in the PTT/test harness
+  layer, NOT in the Speech module — the Speech module has no MockCore dependency.
+
+### Renumbering note
+
+This ADR was originally drafted as ADR-0009 on `feat/ios/DL-080-asr-adapters-export`. On merge with
+`main`, ADR-0009 was claimed by the UniFFI Wiring decision (PR #141); this ASR ADR was renumbered to
+ADR-0010 to preserve append-only numbering.
 
 ---
 
