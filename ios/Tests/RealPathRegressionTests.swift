@@ -84,7 +84,13 @@ final class RealPathRegressionTests: XCTestCase {
         // The ACTUAL facts the app produces — concatenated fielders, no script marker.
         let facts = try await realFacts(for: .groundOut63)
         XCTAssertEqual(facts["batter_result"], "groundout")
-        XCTAssertEqual(facts["fielders"], "63", "real grammar emits the concatenated chain (bug class)")
+        // Bug class: the real grammar emits a CONCATENATED single-digit chain (e.g. "63"/"36"), NOT
+        // a dash-separated "6-3". Order is non-deterministic (the out-of-lane parser iterates a dict,
+        // tracked separately), so assert the shape — concatenated digits, no dash — not the order.
+        let fielders = try XCTUnwrap(facts["fielders"])
+        XCTAssertFalse(fielders.contains("-"), "grammar emits concatenated digits, not dash-separated")
+        XCTAssertEqual(Set(fielders), Set("63"), "the chain is SS(6) + 1B(3), concatenated")
+        XCTAssertEqual(FactBridge.parseFielders(fielders)?.count, 2, "parses to two valid positions")
 
         // record_play must SUCCEED past position validation (the pre-fix CoreError-4 cause).
         let rec = try await core.recordPlay(
@@ -140,6 +146,61 @@ final class RealPathRegressionTests: XCTestCase {
         )
         XCTAssertEqual(resolved.decision.status, .resolved)
         XCTAssertEqual(resolved.decision.decider?.id, owner)
+    }
+
+    // MARK: 2b. Card B via AppState — resolve must ALSO confirm → next play records (P1 fix)
+
+    /// The P1 from PR #148 review: `resolve_judgment` only resolves the decision; it does NOT
+    /// confirm the play, so the `PlayRecorded` row stays unconfirmed and `pending_play()` is still
+    /// `Some`. The old `AppState.resolveJudgment` cleared `pendingResult` anyway, so the NEXT mic
+    /// press hit the core's `PendingConfirmation` guard with no recovery. The fix: resolve THEN
+    /// confirm. This drives the real path through `AppState` and asserts the next play records.
+    @MainActor
+    func test_appState_resolveJudgment_alsoConfirms_thenNextPlayRecords() async throws {
+        let appState = AppState(core: DiamondCoreClient())
+        appState.devSignIn()
+        await appState.createGame(homeTeam: "Hawks", visitorTeam: "Owls")
+
+        // reached-on-error → fact-derived Card B (real core, no script marker).
+        let facts = try reachedOnErrorFacts()
+        await appState.recordPlay(facts: facts)
+        guard case .cardB = appState.presentedSheet else {
+            return XCTFail("reached-on-error must surface Card B")
+        }
+        let decision = try XCTUnwrap(appState.activeGame?.pendingResult?.judgment)
+
+        // Resolve via AppState (resolve + confirm). On success the pending clears and the sheet drops.
+        await appState.resolveJudgment(decisionId: decision.id, chosen: decision.recommendation.call)
+        XCTAssertNil(appState.activeGame?.pendingResult,
+                     "after resolve+confirm the play is no longer pending")
+        XCTAssertNil(appState.presentedSheet, "Card B dismissed on success")
+        XCTAssertNil(appState.presentedError, "no error on the happy path")
+
+        // The crux: the NEXT play must RECORD (not hit PendingConfirmation). Old code orphaned the
+        // play here, so this recorded a Card A → the previous behaviour would fail this assertion
+        // (record blocked → reopen Card B, or an error banner — never a fresh Card A).
+        await appState.recordPlay(facts: ["batter_result": "groundout", "fielders": "63"])
+        guard case .cardA = appState.presentedSheet else {
+            return XCTFail("next play after resolve+confirm must record a NEW play (Card A), not be blocked")
+        }
+        XCTAssertNil(appState.presentedError, "next play records cleanly — no PendingConfirmation error")
+    }
+
+    // MARK: 2c. Leave PENDING must not orphan the open judgment (P2 fix)
+
+    @MainActor
+    func test_appState_deferJudgment_doesNotOrphan_andExplains() async throws {
+        let appState = AppState(core: DiamondCoreClient())
+        appState.devSignIn()
+        await appState.createGame(homeTeam: "Hawks", visitorTeam: "Owls")
+        await appState.recordPlay(facts: try reachedOnErrorFacts())
+        XCTAssertNotNil(appState.activeGame?.pendingResult, "Card B pending")
+
+        // "Leave PENDING" has no core path (resolve requires a chosen call). It must NOT orphan the
+        // play (the old MockCore behaviour) — it keeps the pending and explains.
+        appState.deferJudgment()
+        XCTAssertNotNil(appState.activeGame?.pendingResult, "defer must NOT orphan the open judgment")
+        XCTAssertNotNil(appState.presentedError, "defer explains it isn't available")
     }
 
     // MARK: 3. Record → dismiss-without-confirm → NO orphaned-pending inconsistency

@@ -177,8 +177,16 @@ struct PushToTalkView: View {
                 do {
                     facts = try parser.parse(transcript)
                 } catch ParseError.outOfGrammar {
-                    // Out-of-grammar: fall through to MockCore with the script marker so MockCore
-                    // routes to Card A (the default script marker is set in StubTranscriber).
+                    // Out-of-grammar fallback: use the WoZ script's canned facts. For groundOut63
+                    // that's a deterministic ground out (Card A); for misplayedGrounder it's the
+                    // ["script": "misplayed-grounder"] marker (Card B). NOTE: in practice this branch
+                    // rarely fires for the two demo scripts — both canned transcripts DO parse (the
+                    // misplayed-grounder transcript contains "grounder", so GrammarParser.tryGroundout
+                    // matches and returns a plain groundout). So live WoZ "Misplayed grounder"
+                    // currently produces Card A, NOT Card B — the "misplayed" signal is dropped by the
+                    // v1 grammar. Fact-derived Card B IS reachable via a "reached on error" transcript
+                    // (FactBridge maps reached_on_error → the HitVsError pattern). Routing "misplayed"
+                    // transcripts to that path is grammar work tracked in issue #151 (out of this PR's lane).
                     facts = script.normalizedFacts
                 } catch ParseError.ambiguous(let candidates) {
                     // Ambiguous: surface clarifying question.

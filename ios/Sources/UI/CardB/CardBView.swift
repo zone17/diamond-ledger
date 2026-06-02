@@ -9,7 +9,9 @@
 ///   - US2 / FR-010 / FR-011 / I2: judgment play surfaced open; never auto-resolved.
 ///   - interaction-spec.md §V3 (glance): visually DISTINCT from Card A, largest targets,
 ///     ≤5s one-tap resolve, equals-tappable alternatives, unresolved → cannot advance.
-///   - FR-010a: "Leave PENDING" is a first-class explicit choice (not a fallback).
+///   - FR-010a: "Leave PENDING" is envisioned as a first-class explicit choice — but it is HIDDEN
+///     against the real core (DL-35), which has no pending/defer token in `resolve_judgment`
+///     (showing it could only orphan the open judgment). Re-enable when issue #150 lands the path.
 ///   - I2 invariant: it is IMPOSSIBLE to advance state without an explicit tap — even
 ///     dismissing the sheet (swipe down) does not advance. The pending judgment blocks
 ///     the PTT button via AppState.pttState / activeGame.pendingResult guard.
@@ -52,7 +54,11 @@ struct CardBView: View {
                     judgmentQuestion
                     recommendationCard
                     alternativeButtons
-                    pendingOption
+                    // "Leave PENDING" is HIDDEN against the real core (DL-35): the core's
+                    // resolve_judgment has no pending/defer token, so the button could only orphan
+                    // the open judgment. Re-enable when issue #150 lands the pending-token path. The
+                    // `pendingOption` view + `AppState.deferJudgment` are retained (guarded) so the
+                    // wiring is ready, but not shown.
                     blockadeNote
                 }
                 .padding(.horizontal, 24)
@@ -214,8 +220,11 @@ struct CardBView: View {
         .accessibilityHint("Tap to record this as your call")
     }
 
-    // MARK: - Leave PENDING (FR-010a — explicit deferred, first-class)
-
+    // MARK: - Leave PENDING (FR-010a) — retained but NOT shown against the real core (DL-35)
+    //
+    // Hidden from the body (see the call site): the real core has no pending/defer token in
+    // resolve_judgment, so showing this could only orphan the open judgment. Kept so the wiring is
+    // ready to re-enable when issue #150 lands the pending-token path; intentionally unreferenced today.
     private var pendingOption: some View {
         VStack(spacing: 8) {
             Divider()
@@ -244,7 +253,7 @@ struct CardBView: View {
     // MARK: - Guard note
 
     private var blockadeNote: some View {
-        Text("You cannot record the next play until you make a call or defer this one.")
+        Text("You cannot record the next play until you make a call.")
             .font(.caption)
             .foregroundStyle(.tertiary)
             .multilineTextAlignment(.center)

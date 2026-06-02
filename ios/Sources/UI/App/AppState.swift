@@ -298,23 +298,49 @@ public final class AppState {
     }
 
     /// Called by Card B tap (one of the alternatives / recommendation).
+    ///
+    /// ## H1 reconciliation (DL-35): resolve does NOT confirm — must confirm afterward.
+    ///
+    /// The real core's `resolve_judgment` only records the decision (`JudgmentResolved`); it does
+    /// **not** confirm the underlying play, so the `PlayRecorded` row stays `confirmed == false` and
+    /// `pending_play()` is still `Some`. If we cleared `pendingResult` here (as the old code did),
+    /// the next mic press would hit the core's FR-007 `PendingConfirmation` guard with no recovery
+    /// (the card can't reopen because `pendingResult` is gone). So after resolve we **confirm the
+    /// same play** (the sequence proven by `test_fullLoop_createConfirmJudgeResolveConfirm`), and
+    /// only clear/dismiss on confirm success. On confirm failure we KEEP `pendingResult` (so the
+    /// card can reopen) and surface the real reason — never orphan the play.
     func resolveJudgment(decisionId: UInt64, chosen: ScoringCall) async {
         guard let game = activeGame,
+              let pending = game.pendingResult,
               let ownerId = session?.ownerId, !ownerId.isEmpty else { return }
 
+        // Capture the recorded seq BEFORE any clearing — we need it to confirm the play.
+        let confirmsSeq = pending.recordedSeq
+
         do {
-            let result = try await core.resolveJudgment(
+            let resolved = try await core.resolveJudgment(
                 gameId: game.gameId,
                 decisionId: decisionId,
                 chosen: chosen,
                 ownerId: ownerId,
                 correlationId: UUID().uuidString
             )
-            game.state = result.state
+            game.state = resolved.state
+
+            // Confirm the now-resolved play so it leaves the pending state (FR-007). Until this
+            // succeeds the play is still unconfirmed in the core — keep `pendingResult` intact.
+            let confirmed = try await core.confirmPlay(
+                gameId: game.gameId,
+                confirmsSeq: confirmsSeq,
+                ownerId: ownerId,
+                correlationId: UUID().uuidString
+            )
+            game.state = confirmed.state
             game.pendingResult = nil
             presentedSheet = nil
             pttState = .idle
         } catch {
+            // Keep the pending play + let the card reopen; surface the real core reason.
             presentedError = AppError(message: "Could not record your call: \(error.localizedDescription)")
         }
     }
@@ -358,14 +384,26 @@ public final class AppState {
         pttState = .idle
     }
 
-    /// Called by Card B "Leave PENDING" tap (FR-010a — explicit deferred, first-class).
-    /// Resolves the judgment as deferred without auto-picking a call.
+    /// Called by Card B "Leave PENDING" — DISABLED against the real core (DL-35).
+    ///
+    /// ## Why this is a no-op (the deferred-pending path is not implemented in the core)
+    ///
+    /// FR-010a envisions "Leave PENDING" as a first-class explicit defer, but the real core's
+    /// `resolve_judgment` REQUIRES a `chosen` Call — there is **no** pending/defer token and no
+    /// other primitive that clears an open judgment without a recorded decision. The old MockCore
+    /// behaviour (clear `pendingResult` + dismiss) was the SAME orphan bug this PR fixes elsewhere:
+    /// it dropped the UI's pending while the real core kept the play unconfirmed AND the judgment
+    /// open, so the next mic press dead-ended on `PendingConfirmation`.
+    ///
+    /// Until the core gains a pending-token path (follow-up: issue #150 — `resolve_judgment` PENDING
+    /// token + `EarnedUnearned::Pending` plumbing), the "Leave PENDING" button is hidden on the
+    /// real-core build (see `CardBView.pendingOption`). This method is kept only as a guarded no-op
+    /// so any stray caller can't orphan a play: it surfaces an explanation and leaves the card up.
     func deferJudgment() {
-        // For MVP against MockCore: mark pending as deferred by clearing it + dismissing the card.
-        // The real core (H1) will accept a PENDING token via resolve_judgment.
-        guard let game = activeGame else { return }
-        game.pendingResult = nil
-        presentedSheet = nil
-        pttState = .idle
+        guard activeGame?.pendingResult != nil else { return }
+        presentedError = AppError(
+            message: "Leaving a call pending isn't available yet. Make a call to continue — you can correct it in a later update."
+        )
+        // Do NOT clear pendingResult or dismiss: never orphan the core's open judgment.
     }
 }
