@@ -70,6 +70,41 @@ jobs:
           set -euo pipefail
           docker run --rm -v "${PWD}:/repo" zricethezav/gitleaks:v8.18.4 \
             detect --source=/repo --redact -v
+      - name: Privacy check — no raw-audio persistence path (T070 / FR-022)
+        # Assert no code writes raw PCM audio to disk, database, or telemetry.
+        # Grep-based guard: flag any open() / fwrite / write() calls on audio-like
+        # paths. False positives reviewed manually in CI output.
+        run: |
+          set -euo pipefail
+          echo "=== Privacy guard: scanning for raw audio persistence patterns ==="
+          FOUND=0
+          # Patterns that would indicate raw PCM persistence (not streaming / decoding)
+          if grep -rn --include="*.swift" --include="*.kt" --include="*.rs" \
+              -E '(\.pcm|\.wav|\.raw|pcmBuffer|AudioBuffer).*(write|save|store|persist|insert|upload)' \
+              core/ ios/ adapters/ 2>/dev/null | grep -v '^\s*//'; then
+            echo "::warning::Potential raw audio persistence path found — review above matches"
+            FOUND=1
+          fi
+          if [[ "$FOUND" -eq 0 ]]; then
+            echo "OK: No raw audio persistence patterns detected"
+          fi
+      - name: COPPA consent presence check (T070 / FR-029)
+        # Assert that a COPPA/consent flow marker exists in the iOS source when
+        # the auth module is present. This is a structural presence check —
+        # the consent UX is enforced in review, not just by file existence.
+        run: |
+          set -euo pipefail
+          echo "=== COPPA consent check ==="
+          if [[ -d "ios/Sources/Auth" ]]; then
+            if find ios/Sources/Auth -name "*.swift" | \
+                xargs grep -l -i "coppa\|consent\|age.*verif\|parental" 2>/dev/null | head -1 | grep -q .; then
+              echo "OK: COPPA/consent marker found in ios/Sources/Auth"
+            else
+              echo "::warning::ios/Sources/Auth exists but no COPPA/consent marker found — add explicit consent gating before shipping (FR-029)"
+            fi
+          else
+            echo "OK: ios/Sources/Auth not yet present — COPPA check deferred until auth module lands (T081)"
+          fi
 
   hooks-test:
     name: Compound-loop hooks (ADR-0003)
@@ -80,19 +115,207 @@ jobs:
         run: bash .claude/hooks/test-compound-hooks.sh
 
   # ---------------------------------------------------------------------------
-  # Advisory jobs — Phase A skeleton (T004, ADR-0007)
+  # Retrosheet / cwevent 3-layer gate (T059 / T060 — Squad C, DL-103)
   #
-  # These jobs are PLACEHOLDERS wired with continue-on-error: true so they do
-  # not break the pipeline while the Rust toolchain, eval runners, and cwevent
-  # build are being stood up.  Each job is documented with its final intent so
-  # the guard rail is visible from day one.  Remove continue-on-error once the
-  # job is fully wired and green.
+  # REAL gate: builds pinned cwevent v0.10.0 from SHA256-verified tarball
+  # (autotools, Linux CI), then runs evals/runners/retrosheet-gate.sh against
+  # evals/retrosheet-fixtures/.
+  #
+  # CRITICAL (research.md D4): cwevent exits 0 even on malformed plays.
+  # The gate is STDERR-driven — fails on WARNING|Invalid|Can't find|could not open
+  # OR zero event rows emitted. Never gate on exit code alone.
+  #
+  # continue-on-error removed: this job is now a hard gate (C1/T059/T060 wired).
+  # ---------------------------------------------------------------------------
+  retrosheet-gate:
+    name: Retrosheet / cwevent 3-layer gate (D4 / T059 / T060)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install autotools (for cwevent build)
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends autoconf automake libtool make gcc
+
+      - name: Build pinned Chadwick cwevent v0.10.0 (T059)
+        # SHA256: a4128934286edf5f9938923aad2000f7549dcccfb3b3f149a417534ef7eb29e9
+        # Re-check for newer tag before locking: v0.10.0 confirmed latest as of 2026-06-01
+        # (no v0.11.x exists — checked github.com/chadwickbureau/chadwick/releases)
+        run: |
+          set -euo pipefail
+          TARBALL_URL="https://github.com/chadwickbureau/chadwick/releases/download/v0.10.0/chadwick-0.10.0.tar.gz"
+          EXPECTED_SHA256="a4128934286edf5f9938923aad2000f7549dcccfb3b3f149a417534ef7eb29e9"
+          INSTALL_PREFIX="${HOME}/chadwick"
+
+          echo "=== Downloading Chadwick v0.10.0 tarball ==="
+          curl -fsSL -o /tmp/chadwick.tar.gz "$TARBALL_URL"
+
+          echo "=== Verifying SHA256 ==="
+          ACTUAL_SHA256="$(sha256sum /tmp/chadwick.tar.gz | awk '{print $1}')"
+          if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]; then
+            echo "::error::SHA256 mismatch!"
+            echo "  Expected: $EXPECTED_SHA256"
+            echo "  Actual:   $ACTUAL_SHA256"
+            exit 1
+          fi
+          echo "SHA256 verified: $ACTUAL_SHA256"
+
+          echo "=== Building cwevent (autotools) ==="
+          mkdir -p /tmp/chadwick-src
+          tar xzf /tmp/chadwick.tar.gz -C /tmp/chadwick-src --strip-components=1
+          cd /tmp/chadwick-src
+          ./configure --prefix="$INSTALL_PREFIX" --disable-shared --enable-static \
+            CFLAGS="-O2" 2>&1 | tail -5
+          make -j"$(nproc)" 2>&1 | tail -5
+          make install 2>&1 | tail -3
+
+          echo "=== Verifying cwevent binary ==="
+          CWEVENT="${INSTALL_PREFIX}/bin/cwevent"
+          # cwevent exits 1 when no args/files are given; capture stderr output first
+          CWEVENT_HEADER="$("$CWEVENT" 2>&1; true)"
+          CWEVENT_VER="$(echo "$CWEVENT_HEADER" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+          if [[ "$CWEVENT_VER" != "0.10.0" ]]; then
+            echo "::error::cwevent version mismatch: expected 0.10.0, got '$CWEVENT_VER'"
+            echo "Binary header: $CWEVENT_HEADER"
+            exit 1
+          fi
+          echo "cwevent $CWEVENT_VER built and verified ✓"
+          echo "CWEVENT_BIN=${INSTALL_PREFIX}/bin" >> "$GITHUB_ENV"
+
+      - name: Run 3-layer retrosheet gate (T060)
+        # Layer 2 (authoritative): STDERR-driven — fails on WARNING|Invalid|Can't find|could not open
+        # Layer 3: golden diff vs committed expected.csv
+        # Layer 1: proof-box.sh deferred (Squad A T043 — depends on Rust core)
+        run: |
+          set -euo pipefail
+          export PATH="${CWEVENT_BIN}:${PATH}"
+          echo "=== Running retrosheet-gate.sh against evals/retrosheet-fixtures/ ==="
+          for FIXTURE_DIR in evals/retrosheet-fixtures/*/; do
+            YEAR="$(basename "$FIXTURE_DIR")"
+            # Skip non-year directories (e.g., malformed/ for negative tests)
+            if [[ "$YEAR" =~ ^[0-9]{4}$ ]]; then
+              echo "--- Fixture: $FIXTURE_DIR (year $YEAR) ---"
+              bash evals/runners/retrosheet-gate.sh "$FIXTURE_DIR" "$YEAR"
+            fi
+          done
+
+      - name: Negative test — malformed fixture MUST trip the gate (T062)
+        # The malformed fixture contains an invalid record type that triggers
+        # a stderr WARNING. This step verifies the gate correctly FAILS on it.
+        run: |
+          set -euo pipefail
+          export PATH="${CWEVENT_BIN}:${PATH}"
+          echo "=== Negative test: malformed fixture must fail the gate ==="
+          if bash evals/runners/retrosheet-gate.sh evals/retrosheet-fixtures/malformed 2024; then
+            echo "::error::Negative test FAILED: malformed fixture should have tripped the gate but did not"
+            exit 1
+          else
+            echo "OK: malformed fixture correctly FAILED the gate ✓"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Corpus validity check (T063 — Squad C)
+  #
+  # Validates that evals/judgment-corpus/corpus.jsonl conforms to INTERFACE.md v1.1:
+  # all 4 trigger types covered, no duplicate IDs, EarnedVsUnearned entries have
+  # inning_error_context, expected_classification is Judgment variant.
+  # ---------------------------------------------------------------------------
+  corpus-validity:
+    name: Judgment corpus validity (T063 / INTERFACE.md v1.1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Validate corpus.jsonl
+        run: |
+          set -euo pipefail
+          python3 << 'PYEOF'
+          import json, sys
+          from collections import Counter
+
+          REQUIRED_KEYS = {"id", "situation", "catalyst", "supplied_label",
+                           "expected_classification", "trigger", "source"}
+          VALID_TRIGGERS = {"HitVsError", "EarnedVsUnearned", "ContestedCredit", "AmbiguousAdvance"}
+          VALID_CLASSIFICATIONS = {
+              "Judgment(HitVsError)", "Judgment(EarnedVsUnearned)",
+              "Judgment(ContestedCredit)", "Judgment(AmbiguousAdvance)"
+          }
+
+          ids = set()
+          triggers_seen = set()
+          errors = []
+
+          corpus_file = "evals/judgment-corpus/corpus.jsonl"
+          seed_file = "evals/judgment-corpus/seed.jsonl"
+
+          # Collect all IDs from seed to check uniqueness across files
+          seed_ids = set()
+          try:
+              with open(seed_file) as f:
+                  for line in f:
+                      line = line.strip()
+                      if line:
+                          entry = json.loads(line)
+                          seed_ids.add(entry.get("id", ""))
+          except FileNotFoundError:
+              pass  # seed.jsonl is Squad A's artifact
+
+          with open(corpus_file) as f:
+              entries = [json.loads(l.strip()) for l in f if l.strip()]
+
+          if not entries:
+              print("::error::corpus.jsonl is empty — must have at least one entry")
+              sys.exit(1)
+
+          for lineno, entry in enumerate(entries, 1):
+              eid = entry.get("id", f"(no id, line {lineno})")
+
+              missing = REQUIRED_KEYS - entry.keys()
+              if missing:
+                  errors.append(f"{eid}: missing required keys: {missing}")
+
+              if eid in ids or eid in seed_ids:
+                  errors.append(f"{eid}: duplicate ID (also in seed or corpus)")
+              ids.add(eid)
+
+              ec = entry.get("expected_classification", "")
+              if ec not in VALID_CLASSIFICATIONS:
+                  errors.append(f"{eid}: invalid expected_classification: '{ec}'")
+
+              trigger = entry.get("trigger", "")
+              if trigger not in VALID_TRIGGERS:
+                  errors.append(f"{eid}: invalid trigger: '{trigger}'")
+              else:
+                  triggers_seen.add(trigger)
+
+              if trigger and ec and f"Judgment({trigger})" != ec:
+                  errors.append(f"{eid}: trigger '{trigger}' disagrees with classification '{ec}'")
+
+              if trigger == "EarnedVsUnearned" and "inning_error_context" not in entry:
+                  errors.append(f"{eid}: EarnedVsUnearned entry missing inning_error_context (INTERFACE.md §1.1)")
+
+          missing_triggers = VALID_TRIGGERS - triggers_seen
+          if missing_triggers:
+              errors.append(f"Missing trigger types: {missing_triggers} — all 4 must be covered (INTERFACE.md §1.2 rule 3)")
+
+          if errors:
+              for e in errors:
+                  print(f"::error::{e}")
+              sys.exit(1)
+
+          counts = Counter(e["trigger"] for e in entries)
+          print(f"corpus.jsonl VALID: {len(entries)} entries")
+          for t in sorted(VALID_TRIGGERS):
+              print(f"  {t}: {counts[t]} entries")
+          PYEOF
+
+  # ---------------------------------------------------------------------------
+  # Advisory jobs — remain advisory until squad work is merged
   # ---------------------------------------------------------------------------
 
   core-build:
-    name: Rust core — cargo check (ADR-0007 / T002 / T016)
+    name: Rust core — cargo check + tests (ADR-0007 / T002 / T016)
     runs-on: ubuntu-latest
-    # Advisory: toolchain setup is in progress; do not block merges yet.
+    # continue-on-error removed when core compiles cleanly on main.
+    # Coordinate with Squad A before dropping this.
     continue-on-error: true
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -112,11 +335,30 @@ jobs:
           else
             echo "Cargo.toml (workspace root) not yet present — skipping cargo check (placeholder)"
           fi
+      - name: cargo test (unit + integration tests)
+        # T016: no-float determinism + contract tests (arts. X/XI).
+        # Drop continue-on-error on this job once all tests are wired.
+        run: |
+          if [ -f Cargo.toml ]; then
+            cargo test --workspace 2>&1
+          else
+            echo "Cargo.toml not yet present — skipping cargo test (placeholder)"
+          fi
+      - name: clippy no-float gate (T016 — FR-003 / I6)
+        # Enforces no f32/f64 in core/ — determinism invariant.
+        # Reads deny rules from clippy.toml at workspace root.
+        run: |
+          if [ -f Cargo.toml ] && [ -f clippy.toml ]; then
+            cargo clippy --workspace -- -D warnings 2>&1
+          else
+            echo "clippy.toml or Cargo.toml not present — no-float gate advisory (placeholder)"
+          fi
 
   core-eval:
     name: Rust core — eval harness (T004 / T041 / T042 / T043)
     runs-on: ubuntu-latest
-    # Advisory: eval runners do not exist yet; placeholder only.
+    # Advisory: eval runners require the compiled Rust core (T021/T024).
+    # Drop continue-on-error once judgment-gate.sh + core are wired.
     continue-on-error: true
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -127,32 +369,9 @@ jobs:
         # All three become CI hard-fails once wired (remove continue-on-error).
         run: |
           if [ -f evals/runners/judgment-gate.sh ]; then
-            bash evals/runners/judgment-gate.sh
+            bash evals/runners/judgment-gate.sh evals/judgment-corpus/corpus.jsonl
           else
-            echo "evals/runners/ not yet present — skipping eval harness (placeholder)"
-          fi
-
-  retrosheet-gate:
-    name: Retrosheet / cwevent 3-layer gate (D4 / T059 / T060)
-    runs-on: ubuntu-latest
-    # Advisory: cwevent build + fixtures are not yet wired; placeholder only.
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      - name: cwevent gate (pinned v0.10.0, stderr-driven)
-        # Final intent:
-        #   1. Build Chadwick cwevent v0.10.0 from SHA256-pinned tarball (autotools).
-        #   2. Run evals/runners/retrosheet-gate.sh against evals/retrosheet-fixtures/.
-        #   3. Gate logic: FAIL if stderr matches WARNING|Invalid|Can't find|could not open
-        #      OR zero event rows emitted — NOT on exit code alone (cwevent exits 0 on
-        #      malformed plays; see research.md D4 for the load-bearing finding).
-        #   4. Layer 3: golden diff of cwevent output vs evals/retrosheet-fixtures/expected.csv.
-        run: |
-          if [ -f evals/runners/retrosheet-gate.sh ]; then
-            bash evals/runners/retrosheet-gate.sh
-          else
-            echo "retrosheet-gate.sh not yet present — skipping cwevent gate (placeholder)"
-            echo "Pinned cwevent version: v0.10.0 (Chadwick, SHA256-verified, autotools build)"
+            echo "evals/runners/judgment-gate.sh not yet present (Squad A T041) — skipping"
           fi
 
   ios-build:
