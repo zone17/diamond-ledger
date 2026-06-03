@@ -26,15 +26,13 @@
 ///   transcription, and keep `SFSpeechRecognizer.contextualStrings` for vocabulary-sensitive
 ///   recognition; the two frameworks coexist and may be mixed per feature.
 ///
-///   This adapter follows that guidance:
-///     - The baseball lexicon + active game roster are assembled into a bounded, deduplicated
-///       contextual-strings set via `RosterContextBuilder` and stored on the actor.
-///     - They are applied through an `SFSpeechRecognizer` contextual-biasing pass (`biasEngine`),
-///       run alongside the `SpeechAnalyzer` transcription, whose result is used to bias/confirm the
-///       final hypothesis (see `BiasingStrategy`). When the bias engine is unavailable, the
-///       `SpeechAnalyzer` result is returned unbiased — never a failure.
-///   This is a real, documented mechanism — NOT an invented `SpeechTranscriber.contextualStrings`
-///   property (no such property exists in iOS 26).
+///   The baseball lexicon + roster are stored on the actor via `setContextualStrings` and assembled
+///   by `RosterContextBuilder`. The `SFSpeechRecognizer.contextualStrings` hybrid biasing pass
+///   (`applyBiasing`) is implemented but **deferred from the hot path** (follow-up #157): because
+///   `SpeechTranscriber` never provides a confidence signal, the nil-base branch of
+///   `BiasingStrategy.choose` would unconditionally override the analyzer's text with a biased
+///   hypothesis regardless of agreement — a fabricated wrong play (P0b / Article VII). A
+///   conservative, roster-wired, edit-distance-gated strategy is needed before enabling.
 ///
 /// ## Concurrency (Swift 6 / actor isolation)
 ///   Declared as an `actor` — all SpeechAnalyzer/AssetInventory calls are actor-isolated, so there
@@ -72,12 +70,27 @@ import Speech
 
 // MARK: - AppleTranscriber
 
-/// Primary on-device ASR adapter using Apple's iOS-26 `SpeechAnalyzer` (+ `AssetInventory` preload
-/// and an `SFSpeechRecognizer` contextual-biasing pass for the baseball domain vocabulary).
+/// Primary on-device ASR adapter using Apple's iOS-26 `SpeechAnalyzer` (+ `AssetInventory` preload).
 ///
 /// **Availability gate:** check `isAvailable` before relying on it. On pre-26 OS (or when speech
 /// authorization is denied/restricted) `isAvailable` returns `false` and `transcribe(buffer:)`
 /// throws. `EngineSelector` uses this to fall back to Sherpa / the WoZ stub.
+///
+/// ## FR-008 / confidence — the unmeasured-confidence default (P0 fix, DL-80 code review)
+///   iOS 26's `SpeechTranscriber` does NOT expose a scalar confidence in its public result type
+///   (`confidence(from:)` always returns nil). The default for an unmeasured transcript is therefore
+///   set BELOW `GrammarParser.lowConfidenceThreshold` (70) so the parser's clarify path fires for
+///   any transcript without a real confidence signal — never a silent wrong play (Article VII).
+///   See `defaultConfidenceWhenUnreported`.
+///
+/// ## Contextual biasing — deferred from the hot path (P0b fix, DL-80 code review)
+///   The `applyBiasing` / `SFSpeechRecognizer` second-recognizer pass is NOT run on the hot path.
+///   Because `SpeechAnalyzer` never provides a base confidence, `BiasingStrategy.choose`'s
+///   nil-base branch would unconditionally override with the biased text, creating a path where a
+///   lexicon/roster phrase the speaker didn't say becomes the confident hypothesis. Until a
+///   conservative, roster-wired, edit-distance-gated strategy is designed (follow-up #157), the
+///   `SpeechAnalyzer` result is returned directly. `applyBiasing` is kept for the follow-up but
+///   MUST NOT be called from `runTranscription`.
 @available(iOS 26, *)
 public actor AppleTranscriber: Transcriber {
 
@@ -261,10 +274,18 @@ public actor AppleTranscriber: Transcriber {
     // MARK: - Private: SpeechAnalyzer pipeline
 
     /// Confidence used when the framework does not surface a per-result confidence for an utterance.
-    /// Deliberately mid-range (not a fabricated high score) so the FR-008 parse-layer gate still has
-    /// a meaningful integer to compare; an unreported confidence is treated as "uncertain enough to
-    /// let the parser decide", never "definitely correct".
-    static let defaultConfidenceWhenUnreported: Float = 0.80
+    ///
+    /// ## Why 0.60 (below the 70 FR-008 threshold) — P0 fix
+    ///   `GrammarParser.lowConfidenceThreshold` is 70 (`confidence < 70` → clarify path).
+    ///   iOS 26's `SpeechTranscriber` never reports a scalar confidence (`confidence(from:)` always
+    ///   returns nil in the current SDK), so EVERY production `SpeechAnalyzer` transcript reaches
+    ///   this default. Setting it at or above 70 would stamp every unmeasured hypothesis as
+    ///   "confident enough to parse silently" — bypassing FR-008 with zero real signal (Article VII).
+    ///   0.60 → `ConfidenceMapping.toInt(0.60) = 60 < 70` → the parser's clarify path fires for
+    ///   any unmeasured SpeechAnalyzer result, letting the scorer confirm before it becomes a play.
+    ///   When the SDK eventually exposes a real confidence, `confidence(from:)` is the single place
+    ///   to wire it, and this default becomes a genuine fallback rather than the universal path.
+    static let defaultConfidenceWhenUnreported: Float = 0.60
 
     /// Constructs the `SpeechTranscriber` module configured for offline single-utterance use.
     /// `nonisolated static` so both the actor-isolated `preloadAssets` and the nonisolated
@@ -281,6 +302,13 @@ public actor AppleTranscriber: Transcriber {
         )
     }
 
+    /// Wall-clock timeout for the `SpeechAnalyzer` results loop. A finite single-utterance buffer
+    /// should always resolve quickly; if the `results` AsyncSequence never terminates (e.g. a
+    /// framework bug or an unfinalised analyzer), we cancel after this deadline rather than hanging
+    /// the PTT flow forever. The timeout fires `TranscriberError.transcriptionFailed` — never a
+    /// silent drop (FR-008 / Article VII).
+    static let resultsTimeoutSeconds: Double = 15
+
     /// Drives the real `SpeechAnalyzer` pipeline for one captured PCM buffer and returns the
     /// best-hypothesis text plus a native confidence in [0, 1].
     ///
@@ -290,9 +318,14 @@ public actor AppleTranscriber: Transcriber {
     ///   - A single finite input stream yields exactly one buffer, then finishes; we then call
     ///     `finalizeAndFinishThroughEndOfInput()` so the analyzer terminates the result sequence
     ///     deterministically (no hang-forever).
+    ///   - The results loop is additionally bounded by `resultsTimeoutSeconds` so a stream that
+    ///     never terminates throws rather than blocking the PTT flow indefinitely.
     ///   - Cancellation propagates through the `for try await` over `transcriber.results` (an
     ///     `AsyncSequence`) and via the surrounding Task; `analyzer.cancelAndFinishNow()` is called
     ///     in a `defer` so a thrown/cancelled path always tears the analyzer down.
+    ///
+    /// NOTE: The `applyBiasing` / SFSpeechRecognizer second-recognizer pass is intentionally NOT
+    /// called here (P0b fix — see the type-level doc comment and follow-up #157).
     private nonisolated static func runTranscription(
         pcmBuffer: sending AVAudioPCMBuffer,
         contextualStrings: [String],
@@ -327,8 +360,6 @@ public actor AppleTranscriber: Transcriber {
         }
 
         // Finalize so the results AsyncSequence is driven to completion (no hang).
-        // Done concurrently with consuming results below would also work; sequentially is simplest
-        // for a single finite buffer and keeps lifecycle deterministic.
         do {
             try await analyzer.finalizeAndFinishThroughEndOfInput()
         } catch {
@@ -336,40 +367,59 @@ public actor AppleTranscriber: Transcriber {
                 "SpeechAnalyzer finalize failed: \(error.localizedDescription)")
         }
 
-        // Collect the final hypothesis from the results AsyncSequence. We accumulate finals (the
-        // transcriber may emit the utterance across multiple final runs) and read a confidence
-        // signal where the framework provides one.
-        var finalText = ""
-        var nativeConfidence: Float? = nil
-        do {
-            for try await result in transcriber.results {
-                guard result.isFinal else { continue }  // ignore any volatile/partial runs
-                finalText += String(result.text.characters)
-                if let c = Self.confidence(from: result) {
-                    // Conservative aggregation: keep the minimum (most-uncertain) signal seen.
-                    nativeConfidence = min(nativeConfidence ?? c, c)
+        // Collect the final hypothesis from the results AsyncSequence.
+        // The collection is raced against a timeout sentinel: if the `results` stream never
+        // terminates (e.g. a framework bug or an unfinalised analyzer), we cancel after
+        // `resultsTimeoutSeconds` and throw rather than blocking the PTT flow indefinitely
+        // (never a silent drop — FR-008 / Article VII). Cancellation of the outer Task also
+        // propagates through child task cancellation.
+        //
+        // The worker task returns a `(String, Float?)` tuple so the mutable accumulation state
+        // never needs to cross a task boundary — avoiding the Swift 6 mutable-capture-in-Sendable-
+        // closure error that `var` locals captured by `group.addTask` would produce.
+        let (finalText, nativeConfidence): (String, Float?) = try await {
+            try await withThrowingTaskGroup(of: (String, Float?)?.self) { group in
+                // Worker: consume results and return the accumulated (text, minConfidence) tuple.
+                group.addTask {
+                    var text = ""
+                    var minConf: Float? = nil
+                    for try await result in transcriber.results {
+                        guard result.isFinal else { continue }
+                        text += String(result.text.characters)
+                        if let c = Self.confidence(from: result) {
+                            minConf = min(minConf ?? c, c)
+                        }
+                    }
+                    return (text, minConf)
                 }
+                // Timeout sentinel: throws after the deadline, cancelling the worker.
+                group.addTask {
+                    try await Task.sleep(nanoseconds: UInt64(resultsTimeoutSeconds * 1_000_000_000))
+                    throw TranscriberError.transcriptionFailed(
+                        "SpeechAnalyzer results timed out after \(Int(resultsTimeoutSeconds))s")
+                }
+                // Collect the first non-nil result (the worker's tuple), then cancel the sentinel.
+                // If the timeout task throws first, the error propagates and the worker is cancelled.
+                var collected: (String, Float?)? = nil
+                for try await taskResult in group {
+                    if let r = taskResult {
+                        collected = r
+                        group.cancelAll()
+                        break
+                    }
+                }
+                return collected ?? ("", nil)
             }
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            throw TranscriberError.transcriptionFailed(
-                "SpeechAnalyzer result stream error: \(error.localizedDescription)")
-        }
+        }() as (String, Float?)
 
-        // Apply the SFSpeechRecognizer contextual-biasing pass (best-effort): if it produces a
-        // higher-confidence domain-biased hypothesis, prefer it; otherwise keep the analyzer text.
-        // `pcmBuffer` is `sending` here and is forwarded (transferred) into the biasing pass — the
-        // SpeechAnalyzer pass above only read it (via `convert`) and does not retain it.
-        let biased = await applyBiasing(
-            baseText: finalText,
-            baseConfidence: nativeConfidence,
-            pcmBuffer: pcmBuffer,
-            contextualStrings: contextualStrings,
-            locale: locale
-        )
-
-        return (biased.text, biased.confidence ?? defaultConfidenceWhenUnreported)
+        // Return the SpeechAnalyzer result directly.
+        // The SFSpeechRecognizer contextual-biasing second-recognizer pass (applyBiasing) is NOT
+        // called here. Because iOS 26's SpeechTranscriber exposes no confidence signal, baseConfidence
+        // is always nil → BiasingStrategy.choose's nil-base branch would unconditionally override the
+        // text with the biased hypothesis, regardless of agreement — fabricating a wrong play with
+        // apparent confidence (P0b / Article VII). A conservative, roster-wired, edit-distance-gated
+        // strategy is tracked in follow-up #157.
+        return (finalText, nativeConfidence ?? defaultConfidenceWhenUnreported)
     }
 
     /// `nonisolated` contextual-biasing pass. Building the `SFSpeechAudioBufferRecognitionRequest`
@@ -377,6 +427,13 @@ public actor AppleTranscriber: Transcriber {
     /// `sending`-transferred into `SFRecognitionBridge` without a data race. The non-Sendable PCM
     /// buffer arrives via a `sending` parameter (ownership transferred from `transcribe`, which no
     /// longer touches it). Best-effort: any failure or empty result keeps the base hypothesis.
+    /// NOT called from the hot path (see type-level doc and follow-up #157).
+    /// Kept for the follow-up conservative biasing implementation. P1 robustness: guards
+    /// `supportsOnDeviceRecognition` to avoid a never-resolving callback when the recognizer
+    /// would route to the network (no on-device model loaded), which with
+    /// `requiresOnDeviceRecognition = true` would produce an immediate error — but the explicit
+    /// guard makes the intent unambiguous and avoids any state where we'd enqueue a recognition
+    /// task that Apple cannot service on-device.
     private nonisolated static func applyBiasing(
         baseText: String,
         baseConfidence: Float?,
@@ -384,7 +441,9 @@ public actor AppleTranscriber: Transcriber {
         contextualStrings: [String],
         locale: Locale
     ) async -> BiasingStrategy.Outcome {
-        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
+        guard let recognizer = SFSpeechRecognizer(locale: locale),
+              recognizer.isAvailable,
+              recognizer.supportsOnDeviceRecognition else {       // P1: never a dangling callback
             return .init(text: baseText, confidence: baseConfidence)
         }
         let request = SFSpeechAudioBufferRecognitionRequest()
@@ -587,19 +646,29 @@ enum BiasingStrategy {
     /// Pure decision: given a base hypothesis (from `SpeechAnalyzer`) and an optional biased
     /// hypothesis (from the `SFSpeechRecognizer` contextual pass), choose which to keep.
     ///
-    /// Rule (testable, no framework dependency):
+    /// ## Conservative override rule (P0b fix — Article VII / FR-008)
     ///   - If the biased result is nil or empty/whitespace → keep the base.
-    ///   - Else if the base has no confidence signal, OR the biased confidence is ≥ the base
-    ///     confidence → prefer the biased (domain-vocabulary) hypothesis.
+    ///   - If the base has NO confidence signal (`baseConfidence == nil`) → keep the base.
+    ///     Rationale: a nil base means the framework gave us no quality measure. Overriding the
+    ///     analyzer's text with a biased hypothesis without any real confidence signal fabricates
+    ///     a confident wrong play (the P0b defect in the first DL-80 submission). The biased result
+    ///     must only override when there is a KNOWN base confidence to compare against.
+    ///   - If base confidence IS known AND biasedConf ≥ baseConfidence → prefer biased.
     ///   - Else → keep the base.
-    /// This is the compile/logic-testable seam for the FR-008 confidence-boundary behavior of the
-    /// biasing pass; the live SF recognition is isolated in `AppleTranscriber.applyBiasing`.
+    ///
+    /// NOTE: Until follow-up #157 adds an edit-distance agreement guard and confirms the biasing
+    /// pass is roster-wired, `applyBiasing` is not called from the hot path, so this method is
+    /// only exercised in tests and future re-enabling logic.
     static func choose(baseText: String, baseConfidence: Float?, biased: (String, Float)?) -> Outcome {
         guard let (biasedText, biasedConf) = biased,
               !biasedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return Outcome(text: baseText, confidence: baseConfidence)
         }
-        if baseConfidence == nil || biasedConf >= (baseConfidence ?? 0) {
+        // P0b: nil base confidence → keep base unchanged. Never override without a real signal.
+        guard let knownBase = baseConfidence else {
+            return Outcome(text: baseText, confidence: nil)
+        }
+        if biasedConf >= knownBase {
             return Outcome(text: biasedText, confidence: biasedConf)
         }
         return Outcome(text: baseText, confidence: baseConfidence)

@@ -86,7 +86,67 @@ final class RosterContextBuilderTests: XCTestCase {
     }
 }
 
+// MARK: - FR-008 / default confidence safety (P0 fix, DL-80 code review)
+
+/// Pins the `defaultConfidenceWhenUnreported` value relative to `GrammarParser.lowConfidenceThreshold`.
+///
+/// iOS 26's `SpeechTranscriber` never exposes a scalar confidence (`confidence(from:)` always nil),
+/// so EVERY production `SpeechAnalyzer` transcript receives `defaultConfidenceWhenUnreported`.
+/// This must be BELOW 70 so the parser's clarify path fires for any unmeasured hypothesis — never
+/// a silent wrong play (FR-008 / Article VII). These tests certify that invariant structurally.
+@available(iOS 26, *)
+final class FR008DefaultConfidenceTests: XCTestCase {
+
+    /// The threshold the GrammarParser uses to trigger its clarify/ambiguity path.
+    private let parserThreshold = 70  // GrammarParser.lowConfidenceThreshold
+
+    func testDefaultConfidence_isBelowParserThreshold() {
+        // This is the P0 structural safety pin: an unmeasured SpeechAnalyzer result MUST default
+        // to a confidence below the parser's 70 threshold so FR-008 can fire. A regression here
+        // (≥ 0.70) would cause every unconfident utterance to be silently parsed as a clean play.
+        let defaultInt = ConfidenceMapping.toInt(AppleTranscriber.defaultConfidenceWhenUnreported)
+        XCTAssertLessThan(
+            defaultInt, parserThreshold,
+            "defaultConfidenceWhenUnreported (\(AppleTranscriber.defaultConfidenceWhenUnreported)) → "
+            + "\(defaultInt) must be < \(parserThreshold) so FR-008 clarify path can fire")
+    }
+
+    func testDefaultConfidence_isNot_aboveOrAtThreshold() {
+        // Belt-and-suspenders: assert the raw Float value is strictly under 0.70, so there's no
+        // float-to-int rounding edge case that could accidentally produce 70 or above.
+        XCTAssertLessThan(
+            AppleTranscriber.defaultConfidenceWhenUnreported, Float(parserThreshold) / 100.0,
+            "raw defaultConfidenceWhenUnreported must be < 0.70 — no rounding edge near the threshold")
+    }
+
+    func testTranscribe_audioTooShort_confidenceIsNeverReturned() async {
+        // The duration-guard fires before confidence is ever computed; no FR-008 bypass possible.
+        let transcriber = AppleTranscriber()
+        let shortBuffer = AudioBuffer(
+            rawBytes: Data(repeating: 0, count: 32),
+            durationSeconds: 0.1,
+            capturedAt: Date()
+        )
+        do {
+            _ = try await transcriber.transcribe(buffer: shortBuffer)
+            XCTFail("expected audioTooShort")
+        } catch TranscriberError.audioTooShort {
+            // Expected.
+        } catch {
+            XCTFail("expected audioTooShort, got \(error)")
+        }
+    }
+}
+
 // MARK: - BiasingStrategy.choose (FR-008 confidence-boundary behavior of the biasing pass)
+//
+// NOTE on removed tests (P0b fix):
+//   `testChoose_baseHasNoConfidence_prefersAnyBiased` and `testChoose_biasedAtBoundaryEqual_prefersBiased`
+//   were removed because they certified the UNSAFE behavior where a nil base confidence causes
+//   unconditional override by the biased hypothesis. That behavior is the exact P0b defect.
+//   `applyBiasing` is no longer called from the hot path; when it is re-enabled under follow-up
+//   #157, the strategy must require a positive base confidence AND an edit-distance agreement check
+//   before overriding — at which point safe variants of those tests can be re-added.
 
 @available(iOS 26, *)
 final class BiasingStrategyTests: XCTestCase {
@@ -103,19 +163,12 @@ final class BiasingStrategyTests: XCTestCase {
     }
 
     func testChoose_biasedMoreConfident_prefersBiased() {
-        // The biased (domain-vocabulary) hypothesis wins when ≥ the base confidence.
+        // Biased hypothesis wins only when base confidence IS known and biased ≥ base.
         let out = BiasingStrategy.choose(
             baseText: "ground out to sean", baseConfidence: 0.60,
             biased: ("ground out to short", 0.85))
         XCTAssertEqual(out.text, "ground out to short")
         XCTAssertEqual(out.confidence, 0.85)
-    }
-
-    func testChoose_biasedAtBoundaryEqual_prefersBiased() {
-        // Boundary: biased confidence exactly equals base → biased wins (>= comparison).
-        let out = BiasingStrategy.choose(
-            baseText: "base", baseConfidence: 0.70, biased: ("base hit", 0.70))
-        XCTAssertEqual(out.text, "base hit")
     }
 
     func testChoose_biasedLessConfident_keepsBase() {
@@ -125,11 +178,20 @@ final class BiasingStrategyTests: XCTestCase {
         XCTAssertEqual(out.confidence, 0.90)
     }
 
-    func testChoose_baseHasNoConfidence_prefersAnyBiased() {
-        // When SpeechAnalyzer surfaced no confidence, any non-empty biased result is adopted.
-        let out = BiasingStrategy.choose(baseText: "ground out", baseConfidence: nil, biased: ("ground out 6 3", 0.4))
-        XCTAssertEqual(out.text, "ground out 6 3")
-        XCTAssertEqual(out.confidence, 0.4)
+    /// P0b safety pin: when base confidence is nil (the ONLY production state for SpeechAnalyzer
+    /// today), choose MUST return the base text unchanged, not the biased text. Unconditionally
+    /// overriding with the biased hypothesis when confidence is unknown fabricates a wrong play.
+    func testChoose_baseHasNoConfidence_keepsBase_notBiased() {
+        // This is the INVERTED version of the removed unsafe test. The biased text must NOT win
+        // when the base has no confidence signal — that would be an unconditional fabrication.
+        let out = BiasingStrategy.choose(
+            baseText: "ground out", baseConfidence: nil,
+            biased: ("ground out 6 3", 0.4))
+        XCTAssertEqual(
+            out.text, "ground out",
+            "nil base confidence → keep base: biased must NOT unconditionally override (P0b / Article VII)")
+        XCTAssertNil(out.confidence,
+            "with nil base confidence the outcome confidence must also be nil (no fabricated signal)")
     }
 }
 
