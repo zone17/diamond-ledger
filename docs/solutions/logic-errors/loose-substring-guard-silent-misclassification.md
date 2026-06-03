@@ -1,6 +1,7 @@
 ---
 title: A loose multi-signal guard in a safety-critical classifier produces silent wrong judgments
 date: 2026-06-02
+last_updated: 2026-06-02
 category: logic-errors
 module: ios/Sources/Parse/GrammarParser
 problem_type: logic_error
@@ -12,7 +13,7 @@ symptoms:
 root_cause: logic_error
 resolution_type: code_fix
 severity: high
-tags: [grammar, nlp, classification, substring-matching, fr-008, silent-judgment, adversarial-tests, parsing]
+tags: [grammar, nlp, classification, substring-matching, fr-008, silent-judgment, adversarial-tests, parsing, asr, confidence, fail-safe-default, article-vii]
 ---
 
 # A loose multi-signal guard in a safety-critical classifier produces silent wrong judgments
@@ -74,6 +75,29 @@ for an excluded case is `outOfGrammar` → the human decides, satisfying FR-008.
   for each "X triggers a judgment" production, add a test where the X-tokens appear but the play is NOT X.
 - **Prefer `outOfGrammar` (surface to the human) over a confident guess** whenever the signal is
   ambiguous — the cost of a manual-entry prompt is far below the cost of a silently mis-scored play.
+
+## Generalization — fail-safe defaults at the probabilistic→deterministic seam (added 2026-06-02, DL-80)
+
+The real-ASR work (PR #156) produced the **same failure in a different layer**, which generalizes the
+rule. The transcript confidence is the FR-008 gate (`GrammarParser` surfaces a clarify only when
+`confidence < 70`). iOS 26's `SpeechAnalyzer` has **no confidence API**, so confidence is *always
+unmeasured* in production — and the adapter defaulted the unmeasured case to `0.80` (→ 80 ≥ 70), so
+**every** transcript was stamped "confident" and parsed as a clean play. A second leg: an
+`SFSpeechRecognizer` biasing pass *unconditionally overrode* the transcript (its "conservative" branch
+was dead code because base confidence was always nil), able to snap audio to a lexicon/roster phrase
+the speaker never said. Both are the identical bug: **the boundary's default/unmeasured case failed
+*confident* instead of failing *safe*.** Fix: default the unmeasured confidence **below** the gate
+threshold (0.60 → 60 < 70), so an unmeasured/uncertain signal surfaces a confirm; and don't let an
+over-eager enhancement (biasing) replace the signal without a positive measurement + an agreement guard
+(deferred to #157).
+
+**The rule (this is how you implement Art. VII — "deterministic shell around probabilistic
+intelligence" — correctly):** wherever an uncertain/probabilistic signal feeds a deterministic safety
+gate, the **default, unmeasured, or ambiguous case must fail toward surfacing-to-the-human, never
+toward confident-and-silent.** A default confidence at/above a clarify threshold, a bare-substring
+match, or an unconditional "enhancement" override all violate it the same way. Pin the safe default
+with a structural test (e.g. `assert defaultConfidence < clarifyThreshold`) so a future tweak can't
+silently drift it back across the line.
 
 ## Related Issues
 - DL-151 (PR #153) — the grammar hardening + this fix. Caught by the `/ce:review` gate's adversarial
