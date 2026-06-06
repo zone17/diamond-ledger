@@ -190,6 +190,52 @@ xcodebuild -project ios/DiamondLedger.xcodeproj -scheme DiamondLedgerTests \
 > on-device ASR accuracy, and the sherpa model bundle are all pre-ship/on-device handoffs — none
 > are exercisable headlessly in the simulator and each needs a human + device before shipping.
 
+### 4a. Running on a physical iPhone (code signing) — the real-ASR test
+
+The simulator can't do real `SpeechAnalyzer` recognition (no model/mic — it degrades to the WoZ stub),
+so verifying **real voice → transcript** requires deploying to a physical iPhone (iOS 26). Two gotchas
+cost real time the first time; both are captured here.
+
+**(1) Signing must be baked into `project.yml`, not just the Xcode UI.** Selecting the Team in
+Xcode → *Signing & Capabilities* does **not** survive `xcodegen generate` (the `.xcodeproj` is a
+gitignored, regenerated artifact), and the build fails with `Signing for "DiamondLedger" requires a
+development team` even though the UI shows a team. Fix — set it in `ios/project.yml` so XcodeGen writes
+`DEVELOPMENT_TEAM` into every build config:
+
+```yaml
+targets:
+  DiamondLedger:
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: XXXXXXXXXX   # your 10-char Team ID
+```
+Get your Team ID from the cert Xcode generates (it's the **OU** field, not the CN parenthetical):
+```bash
+security find-certificate -c "Apple Development: <your-apple-id>" -p | openssl x509 -noout -subject
+# subject=… OU=NY8AYZ5U4V …   ← that OU is DEVELOPMENT_TEAM
+```
+Then `cd ios && xcodegen generate`, **quit & reopen** the project in Xcode (it caches the old one),
+and ⌘R.
+
+**(2) The free personal team's "Verify App" step needs to reach Apple — and is easily blocked.** After
+install, iOS shows *Untrusted Developer*; tapping **Settings → General → VPN & Device Management → [Apple
+ID] → Verify App** contacts Apple's free-provisioning endpoint (`ppq.apple.com`). It frequently fails
+with *"requires an internet connection / cannot verify"* **even with working internet**, and the app
+then refuses to launch (`profile has not been explicitly trusted by the user`). Causes & fixes, in order:
+- **iCloud Private Relay** (Settings → [name] → iCloud) — turn **OFF**; it reroutes traffic and breaks
+  the verify handshake. Biggest single cause.
+- **"Limit IP Address Tracking"** on the Wi-Fi (Settings → Wi-Fi → ⓘ) — **OFF**; set DNS to Automatic.
+- **Restrictive Wi-Fi** (mesh routers, Pi-hole, captive portals, corporate filtering) block
+  `ppq.apple.com`. **Turn Wi-Fi fully OFF and Verify on cellular** — bypasses all of it; this is the
+  highest-success fix. Also confirm Settings → General → Date & Time → Set Automatically.
+
+**Escape hatch — paid Apple Developer Program ($99/yr).** Paid signing does **not** use the on-device
+"Verify App" trust step at all, so the entire class-(2) problem disappears (and you get TestFlight). If
+the free-team verify won't cooperate on your network, enrolling (developer.apple.com or the *Apple
+Developer* iOS app) is the clean path; afterward the Team ID changes — update `DEVELOPMENT_TEAM` above to
+the new paid team.
+
 ---
 
 ## 5. Retrosheet export validation (Chadwick `cwevent`)
