@@ -31,8 +31,8 @@ use crate::ffi::{
 };
 use crate::model::{AdvanceTo, Base, Classification, JudgmentKind, NormalizedPlay};
 use crate::reisner::{check_proof_box_balance, compute_proof_box, render_cell};
-use crate::retrosheet::{emit_game, GameExportInput, PlayExportInput};
-use crate::rules::{project_game, project_half_inning_proof_box};
+use crate::retrosheet::{emit_game, GameExportInput, PlayExportInput, StartRecord};
+use crate::rules::{correction_overrides, project_game, project_half_inning_proof_box};
 
 // ---------------------------------------------------------------------------
 // Core engine (in-memory, single-process for MVP)
@@ -1116,33 +1116,126 @@ impl CoreApi for DiamondCore {
         let game_started = inner.log.all_rows(req.game_id).find_map(|r| {
             if let Event::GameStarted(p) = &r.event { Some(p.clone()) } else { None }
         });
-        let (home, visitor, date) = game_started
-            .map(|p| (p.home_team_id.clone(), p.visitor_team_id.clone(), "2024-01-01".to_string()))
-            .unwrap_or_else(|| ("UNK".into(), "UNK".into(), "1900-01-01".into()));
+        let (home, visitor) = game_started
+            .as_ref()
+            .map(|p| (p.home_team_id.clone(), p.visitor_team_id.clone()))
+            .unwrap_or_else(|| ("UNK".into(), "UNK".into()));
 
-        let game_id_str = format!("{}2024010101", home);
-        let export_plays: Vec<PlayExportInput> = play_seqs
-            .iter()
-            .enumerate()
-            .map(|(i, (play, seq))| {
-                let inning = (i / 6) as u8 + 1; // Rough approximation
-                PlayExportInput {
-                    play,
-                    inning,
-                    half: if (i / 3) % 2 == 0 { Half::Top } else { Half::Bottom },
-                    batter_id: "unknXX01",
-                    seq: Seq(*seq),
-                    game_id: req.game_id,
+        // Build the Retrosheet export replay using the SAME source of truth as
+        // `project_game`: correction_overrides + open_judgment_for_seqs.
+        //
+        // P1a fix: the previous replay used raw `play_seqs` facts without honoring
+        // append-only corrections (FR-012) or withholding withheld seqs (SC-003/I2).
+        // That meant a finalized export could misrepresent:
+        //   - A corrected play: using stale original facts instead of amended facts.
+        //   - An open-judgment play: emitting it as a confirmed in-format record.
+        //
+        // Fix: drive BOTH the inning/half assignment AND the emitted play facts from
+        // the same override + withhold maps that `project_game` uses. Withheld seqs
+        // (open judgment at finalize time) are excluded from the export and flagged as
+        // out-of-format PlayRef entries so the caller knows to review them.
+        let export_overrides = correction_overrides(&inner.log, req.game_id);
+        let export_withheld = inner.log.open_judgment_for_seqs(req.game_id);
+
+        // Owned intermediate: (play_facts, inning, half, batter_id, seq)
+        // We collect into an owned struct so we can borrow its fields for
+        // `PlayExportInput<'_>` lifetimes without referencing `play_seqs` directly.
+        struct OwnedExportPlay {
+            play: NormalizedPlay,
+            inning: u8,
+            half: Half,
+            batter_id: String,
+            seq: u64,
+        }
+        let owned_export_plays: Vec<OwnedExportPlay> = {
+            use crate::rules::GameProjection;
+            let mut replay_proj = GameProjection::default();
+            let mut result: Vec<OwnedExportPlay> = Vec::new();
+            let mut vis_bat_idx: u8 = 0;
+            let mut hom_bat_idx: u8 = 0;
+
+            for (original_play, seq) in &play_seqs {
+                // Mirror `apply_row` in rules/mod.rs exactly:
+                // 1. Skip withheld seqs (open judgment → cannot appear in the official record).
+                if export_withheld.contains(seq) {
+                    // Advance replay projection using original facts so inning/half
+                    // accounting stays correct for subsequent plays, but do NOT include
+                    // this play in the export. The out_of_format_flags list in the final
+                    // FinalizeResult already surfaces open judgment decisions to the caller.
+                    replay_proj.apply_play(original_play, *seq);
+                    continue;
                 }
+                // 2. Honor correction overrides: substitute amended facts when present.
+                let play = export_overrides
+                    .get(seq)
+                    .cloned()
+                    .unwrap_or_else(|| original_play.clone());
+
+                let inning = replay_proj.inning;
+                let half = replay_proj.half;
+                // Synthetic batter ID cycling through vis001..vis009 / hom001..hom009.
+                let batter_id = match half {
+                    Half::Top => {
+                        vis_bat_idx = vis_bat_idx % 9 + 1;
+                        format!("vis{:03}", vis_bat_idx)
+                    }
+                    Half::Bottom => {
+                        hom_bat_idx = hom_bat_idx % 9 + 1;
+                        format!("hom{:03}", hom_bat_idx)
+                    }
+                };
+                result.push(OwnedExportPlay { play, inning, half, batter_id, seq: *seq });
+                replay_proj.apply_play(original_play, *seq);
+            }
+            result
+        };
+
+        // Borrow owned export plays for PlayExportInput lifetime.
+        let export_plays_refs: Vec<PlayExportInput> = owned_export_plays
+            .iter()
+            .map(|ep| PlayExportInput {
+                play: &ep.play,
+                inning: ep.inning,
+                half: ep.half,
+                batter_id: &ep.batter_id,
+                seq: Seq(ep.seq),
+                game_id: req.game_id,
             })
             .collect();
+
+        // Generate synthetic 9-player starters for both teams so cwevent can resolve
+        // fielder positions (cwevent segfaults without start records — research.md D4).
+        // v1 does not track rosters; these are structural placeholders.
+        let starters: Vec<StartRecord> = (1u8..=9)
+            .map(|i| StartRecord {
+                player_id: format!("vis{:03}", i),
+                player_name: format!("Visitor{}", i),
+                team_side: 0,
+                batting_order: i,
+                fielding_pos: i,
+            })
+            .chain((1u8..=9).map(|i| StartRecord {
+                player_id: format!("hom{:03}", i),
+                player_name: format!("Home{}", i),
+                team_side: 1,
+                batting_order: i,
+                fielding_pos: i,
+            }))
+            .collect();
+
+        let game_id_str = format!("{}2024010101", home);
+        // Date: `YYYY/MM/DD` — cwevent segfaults on `YYYY-MM-DD` (research.md D4).
+        let date = "2024/01/01";
 
         let export_input = GameExportInput {
             game_id: &game_id_str,
             home_team: &home,
             visitor_team: &visitor,
-            date: &date,
-            plays: export_plays,
+            date,
+            starters,
+            // One pitcher per team (vis009 = visiting pitcher, hom009 = home pitcher).
+            pitchers: vec!["vis009".into(), "hom009".into()],
+            plays: export_plays_refs,
         };
         let retrosheet = emit_game(&export_input);
 
