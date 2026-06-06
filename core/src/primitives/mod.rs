@@ -32,7 +32,7 @@ use crate::ffi::{
 use crate::model::{AdvanceTo, Base, Classification, JudgmentKind, NormalizedPlay};
 use crate::reisner::{check_proof_box_balance, compute_proof_box, render_cell};
 use crate::retrosheet::{emit_game, GameExportInput, PlayExportInput, StartRecord};
-use crate::rules::{project_game, project_half_inning_proof_box};
+use crate::rules::{correction_overrides, project_game, project_half_inning_proof_box};
 
 // ---------------------------------------------------------------------------
 // Core engine (in-memory, single-process for MVP)
@@ -1121,26 +1121,56 @@ impl CoreApi for DiamondCore {
             .map(|p| (p.home_team_id.clone(), p.visitor_team_id.clone()))
             .unwrap_or_else(|| ("UNK".into(), "UNK".into()));
 
-        // Replay confirmed plays to assign accurate inning + half to each play for export.
-        // The rough `(i / 6)` approximation was wrong — use the deterministic projection
-        // replay (same engine as `project_game`) so inning/half are SC-004-correct.
+        // Build the Retrosheet export replay using the SAME source of truth as
+        // `project_game`: correction_overrides + open_judgment_for_seqs.
         //
-        // We collect into an owned intermediate (inning, half, batter_id, seq) so we can
-        // then borrow those values for the lifetime of `PlayExportInput<'_>`.
-        struct OwnedPlayMeta {
+        // P1a fix: the previous replay used raw `play_seqs` facts without honoring
+        // append-only corrections (FR-012) or withholding withheld seqs (SC-003/I2).
+        // That meant a finalized export could misrepresent:
+        //   - A corrected play: using stale original facts instead of amended facts.
+        //   - An open-judgment play: emitting it as a confirmed in-format record.
+        //
+        // Fix: drive BOTH the inning/half assignment AND the emitted play facts from
+        // the same override + withhold maps that `project_game` uses. Withheld seqs
+        // (open judgment at finalize time) are excluded from the export and flagged as
+        // out-of-format PlayRef entries so the caller knows to review them.
+        let export_overrides = correction_overrides(&inner.log, req.game_id);
+        let export_withheld = inner.log.open_judgment_for_seqs(req.game_id);
+
+        // Owned intermediate: (play_facts, inning, half, batter_id, seq)
+        // We collect into an owned struct so we can borrow its fields for
+        // `PlayExportInput<'_>` lifetimes without referencing `play_seqs` directly.
+        struct OwnedExportPlay {
+            play: NormalizedPlay,
             inning: u8,
             half: Half,
             batter_id: String,
             seq: u64,
         }
-        let play_metas: Vec<OwnedPlayMeta> = {
+        let owned_export_plays: Vec<OwnedExportPlay> = {
             use crate::rules::GameProjection;
             let mut replay_proj = GameProjection::default();
-            let mut result: Vec<OwnedPlayMeta> = Vec::new();
+            let mut result: Vec<OwnedExportPlay> = Vec::new();
             let mut vis_bat_idx: u8 = 0;
             let mut hom_bat_idx: u8 = 0;
 
-            for (play, seq) in &play_seqs {
+            for (original_play, seq) in &play_seqs {
+                // Mirror `apply_row` in rules/mod.rs exactly:
+                // 1. Skip withheld seqs (open judgment → cannot appear in the official record).
+                if export_withheld.contains(seq) {
+                    // Advance replay projection using original facts so inning/half
+                    // accounting stays correct for subsequent plays, but do NOT include
+                    // this play in the export. The out_of_format_flags list in the final
+                    // FinalizeResult already surfaces open judgment decisions to the caller.
+                    replay_proj.apply_play(original_play, *seq);
+                    continue;
+                }
+                // 2. Honor correction overrides: substitute amended facts when present.
+                let play = export_overrides
+                    .get(seq)
+                    .cloned()
+                    .unwrap_or_else(|| original_play.clone());
+
                 let inning = replay_proj.inning;
                 let half = replay_proj.half;
                 // Synthetic batter ID cycling through vis001..vis009 / hom001..hom009.
@@ -1154,22 +1184,21 @@ impl CoreApi for DiamondCore {
                         format!("hom{:03}", hom_bat_idx)
                     }
                 };
-                result.push(OwnedPlayMeta { inning, half, batter_id, seq: *seq });
-                replay_proj.apply_play(play, *seq);
+                result.push(OwnedExportPlay { play, inning, half, batter_id, seq: *seq });
+                replay_proj.apply_play(original_play, *seq);
             }
             result
         };
 
-        // Now borrow play data from `play_seqs` and metas from `play_metas` for emit_game.
-        let export_plays_refs: Vec<PlayExportInput> = play_seqs
+        // Borrow owned export plays for PlayExportInput lifetime.
+        let export_plays_refs: Vec<PlayExportInput> = owned_export_plays
             .iter()
-            .zip(play_metas.iter())
-            .map(|((play, _seq), meta)| PlayExportInput {
-                play,
-                inning: meta.inning,
-                half: meta.half,
-                batter_id: &meta.batter_id,
-                seq: Seq(meta.seq),
+            .map(|ep| PlayExportInput {
+                play: &ep.play,
+                inning: ep.inning,
+                half: ep.half,
+                batter_id: &ep.batter_id,
+                seq: Seq(ep.seq),
                 game_id: req.game_id,
             })
             .collect();

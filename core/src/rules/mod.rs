@@ -442,7 +442,7 @@ impl GameProjection {
 /// correction (highest correction-event seq) wins — they are scanned in seq order so the
 /// last write to the map is the latest. This keeps history intact (the originals remain
 /// in the log) while the projection reflects the current amended facts (FR-012).
-fn correction_overrides(log: &EventLog, game_id: GameId) -> HashMap<u64, NormalizedPlay> {
+pub(crate) fn correction_overrides(log: &EventLog, game_id: GameId) -> HashMap<u64, NormalizedPlay> {
     let mut overrides: HashMap<u64, NormalizedPlay> = HashMap::new();
     for row in log.all_rows(game_id) {
         if let Event::EventCorrected(c) = &row.event {

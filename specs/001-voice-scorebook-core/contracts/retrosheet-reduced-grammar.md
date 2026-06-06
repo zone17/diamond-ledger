@@ -2,7 +2,7 @@
 
 **Feature:** `001-voice-scorebook-core`
 **Status:** FROZEN — v1 contract (do not change without a revision note and new version tag)
-**Version:** v1.1 (2026-06-01 — see §8 change log)
+**Version:** v1.2 (2026-06-06 — see §8 change log)
 **Authority:** [`spec.md`](../spec.md) (FR-016 / FR-017) · [`research.md`](../research.md) (D4)
 **Reference:** [retrosheet.org/eventfile.htm](https://www.retrosheet.org/eventfile.htm)
 **Acceptance gate:** Chadwick `cwevent` v0.10.0 (pinned, SHA256-pinned — see plan.md D4)
@@ -26,7 +26,7 @@ record type (e.g., `badj`, `ladj`, `presadj` are out of scope and must not be em
 |-------------|--------|---------------|
 | `id` | `id,<game-id>` | Required; first record of every game file. Game ID format: `<hometeam><YYYYMMDD><seq>` (e.g. `NYA2024091401`). |
 | `version` | `version,<n>` | Required; immediately follows `id`; always `version,2` for standard Retrosheet event files. |
-| `info` | `info,<type>,<value>` | Required; one line per field. **v1 MUST include at minimum:** `visteam`, `hometeam`, `date` (YYYY-MM-DD). Optional but recommended: `number` (game number in doubleheader, default 0), `starttime`, `daynight`, `usedh`, `innings`. |
+| `info` | `info,<type>,<value>` | Required; one line per field. **v1 MUST include at minimum:** `visteam`, `hometeam`, `date` (`YYYY/MM/DD` — **slashes, NOT dashes**: cwevent v0.10.0 segfaults on `YYYY-MM-DD`, research.md D4), `number` (game number in doubleheader, default 0), `daynight`, `usedh`, `innings`. |
 | `start` | `start,<player-id>,<player-name>,<side>,<batting-order>,<fielding-position>` | Required for every starting player. `side`: 0 = visitor, 1 = home. `batting-order`: 1–9. `fielding-position`: 1–9 (P/C/1B…RF), 10 = DH (see note below). |
 | `play` | `play,<inning>,<side>,<batter>,<count>,<pitches>,<event>` | One line per plate appearance outcome. The load-bearing record — see Section 2 for full field grammar. |
 | `sub` | `sub,<player-id>,<player-name>,<side>,<batting-order>,<fielding-position>` | One line per substitution. Same field schema as `start`. |
@@ -344,7 +344,11 @@ id,<game-id>
 version,2
 info,visteam,<team>
 info,hometeam,<team>
-info,date,YYYY-MM-DD
+info,date,YYYY/MM/DD        # SLASHES — cwevent v0.10.0 segfaults on YYYY-MM-DD (D4)
+info,number,0
+info,daynight,D
+info,usedh,false
+info,innings,9
 start,<player-id>,<player-name>,0,1,8   # one per starter, both sides
 start,...
 play,1,0,<batter-id>,00,,<event>
@@ -389,9 +393,10 @@ Any change requires:
 
 | Version | Date | Change |
 |---------|------|--------|
+| v1.2 | 2026-06-06 | **Date field format corrected to `YYYY/MM/DD` (slashes, not dashes).** Section 1 (`info` record table) and Section 6 (minimal file structure example) previously showed `YYYY-MM-DD`, but cwevent v0.10.0 segfaults on the dash form (research.md D4, confirmed empirically during DL-36 H2 export validation). The emitter has always emitted slash format; the contract now matches the implementation. `number`, `daynight`, `usedh`, `innings` promoted from "optional but recommended" to MUST in §1 — cwevent segfaults without `number` (D4). ADR-0014. |
 | v1.1 | 2026-06-01 | Section 5: FC (fielder's choice) clarified as **always flag-for-manual** in v1 — the emitter MUST NOT emit an `FC` event string. Previous wording ("the emitter can emit FC for a clean fielder's choice") contradicted the Section 4 BNF, which has no FC production in `primary-event`. Resolved in favour of the BNF: FC is a scorer-judgment play (ContestedCredit) per the spec, so it is flag-for-manual regardless of whether the individual case appears "clean". |
 | v1.0 | 2026-06-01 | Initial frozen contract. |
 
 ---
 
-*v1.0 frozen 2026-06-01; v1.1 revised 2026-06-01 · Feature `001-voice-scorebook-core` · Reference: [retrosheet.org/eventfile.htm](https://www.retrosheet.org/eventfile.htm)*
+*v1.0 frozen 2026-06-01; v1.1 revised 2026-06-01; v1.2 revised 2026-06-06 · Feature `001-voice-scorebook-core` · Reference: [retrosheet.org/eventfile.htm](https://www.retrosheet.org/eventfile.htm)*

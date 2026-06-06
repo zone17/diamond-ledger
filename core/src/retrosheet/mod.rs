@@ -392,6 +392,9 @@ pub fn emit_game(input: &GameExportInput) -> RetrosheetExport {
             Half::Top => "0",
             Half::Bottom => "1",
         };
+        // P3: emit empty pitch sequence when not tracked (grammar §2a — "use empty string
+        // when not tracked"). "X" (ball put in play) is only correct for batted-ball plays
+        // and would be wrong on K/W/HP; "" is always safe when we have no pitch log.
         match emit_event_string(pei.play) {
             EmitResult::InFormat(event_str) => {
                 records.push(rec(
@@ -401,7 +404,7 @@ pub fn emit_game(input: &GameExportInput) -> RetrosheetExport {
                         side,
                         pei.batter_id,
                         &count,
-                        "X",
+                        "",
                         &event_str,
                     ],
                 ));
@@ -416,7 +419,7 @@ pub fn emit_game(input: &GameExportInput) -> RetrosheetExport {
                         side,
                         pei.batter_id,
                         &count,
-                        "X",
+                        "",
                         "NP",
                     ],
                 ));

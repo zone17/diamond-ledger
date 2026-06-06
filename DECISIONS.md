@@ -6,6 +6,63 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0014 — Retrosheet Grammar Contract v1.2: Date Format Fix + H2 Export Replay Parity
+
+- **Status:** Accepted
+- **Date:** 2026-06-06
+- **Owner:** Squad C (Software Factory / Retrosheet gate)
+- **Implements:** DL-36 H2 export validation (SC-004 / FR-016 / I4)
+- **Tickets:** DL-36
+
+### Context
+
+DL-36 (H2 integration) proved end-to-end that the real Rust core's `finalize_scorecard` export
+passes the pinned Chadwick `cwevent` v0.10.0 STDERR-driven 3-layer gate. Code review on PR #160
+surfaced two P1s and a contract-documentation gap (P2):
+
+**P1a — Export replay parity with `project_game`:** The initial export replay in `finalize_scorecard`
+used raw confirmed `PlayRecorded` facts without honoring `correction_overrides` (FR-012) or
+`open_judgment_for_seqs` (SC-003/I2). This meant a game finalized with an open judgment or an applied
+correction would emit stale/unwithheld facts in its official Retrosheet record — the export could
+misrepresent a corrected or judgment play.
+
+**P1b — SC-004 gate hardness:** The `h2-export-gate` CI job had `continue-on-error: true`, which
+would let a genuine malformed-export failure pass CI silently. The gate script already maps
+cwevent-absent → exit 2 (skip) and malformed → exit 1 (hard fail), making `continue-on-error`
+unnecessary and unsafe.
+
+**P2 — Frozen contract date format:** The `retrosheet-reduced-grammar.md` v1.1 contract specified
+`info,date` as `YYYY-MM-DD` in §1 and §6 examples, but cwevent v0.10.0 segfaults on the dash format
+(research.md D4, confirmed empirically). The emitter has always emitted slash format (`YYYY/MM/DD`);
+the contract text was wrong.
+
+### Decision
+
+1. **Export replay parity (P1a):** Expose `correction_overrides` as `pub(crate)` in `rules/mod.rs`.
+   In `finalize_scorecard`, build `export_overrides` + `export_withheld` using the same functions
+   `project_game` uses. The export loop mirrors `apply_row` exactly: skip withheld seqs (they remain
+   in `out_of_format_flags` for the caller's review), substitute corrected facts from the override
+   map. Two new integration tests prove the invariant: (1) finalize with open judgment → withheld
+   play excluded from export; (2) finalize after correction → export reflects corrected facts.
+
+2. **Hard gate (P1b):** Remove `continue-on-error: true` from `h2-export-gate`. The script's exit-2
+   skip logic is the correct guard; a genuine exit-1 rejection must hard-fail the PR.
+
+3. **Contract v1.2 (P2):** Bump `retrosheet-reduced-grammar.md` to v1.2 with: date field corrected
+   to `YYYY/MM/DD` in §1 and §6; `number`, `daynight`, `usedh`, `innings` promoted to MUST (not
+   "optional but recommended") — cwevent segfaults without `number`. Change log entry added per §8
+   protocol (Article XXXVIII).
+
+### Consequences
+
+- `finalize_scorecard` export is now parity-safe: the official Retrosheet record reflects the same
+  facts the authoritative `project_game` projection reflects.
+- SC-004 is a true hard gate: a malformed core export blocks the PR.
+- The frozen contract is the single source of truth for both the emitter and fixture squads — the
+  date format discrepancy is resolved.
+
+---
+
 ## ADR-0013 — Multi-Target CI Matrix + Hard-Fail Gate Wiring + Privacy Check (T068/T069/T070)
 
 - **Status:** Accepted

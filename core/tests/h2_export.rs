@@ -321,7 +321,9 @@ fn error_6(outs: u8) -> NormalizedPlay {
                 to: AdvanceTo::Base(Base::First),
                 by_error: Some(Position(6)),
             }],
-            touched_or_misplayed_by: vec![],
+            // touched_or_misplayed_by is required for HitVsError judgment to fire
+            // (classifier: `!touched_or_misplayed_by.is_empty() && batter_reached`).
+            touched_or_misplayed_by: vec![Position(6)],
         },
         audit_label: None,
     }
@@ -652,4 +654,210 @@ fn export_text_serializer_produces_valid_csv_lines() {
     }
     // Must start with id record.
     assert!(text.starts_with("id,BOS2024010101"), "must start with id record: {text}");
+}
+
+// ---------------------------------------------------------------------------
+// P1a — export replay parity tests (FR-012 / SC-003 / I2)
+// ---------------------------------------------------------------------------
+
+/// P1a-1: finalize with an OPEN (unresolved) judgment → the withheld play is
+/// excluded from the export (not emitted as an in-format `play` record).
+///
+/// Design: 3 strikeouts (clean 3-out half-inning). Then correct play 1 (strikeout)
+/// to an error play that triggers HitVsError — but do NOT resolve the new judgment.
+/// At finalize time the corrected play's seq has an open judgment → it is withheld
+/// from projection (SC-003/I2) and must be absent from the export.
+///
+/// Proof-box: the withheld play is excluded from the projection, so the half-inning
+/// only counts plays 2 and 3 (two strikeouts = AB=2, PO=2, R=0, LOB=0 — balances).
+#[test]
+fn export_excludes_open_judgment_play() {
+    use dl_core::ffi::{CorrectEventRequest, FinalizeMode, FinalizeRequest};
+
+    let core = DiamondCore::new();
+    let gid = core
+        .create_game(CreateGameRequest {
+            home: team("BOS", "Red Sox"),
+            visitor: team("NYA", "Yankees"),
+            idempotency_key: "parity-j-create".into(),
+            actor: owner(),
+        })
+        .unwrap()
+        .game_id;
+
+    // Play 1: strikeout — confirmed. This is the play we will correct later.
+    let r1 = record_confirm(&core, gid, strikeout(0), "pj-p1");
+    let p1_seq = r1.recorded_seq;
+
+    // Play 2: strikeout (out 2).
+    record_confirm(&core, gid, strikeout(1), "pj-p2");
+
+    // Play 3: strikeout (out 3) — side retired.
+    record_confirm(&core, gid, strikeout(2), "pj-p3");
+
+    // Correct play 1: strikeout → error_6 (batter reaches; opens HitVsError judgment).
+    // The correction opens a fresh judgment on the corrected facts. We do NOT resolve it.
+    let amended_error = NormalizedPlay {
+        situation: sit(0, 0, 0),
+        catalyst: Catalyst {
+            batter_event: BatterEvent::Error,
+            fielders: vec![Position(6)],
+            ball_type: BallType::Ground,
+            advances: vec![Advance {
+                runner: RunnerId(0),
+                from: Base::Home,
+                to: AdvanceTo::Base(Base::First),
+                by_error: Some(Position(6)),
+            }],
+            // touched_or_misplayed_by drives HitVsError judgment (classifier §4).
+            touched_or_misplayed_by: vec![Position(6)],
+        },
+        audit_label: None,
+    };
+    let _correction = core
+        .correct_event(CorrectEventRequest {
+            game_id: gid,
+            corrects_seq: p1_seq,
+            amended: PlayInput::Normalized(amended_error),
+            idempotency_key: "pj-correction".into(),
+            actor: owner(),
+        })
+        .expect("correct_event must succeed");
+    // The amended error play is HitVsError — a fresh judgment is now open on p1_seq.
+
+    // Finalize with the correction-judgment STILL OPEN. This is legal — finalize
+    // does not block on open judgments (only on pending/unconfirmed plays).
+    // The proof box only sees plays 2 and 3 (withheld play excluded from projection):
+    //   AB=2, PO=2, R=0, LOB=0 → balances (2=2).
+    let result = core
+        .finalize_scorecard(FinalizeRequest {
+            game_id: gid,
+            mode: FinalizeMode::Final,
+            idempotency_key: "pj-finalize".into(),
+            actor: owner(),
+        })
+        .expect("finalize must succeed even with an open judgment (non-blocking)");
+
+    // The open judgment must be reported in unresolved.
+    assert!(
+        !result.unresolved.pending_judgments.is_empty(),
+        "finalize must surface the open correction-judgment in unresolved"
+    );
+
+    let evn_text = export_to_text(&result.retrosheet);
+    let play_lines: Vec<&str> = evn_text.lines().filter(|l| l.starts_with("play,")).collect();
+    eprintln!("[open-judgment-test] play lines:\n{}", play_lines.join("\n"));
+
+    // Plays 2 and 3 (strikeouts) must appear; play 1 (open-judgment correction) must NOT.
+    assert_eq!(
+        play_lines.len(),
+        2,
+        "only 2 of 3 plays should appear — open-judgment play withheld; got {}:\n{}",
+        play_lines.len(),
+        play_lines.join("\n")
+    );
+    assert!(
+        play_lines.iter().all(|l| l.ends_with(",K")),
+        "both exported plays must be strikeouts (K):\n{evn_text}"
+    );
+    // The withheld error play (E6) must NOT appear.
+    assert!(
+        !play_lines.iter().any(|l| l.ends_with(",E6")),
+        "withheld error play (E6) must NOT appear in export:\n{evn_text}"
+    );
+}
+
+/// P1a-2: finalize AFTER a correction → the export reflects the CORRECTED facts,
+/// not the original facts.
+///
+/// A game with one groundout corrected to a strikeout. After correction + resolution
+/// + finalize, the Retrosheet export must show `K` (corrected), not `6-3` (original).
+#[test]
+fn export_reflects_corrected_facts_not_original() {
+    use dl_core::ffi::{CorrectEventRequest, FinalizeMode, FinalizeRequest};
+
+    let core = DiamondCore::new();
+    let gid = core
+        .create_game(CreateGameRequest {
+            home: team("BOS", "Red Sox"),
+            visitor: team("NYA", "Yankees"),
+            idempotency_key: "parity-c-create".into(),
+            actor: owner(),
+        })
+        .unwrap()
+        .game_id;
+
+    // Play 1: groundout 6-3 — recorded and confirmed.
+    record_confirm(&core, gid, groundout_63(0), "pc-p1");
+    let p1_seq = core
+        .list_game_events(gid)
+        .unwrap()
+        .iter()
+        .find(|e| e.event_type == "PlayRecorded")
+        .map(|e| e.seq)
+        .expect("play 1 seq must exist");
+
+    // Play 2: strikeout (2nd out).
+    record_confirm(&core, gid, strikeout(1), "pc-p2");
+
+    // Play 3: flyout (3rd out).
+    record_confirm(&core, gid, flyout_8(2), "pc-p3");
+
+    // Correct play 1: groundout → strikeout (deterministic correction, no judgment).
+    let corrected_play = NormalizedPlay {
+        situation: sit(0, 1, 2),
+        catalyst: Catalyst {
+            batter_event: BatterEvent::Strikeout,
+            fielders: vec![],
+            ball_type: BallType::None,
+            advances: vec![Advance {
+                runner: RunnerId(0),
+                from: Base::Home,
+                to: AdvanceTo::Out,
+                by_error: None,
+            }],
+            touched_or_misplayed_by: vec![],
+        },
+        audit_label: None,
+    };
+    let _correction = core
+        .correct_event(CorrectEventRequest {
+            game_id: gid,
+            corrects_seq: p1_seq,
+            amended: PlayInput::Normalized(corrected_play),
+            idempotency_key: "pc-correction".into(),
+            actor: owner(),
+        })
+        .expect("correct_event must succeed");
+    // Strikeout is deterministic — no new judgment opened.
+
+    // Finalize.
+    let result = core
+        .finalize_scorecard(FinalizeRequest {
+            game_id: gid,
+            mode: FinalizeMode::Final,
+            idempotency_key: "pc-finalize".into(),
+            actor: owner(),
+        })
+        .expect("finalize must succeed");
+
+    let evn_text = export_to_text(&result.retrosheet);
+    let play_lines: Vec<&str> = evn_text.lines().filter(|l| l.starts_with("play,")).collect();
+    eprintln!("[correction-test] play lines:\n{}", play_lines.join("\n"));
+
+    // The export must show the CORRECTED facts (K), not the original (6-3).
+    assert!(
+        play_lines.iter().any(|l| l.ends_with(",K")),
+        "corrected strikeout (K) must appear in export:\n{evn_text}"
+    );
+    assert!(
+        !play_lines.iter().any(|l| l.ends_with(",6-3")),
+        "original groundout (6-3) must NOT appear in export after correction:\n{evn_text}"
+    );
+    // Should have 3 play records: corrected K + K + 8.
+    assert_eq!(
+        play_lines.len(),
+        3,
+        "must have 3 play records after correction (no exclusions):\n{evn_text}"
+    );
 }
