@@ -231,7 +231,16 @@ fn build_advance_section(play: &NormalizedPlay) -> AdvanceSection {
                 let to_char = base_to_char(dest);
                 if let Some(err_pos) = adv.by_error {
                     // Advance enabled by error.
-                    parts.push(format!("{}-{}(E{})", from_char, to_char, err_pos.0));
+                    // For the batter (from=Home) reaching first on an error, the primary
+                    // event is already `E{pos}` — the batter's B-1 advance is IMPLICIT and
+                    // must NOT be annotated (doing so causes cwevent to double-count the
+                    // error: ERR_CT=2 instead of 1). Only emit the error advance annotation
+                    // for non-Home (baserunner) advances.
+                    if adv.from != Base::Home {
+                        parts.push(format!("{}-{}(E{})", from_char, to_char, err_pos.0));
+                    }
+                    // Batter reaching first on the primary error is already encoded by the
+                    // `E{pos}` event string — no B annotation needed.
                 } else {
                     // Skip implicit advances (batter to first on a single, etc.)
                     // Only include non-obvious runner advances.
@@ -282,14 +291,41 @@ fn next_base(base: Base) -> Base {
 // Full game export assembly
 // ---------------------------------------------------------------------------
 
+/// One player/slot for the `start` record block (cwevent requires these).
+///
+/// Retrosheet `start` format: `start,<id>,<name>,<team>,<batting_order>,<fielding_pos>`
+/// where `<team>` is `0` = visitor, `1` = home.
+pub struct StartRecord {
+    pub player_id: String,
+    pub player_name: String,
+    /// `0` = visitor, `1` = home.
+    pub team_side: u8,
+    /// Batting order slot: `1..=9`.
+    pub batting_order: u8,
+    /// Fielding position: `1..=9` (0 = DH).
+    pub fielding_pos: u8,
+}
+
 /// Assemble a `RetrosheetExport` from an ordered list of (play, inning, half, batter_id) tuples.
 ///
 /// This is the T029 emitter. The caller must supply the game-level metadata.
+///
+/// # Required fields for cwevent compliance (SC-004)
+///
+/// - `date` MUST be in `YYYY/MM/DD` format (cwevent segfaults on `YYYY-MM-DD`).
+/// - `starters` MUST be non-empty: cwevent segfaults when there are no `start` records.
+/// - `pitchers` supplies the pitcher ids for `data,er` rows.
 pub struct GameExportInput<'a> {
     pub game_id: &'a str,
     pub home_team: &'a str,
     pub visitor_team: &'a str,
+    /// Date in `YYYY/MM/DD` format (NOT `YYYY-MM-DD` — cwevent segfaults on dashes).
     pub date: &'a str,
+    /// Starting lineup for both teams; MUST include at least 9 visitors + 9 home starters.
+    /// cwevent segfaults when there are no `start` records (research.md D4).
+    pub starters: Vec<StartRecord>,
+    /// Pitcher player-ids for `data,er` records (one per unique pitcher).
+    pub pitchers: Vec<String>,
     pub plays: Vec<PlayExportInput<'a>>,
 }
 
@@ -303,6 +339,15 @@ pub struct PlayExportInput<'a> {
 }
 
 /// Build the full `RetrosheetExport` for a game.
+///
+/// Emits a cwevent-compliant Retrosheet event file:
+/// - `id` + `version` + attribution `com`
+/// - Required `info` records (visteam, hometeam, date, number, daynight, usedh, innings)
+/// - `start` records for all starters (cwevent segfaults without them)
+/// - `play` records (in-format) or `NP` placeholders with `com` flags (out-of-format, FR-017)
+/// - `data,er` records for each pitcher
+///
+/// See evals/runners/retrosheet-gate.sh and research.md D4 for the STDERR-driven gate semantics.
 pub fn emit_game(input: &GameExportInput) -> RetrosheetExport {
     let mut records: Vec<RetrosheetRecord> = Vec::new();
     let mut out_of_format_flags: Vec<PlayRef> = Vec::new();
@@ -313,14 +358,33 @@ pub fn emit_game(input: &GameExportInput) -> RetrosheetExport {
     records.push(rec("version", &["2"]));
     // Attribution com record (D6)
     records.push(rec("com", &[&format!("\"{}\"", RETROSHEET_ATTRIBUTION)]));
-    // info records
+    // Required info records (cwevent parses all of these; missing `number` causes segfaults).
     records.push(rec("info", &["visteam", input.visitor_team]));
     records.push(rec("info", &["hometeam", input.home_team]));
     records.push(rec("info", &["date", input.date]));
+    records.push(rec("info", &["number", "0"]));
+    records.push(rec("info", &["daynight", "D"]));
+    records.push(rec("info", &["usedh", "false"]));
+    records.push(rec("info", &["innings", "9"]));
+
+    // start records — cwevent segfaults when these are absent (research.md D4).
+    for s in &input.starters {
+        records.push(rec(
+            "start",
+            &[
+                &s.player_id,
+                &s.player_name,
+                &s.team_side.to_string(),
+                &s.batting_order.to_string(),
+                &s.fielding_pos.to_string(),
+            ],
+        ));
+    }
 
     // play records
     for pei in &input.plays {
-        let count = format!("{}{}",
+        let count = format!(
+            "{}{}",
             pei.play.situation.count.balls,
             pei.play.situation.count.strikes,
         );
@@ -337,7 +401,7 @@ pub fn emit_game(input: &GameExportInput) -> RetrosheetExport {
                         side,
                         pei.batter_id,
                         &count,
-                        "",
+                        "X",
                         &event_str,
                     ],
                 ));
@@ -352,7 +416,7 @@ pub fn emit_game(input: &GameExportInput) -> RetrosheetExport {
                         side,
                         pei.batter_id,
                         &count,
-                        "",
+                        "X",
                         "NP",
                     ],
                 ));
@@ -364,8 +428,16 @@ pub fn emit_game(input: &GameExportInput) -> RetrosheetExport {
         }
     }
 
-    // data records (earned runs — all PENDING in v1 unless earned/unearned resolved).
-    records.push(rec("data", &["er", "unknXX01", "0"]));
+    // data,er records — one per pitcher (earned runs; v1 emits 0 for all, I3/FR-017).
+    // If no pitchers were supplied, fall back to a single placeholder so the file is
+    // structurally valid (cwevent accepts it without warnings).
+    if input.pitchers.is_empty() {
+        records.push(rec("data", &["er", "unknXX01", "0"]));
+    } else {
+        for pitcher_id in &input.pitchers {
+            records.push(rec("data", &["er", pitcher_id, "0"]));
+        }
+    }
 
     RetrosheetExport {
         records,
@@ -378,6 +450,28 @@ fn rec(record_type: &str, fields: &[&str]) -> RetrosheetRecord {
         record_type: record_type.into(),
         fields: fields.iter().map(|s| s.to_string()).collect(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// RetrosheetExport → text serializer
+// ---------------------------------------------------------------------------
+
+/// Render a [`RetrosheetExport`] to the Retrosheet event-file text format.
+///
+/// Each record becomes one line: `<record_type>,<field1>,<field2>,...`
+/// This is the inverse of the parser used by `cwevent`. The output is suitable
+/// for writing directly to a `.EVN` file and piping through `cwevent`.
+pub fn export_to_text(export: &RetrosheetExport) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for record in &export.records {
+        if record.fields.is_empty() {
+            lines.push(record.record_type.clone());
+        } else {
+            let fields = record.fields.join(",");
+            lines.push(format!("{},{}", record.record_type, fields));
+        }
+    }
+    lines.join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -555,5 +649,58 @@ mod tests {
         } else {
             panic!("Expected InFormat");
         }
+    }
+
+    #[test]
+    fn export_to_text_produces_valid_lines() {
+        // Smoke test: a minimal emit_game with starters produces parseable text lines.
+        let play = groundout_play();
+        let pei = PlayExportInput {
+            play: &play,
+            inning: 1,
+            half: Half::Top,
+            batter_id: "battr001",
+            seq: Seq(1),
+            game_id: GameId(1),
+        };
+        let starters: Vec<StartRecord> = (1u8..=9)
+            .map(|i| StartRecord {
+                player_id: format!("battr{:03}", i),
+                player_name: format!("Visitor{}", i),
+                team_side: 0,
+                batting_order: i,
+                fielding_pos: i,
+            })
+            .chain((1u8..=9).map(|i| StartRecord {
+                player_id: format!("batl{:03}", i),
+                player_name: format!("Home{}", i),
+                team_side: 1,
+                batting_order: i,
+                fielding_pos: i,
+            }))
+            .collect();
+
+        let input = GameExportInput {
+            game_id: "TST2024010101",
+            home_team: "TST",
+            visitor_team: "NYA",
+            date: "2024/01/01",
+            starters,
+            pitchers: vec!["battr009".into(), "batl009".into()],
+            plays: vec![pei],
+        };
+        let export = emit_game(&input);
+        let text = export_to_text(&export);
+
+        // Must have an id line, start lines, and at least one play line.
+        assert!(text.contains("id,TST2024010101"), "missing id record");
+        assert!(text.contains("info,date,2024/01/01"), "date must use slashes");
+        assert!(text.contains("info,number,0"), "missing number info");
+        assert!(text.contains("start,battr001"), "missing visitor start");
+        assert!(text.contains("start,batl001"), "missing home start");
+        assert!(text.contains("play,1,0,battr001"), "missing play record");
+        assert!(text.contains("data,er,battr009"), "missing pitcher data record");
+        // No dashes in date field.
+        assert!(!text.contains("info,date,2024-"), "date must NOT use dashes");
     }
 }
