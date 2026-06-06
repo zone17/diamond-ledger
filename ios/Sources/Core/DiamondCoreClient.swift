@@ -454,20 +454,54 @@ extension DiamondCoreClient {
 /// Translates the loose `normalizedFacts: [String: String]` the WoZ harness / grammar parser
 /// produce today into the strongly-typed generated `NormalizedPlay` the real core requires.
 ///
-/// This is deliberately small and explicit: v1 covers the two demo scripts the WoZ harness emits
-/// (a clean 6-3 ground out → deterministic Card A; a misplayed grounder → HitVsError Card B).
-/// The fact shapes below mirror the real core's own unit tests (`groundout_play()` and the
-/// `judgment_play` in `core/src/primitives/mod.rs`), so classification matches the proven corpus.
+/// DL-154: the bridge now maps EVERY `batter_result` the (broadened, DL-151) grammar emits to
+/// the correct `BatterEvent` + `advances` the real core classifies and records. Before DL-154 a
+/// silent `default → groundOut` collapse turned "home run", "walk", "strikeout", "double play",
+/// etc. into a 6-3 GROUND OUT (the broadened grammar was moot). That collapse is GONE: an
+/// unrecognized `batter_result` is now surfaced as `BatterEvent.other` → the core classifies it
+/// `OutOfFormat` (FR-017, never a fabricated ground-out).
 ///
-/// Crucially the bridge supplies ONLY facts — it never sets a classification. The misplayed
-/// grounder is surfaced by the FACT `touchedOrMisplayedBy: [SS]` on a ball the batter reached,
-/// exactly as the core's classifier keys on (I1). No `"script"`-string shortcut reaches the core.
+/// Crucially the bridge supplies ONLY facts — it never sets a classification (I1). A clean play
+/// (out / hit / walk / K / HR) carries an EMPTY `touchedOrMisplayedBy` and a faithful advance set,
+/// so the core derives `Deterministic` (Card A). Only a genuine misplay (a ball a fielder
+/// touched/misplayed that the batter reached on) carries the fielder under `touchedOrMisplayedBy`,
+/// from which the core derives `Judgment(HitVsError)` (Card B). No `"script"`/label shortcut and
+/// no fabricated judgment ever reaches the core.
+///
+/// ### Grammar `batter_result` → core `BatterEvent` → expected Card + state delta
+/// (empty bases, 0 outs; deltas are at confirm time)
+///
+/// | `batter_result`        | `BatterEvent`     | facts                                   | Card | Δ state            |
+/// |------------------------|-------------------|-----------------------------------------|------|--------------------|
+/// | `groundout`            | `.fieldedOut`     | fielders, ball .ground, batter→out      | A    | +1 out             |
+/// | `flyout`               | `.fieldedOut`     | fielder, ball .fly, batter→out          | A    | +1 out             |
+/// | `strikeout`            | `.strikeout`      | batter→out, ball .none                   | A    | +1 out             |
+/// | `strikeout_looking`    | `.strikeout`*     | batter→out, ball .none                   | A    | +1 out             |
+/// | `walk`                 | `.walk`           | batter→first                            | A    | runner on 1st      |
+/// | `intentional_walk`     | `.intentionalWalk`| batter→first                            | A    | runner on 1st      |
+/// | `home_run`             | `.homeRun`        | batter→home, ball .fly                   | A    | +1 run, 0 outs     |
+/// | `single`               | `.single`         | batter→first (≤1 fielder, no touch)     | A    | runner on 1st      |
+/// | `double`               | `.double`         | batter→second (clean XBH)               | A    | runner on 2nd      |
+/// | `triple`               | `.triple`         | batter→third (clean XBH)                | A    | runner on 3rd      |
+/// | `hit_by_pitch`         | `.hitByPitch`     | batter→first                            | A    | runner on 1st      |
+/// | `sac_fly`              | `.sacFly`         | fielder, ball .fly, batter→out          | A    | +1 out             |
+/// | `sac_bunt`             | `.sacBunt`        | fielders, ball .bunt, batter→out        | A    | +1 out             |
+/// | `reached_on_error`     | `.fieldedOut`     | fielder touched + batter→first          | B    | (resolve then +…)  |
+/// | `double_play`          | `.fieldedOut`     | fielders, ball .ground, 2× →out         | A/B† | +2 outs            |
+/// | *(unrecognized)*       | `.other`          | empty catalyst                          | OOF  | none (needs review)|
+///
+/// *The core's `BatterEvent` has no looking/swinging distinction — both Kl and K map to
+///  `.strikeout` and record an identical +1 out. The Kl notation is not preserved by the core
+///  model (documented limitation, see DL-154 follow-up).
+/// †A double play is fact-derived: with a 3-fielder chain + 2 outs the core's classifier treats it
+///  as `ContestedCredit` (who is credited the putouts/assists) — a genuine Card-B judgment, NOT a
+///  collapse. The bridge emits the faithful fielder chain and lets the core decide; a 2-fielder
+///  chain stays `Deterministic`. Either way the recorded state delta is +2 outs.
 enum FactBridge {
 
-    /// Build a `NormalizedPlay` from the fact map. Recognizes the WoZ demo scripts and the simple
-    /// `batter_result`/`fielders` keys the grammar parser emits; falls back to a generic fielded
-    /// out so an unrecognized map still produces a deterministic, confirmable play (never a crash,
-    /// never a fabricated judgment).
+    /// Build a `NormalizedPlay` from the fact map. Maps each grammar `batter_result` to the
+    /// correct `BatterEvent` + advances the real core records; an UNRECOGNIZED `batter_result`
+    /// surfaces as `BatterEvent.other` → `OutOfFormat` (never a fabricated ground-out, DL-154).
     static func normalizedPlay(from facts: [String: String]) -> NormalizedPlay {
         // Card B (WoZ): explicit misplayed-grounder marker → the FACT pattern the core classifies
         // as HitVsError (a grounder to SS the batter reached, with SS charged as the misplayer).
@@ -475,26 +509,74 @@ enum FactBridge {
             return misplayedGrounder()
         }
 
-        // Card B (REAL grammar path, DL-35): the grammar parser's `tryError` production emits
-        // `["batter_result": "reached_on_error", "error_position": "6"]` for "reached on error /
-        // error by short". A ball a fielder touched/misplayed that the batter reached on is exactly
-        // a hit-vs-error JUDGMENT (I1) — so we build the misplay FACT pattern (FieldedOut + the
-        // fielder under touched_or_misplayed_by + batter advancing to first). The core then derives
-        // Card B from FACTS — no `"script"` marker. This is what makes the live mic Card B reachable.
-        if facts["batter_result"] == "reached_on_error" {
+        // The grammar's concatenated fielder chain ("63"/"643"), or a single fielder digit.
+        let fielders = parseFielders(facts["fielders"])
+        let fielder = parseFielders(facts["fielder"])?.first
+
+        switch facts["batter_result"] {
+
+        // ── Outs (deterministic, Card A) ──────────────────────────────────────────────
+        case "groundout", "ground_out":
+            return fieldedOut(fielders: fielders ?? [Position(6), Position(3)], ballType: .ground)
+
+        case "flyout", "fly_out":
+            return fieldedOut(fielders: fielder.map { [$0] } ?? [Position(8)], ballType: .fly)
+
+        case "strikeout", "strikeout_looking":
+            // The core's BatterEvent has no looking/swinging split — both record +1 out (DL-154 †).
+            return batterOut(event: .strikeout, fielders: [], ballType: .none)
+
+        // ── On base, no fielder touch (deterministic, Card A) ─────────────────────────
+        case "walk":
+            return batterReaches(event: .walk, to: .first)
+
+        case "intentional_walk":
+            return batterReaches(event: .intentionalWalk, to: .first)
+
+        case "hit_by_pitch":
+            return batterReaches(event: .hitByPitch, to: .first)
+
+        // ── Hits (deterministic, Card A) ──────────────────────────────────────────────
+        // A clean hit carries EMPTY touchedOrMisplayedBy (else HitVsError fires) and, for the
+        // single, ≤1 fielder (a 2+-fielder throw chain on a safe batter is the core's
+        // ContestedCredit). Double/Triple use the clean-XBH BatterEvent so a 2-base batter
+        // advance is NOT read as an AmbiguousAdvance.
+        case "single":
+            return cleanHit(event: .single, to: .first, fielders: fielder.map { [$0] } ?? [])
+
+        case "double":
+            return cleanHit(event: .double, to: .second, fielders: [])
+
+        case "triple":
+            return cleanHit(event: .triple, to: .third, fielders: [])
+
+        case "home_run":
+            // Batter circles the bases: Home → Home scores a run (no fielder, no out).
+            return cleanHit(event: .homeRun, to: .home, fielders: [], ballType: .fly)
+
+        // ── Sacrifices (deterministic, Card A) — batter retired, runner(s) implied ─────
+        case "sac_fly":
+            return batterOut(event: .sacFly, fielders: fielder.map { [$0] } ?? [Position(9)], ballType: .fly)
+
+        case "sac_bunt":
+            return batterOut(event: .sacBunt, fielders: fielders ?? [Position(1), Position(3)], ballType: .bunt)
+
+        // ── Double play (fact-derived Card A or B) — TWO outs on one play ──────────────
+        case "double_play":
+            return doublePlay(fielders: fielders ?? [Position(6), Position(4), Position(3)])
+
+        // ── Reached on error (fact-derived JUDGMENT, Card B) ──────────────────────────
+        // A ball a fielder touched/misplayed that the batter reached on is a hit-vs-error
+        // judgment (I1): FieldedOut + the fielder under touchedOrMisplayedBy + batter to first.
+        case "reached_on_error":
             let pos = parseFielders(facts["error_position"])?.first ?? Position(6)
             return misplayedGrounder(at: pos)
-        }
 
-        // Card A: a clean ground out. The grammar parser emits e.g.
-        // ["batter_result": "groundout", "fielders": "6-3", "outs_recorded": "1"].
-        let fielders = parseFielders(facts["fielders"]) ?? [Position(6), Position(3)]
-        switch facts["batter_result"] {
-        case "groundout", "ground_out", .none:
-            return groundOut(fielders: fielders)
+        // ── Unrecognized / missing batter_result → OutOfFormat (FR-017) ───────────────
+        // No silent ground-out collapse (the DL-154 fix). BatterEvent.other makes the core's
+        // classifier return OutOfFormat — the play surfaces for review, it is NOT fabricated.
         default:
-            // Unrecognized but in-grammar-ish: a generic fielded out (deterministic, confirmable).
-            return groundOut(fielders: fielders.isEmpty ? [Position(6), Position(3)] : fielders)
+            return outOfFormat(audit: facts["batter_result"])
         }
     }
 
@@ -515,26 +597,134 @@ enum FactBridge {
         return positions.isEmpty ? nil : positions
     }
 
-    /// A clean 6-3 (or supplied chain) ground out — deterministic, `Needs.confirm` (Card A).
-    /// Mirrors `groundout_play()` in `core/src/primitives/mod.rs`.
-    private static func groundOut(fielders: [Position]) -> NormalizedPlay {
+    /// The empty pre-play situation every bridged play starts from (bases empty, 0 outs, 0-0,
+    /// right-handed). State the play actually advances is computed by the core's rules engine
+    /// from the `advances` below — the situation is only the pre-play snapshot.
+    private static func baseSituation() -> SituationDiamond {
+        SituationDiamond(
+            runners: Runners(first: nil, second: nil, third: nil),
+            outs: 0,
+            count: Count(balls: 0, strikes: 0),
+            batterHand: .right
+        )
+    }
+
+    /// A batter retired on the play (the batter-runner advance is `→ out`). One out, deterministic.
+    /// Used for strikeout / sac fly / sac bunt (the catalyst differs only by event + fielders + ball).
+    private static func batterOut(
+        event: BatterEvent,
+        fielders: [Position],
+        ballType: BallType
+    ) -> NormalizedPlay {
         NormalizedPlay(
-            situation: SituationDiamond(
-                runners: Runners(first: nil, second: nil, third: nil),
-                outs: 0,
-                count: Count(balls: 0, strikes: 0),
-                batterHand: .right
-            ),
+            situation: baseSituation(),
             catalyst: Catalyst(
-                batterEvent: .fieldedOut,
+                batterEvent: event,
                 fielders: fielders,
-                ballType: .ground,
+                ballType: ballType,
                 advances: [
                     Advance(runner: RunnerId(1), from: .home, to: .out, byError: nil)
                 ],
                 touchedOrMisplayedBy: []
             ),
             auditLabel: nil
+        )
+    }
+
+    /// A clean fielded out (ground out / fly out) — deterministic, `Needs.confirm` (Card A).
+    /// Mirrors `groundout_play()` in `core/src/primitives/mod.rs`. `touchedOrMisplayedBy` is empty
+    /// (a clean out the fielder converted, NOT a misplay the batter reached on).
+    private static func fieldedOut(fielders: [Position], ballType: BallType) -> NormalizedPlay {
+        batterOut(event: .fieldedOut, fielders: fielders, ballType: ballType)
+    }
+
+    /// The batter reaches a base on a NON-batted-ball event (walk / IBB / HBP) — deterministic.
+    /// No fielders, no ball type, no fielder touch → the core classifies Deterministic (Card A).
+    private static func batterReaches(event: BatterEvent, to base: Base) -> NormalizedPlay {
+        NormalizedPlay(
+            situation: baseSituation(),
+            catalyst: Catalyst(
+                batterEvent: event,
+                fielders: [],
+                ballType: .none,
+                advances: [
+                    Advance(runner: RunnerId(1), from: .home, to: .base(base), byError: nil)
+                ],
+                touchedOrMisplayedBy: []
+            ),
+            auditLabel: nil
+        )
+    }
+
+    /// A clean hit (single / double / triple / home run) — deterministic, Card A.
+    ///
+    /// `touchedOrMisplayedBy` is EMPTY (else the core fires `Judgment(HitVsError)`). For a single,
+    /// keep the chain to ≤1 fielder — a 2+-fielder throw chain on a safe batter is the core's
+    /// `ContestedCredit`. Double/Triple pass their clean-XBH `BatterEvent` so a 2/3-base batter
+    /// advance is NOT misread as an `AmbiguousAdvance`. Home run scores (Home → Home).
+    private static func cleanHit(
+        event: BatterEvent,
+        to base: Base,
+        fielders: [Position],
+        ballType: BallType = .line
+    ) -> NormalizedPlay {
+        NormalizedPlay(
+            situation: baseSituation(),
+            catalyst: Catalyst(
+                batterEvent: event,
+                fielders: fielders,
+                ballType: ballType,
+                advances: [
+                    Advance(runner: RunnerId(1), from: .home, to: .base(base), byError: nil)
+                ],
+                touchedOrMisplayedBy: []
+            ),
+            auditLabel: nil
+        )
+    }
+
+    /// A double play — TWO outs on one play (the batter retired plus a runner forced/relayed out).
+    ///
+    /// Fact-derived classification (NOT fabricated): with a 3-fielder chain + 2 outs the core's
+    /// classifier returns `Judgment(ContestedCredit)` (the credit among relaying fielders is the
+    /// scorer's call); a 2-fielder chain stays `Deterministic`. The bridge emits the faithful chain
+    /// and lets the core decide. Either way the rules engine records +2 outs.
+    private static func doublePlay(fielders: [Position]) -> NormalizedPlay {
+        NormalizedPlay(
+            situation: baseSituation(),
+            catalyst: Catalyst(
+                batterEvent: .fieldedOut,
+                fielders: fielders,
+                ballType: .ground,
+                advances: [
+                    // Batter retired at first.
+                    Advance(runner: RunnerId(1), from: .home, to: .out, byError: nil),
+                    // The lead runner forced out (RunnerId(2) — the core counts the second out
+                    // even when no prior runner is on base in a fresh-game test, see rules engine).
+                    Advance(runner: RunnerId(2), from: .first, to: .out, byError: nil)
+                ],
+                touchedOrMisplayedBy: []
+            ),
+            auditLabel: nil
+        )
+    }
+
+    /// An UNRECOGNIZED / unsupported `batter_result` → `BatterEvent.other`, which the core's
+    /// classifier returns as `OutOfFormat` (FR-017). This REPLACES the pre-DL-154 silent
+    /// `default → groundOut` collapse: an unknown fact map now surfaces for review instead of
+    /// being fabricated into a fake ground-out. The original `batter_result` is carried in the
+    /// AUDIT-ONLY `auditLabel` for provenance — the core NEVER reads it for classification (I1).
+    private static func outOfFormat(audit: String?) -> NormalizedPlay {
+        NormalizedPlay(
+            situation: baseSituation(),
+            catalyst: Catalyst(
+                batterEvent: .other,
+                fielders: [],
+                ballType: .none,
+                advances: [],
+                touchedOrMisplayedBy: []
+            ),
+            auditLabel: audit
         )
     }
 
