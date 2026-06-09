@@ -1,0 +1,17 @@
+{"id":"tr-groundout-63","transcript":"ground ball to short, threw him out at first","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"6-3"}
+{"id":"tr-groundout-43","transcript":"ground ball to second, threw him out at first","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"4-3"}
+{"id":"tr-flyout-8","transcript":"fly ball to center caught for the out","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"8"}
+{"id":"tr-strikeout-swinging","transcript":"strikeout swinging","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"K"}
+{"id":"tr-strikeout-looking","transcript":"strikeout looking","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"K"}
+{"id":"tr-walk","transcript":"walk","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"BB"}
+{"id":"tr-homerun-center","transcript":"home run to center","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"HR"}
+{"id":"tr-homerun-bare","transcript":"home run","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"HR"}
+{"id":"tr-double","transcript":"double to left","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"2B"}
+{"id":"tr-triple","transcript":"triple to right","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"3B"}
+{"id":"tr-single","transcript":"single","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"1B"}
+{"id":"tr-hbp","transcript":"hit by pitch","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"HBP"}
+{"id":"tr-sacfly","transcript":"sacrifice fly to center","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"SF8"}
+{"id":"tr-judgment-error-ss","transcript":"reached on error by the shortstop","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_judgment_kind":"hitVsError","expect_reisner_catalyst":"6"}
+{"id":"tr-judgment-error-3b","transcript":"error on the third baseman, batter reached first","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_judgment_kind":"hitVsError","expect_reisner_catalyst":"5"}
+{"id":"tr-guard-dropped-third-strike","transcript":"dropped third strike, batter reached first","expect_ok":false,"expect_classification":"parse_error","expect_judgment_required":false,"expect_error":"out_of_grammar"}
+{"id":"tr-guard-gibberish","transcript":"the quick brown fox jumps","expect_ok":false,"expect_classification":"parse_error","expect_judgment_required":false,"expect_error":"out_of_grammar"}

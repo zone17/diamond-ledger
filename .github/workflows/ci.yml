@@ -676,9 +676,61 @@ jobs:
         #      first (ADR-0009 cache-pitfall guard: non-uniffi dylib → zero bindgen output).
         #   3. Remove continue-on-error: true from this job.
         run: |
-          if [ -d ios ] && ls ios/*.xcodeproj 2>/dev/null || ls ios/*.xcworkspace 2>/dev/null; then
-            xcodebuild -scheme DiamondLedger -sdk iphonesimulator -destination \
-              'platform=iOS Simulator,name=iPhone 16' build
+          # NOTE: xcodebuild resolves -project/-scheme relative to the CWD, so this MUST run from
+          # ios/ (the .xcodeproj lives there). The earlier form ran from the repo root with no
+          # -project and failed with "directory does not contain an Xcode project" the moment a
+          # real .xcodeproj was committed — silently red but masked by continue-on-error. (DL-37)
+          if [ -d ios ] && ls ios/*.xcodeproj >/dev/null 2>&1; then
+            cd ios
+            xcodebuild -project DiamondLedger.xcodeproj -scheme DiamondLedger \
+              -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16' build
           else
             echo "ios/ Xcode project not yet present — skipping iOS build (placeholder)"
           fi
+
+  # ---------------------------------------------------------------------------
+  # Transcript→score regression gate (DL-37 / ADR-0015) — HARD gate.
+  #
+  # Runs the headless `dl-score` CLI (transcript → GrammarParser → real Rust core → JSON) over a
+  # frozen corpus and asserts classification / judgment-required / Reisner output. This is the
+  # FIRST headless coverage of the full transcript→score seam (GrammarParser + FactBridge + core),
+  # which previously only ran inside the iOS app. It would have caught DL-154/#162 instantly.
+  #
+  # Unlike ios-build, this CAN be a hard gate: the deterministic core runs as the macOS slice of
+  # the XCFramework (ADR-0015), so it needs only the macOS SDK + rust — both on GitHub macos
+  # runners. No iOS-26 SDK required.
+  # ---------------------------------------------------------------------------
+  transcript-score:
+    name: Transcript→score gate (DL-37 / dl-score)
+    needs: [core-build]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install pinned Rust toolchain
+        run: rustup show || rustup toolchain install stable --profile minimal
+
+      - name: Add Apple targets (iOS + macOS slices for the XCFramework)
+        run: |
+          set -euo pipefail
+          for t in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+                   aarch64-apple-darwin x86_64-apple-darwin; do
+            rustup target add "$t"
+          done
+
+      - name: Cache cargo + target
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-dlscore-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-dlscore-
+
+      - name: Run transcript→score regression gate
+        # The runner builds the XCFramework (incl. the macOS slice) + dl-score, then diffs the
+        # scored corpus against evals/transcript-regression/cases.jsonl. Hard-fails on any drift.
+        run: bash evals/runners/transcript-score.sh

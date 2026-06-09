@@ -48,6 +48,7 @@
 /// - SeeAlso: ADR-0007 — two-engine ASR architecture decision
 
 import Foundation
+import SpeechTypes
 
 // MARK: - SherpaTranscriber
 

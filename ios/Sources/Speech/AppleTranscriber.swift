@@ -60,6 +60,7 @@
 /// - SeeAlso: `ios/Sources/Speech/EngineSelector.swift` — engine selection seam (T047-B)
 
 import Foundation
+import SpeechTypes
 import AVFoundation
 
 // SpeechAnalyzer, SpeechTranscriber, AssetInventory and (legacy, for the biasing pass)

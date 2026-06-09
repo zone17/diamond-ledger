@@ -25,7 +25,7 @@
 /// - TODO: T050 — implement the ambiguity path (low-confidence / multi-mapping → clarifying Q).
 
 import Foundation
-import DiamondSpeech
+import SpeechTypes
 
 // MARK: - NormalizedPlay (Swift-side representation)
 

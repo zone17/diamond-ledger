@@ -36,6 +36,7 @@
 /// - SeeAlso: `ios/Sources/UI/PushToTalk/PushToTalkView.swift` — call site
 
 import Foundation
+import SpeechTypes
 
 // MARK: - TranscriberEngineSelector
 

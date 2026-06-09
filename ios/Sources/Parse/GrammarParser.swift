@@ -47,7 +47,7 @@
 ///  14. tryError
 
 import Foundation
-import DiamondSpeech
+import SpeechTypes
 
 // MARK: - GrammarParser
 
