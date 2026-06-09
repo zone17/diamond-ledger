@@ -21,7 +21,14 @@ import PackageDescription
 let package = Package(
     name: "DiamondLedger",
     platforms: [
-        .iOS("26")
+        .iOS("26"),
+        // macOS supports the HEADLESS scoring closure only (DL-37 / ADR-0015): the `dl-score`
+        // CLI and its deps (SpeechTypes, Parse, Core, the core bindings). The iOS-only targets
+        // (DiamondSpeech ASR engines, UI, Auth, Persistence) are NOT in that closure, so they are
+        // never compiled for macOS. Build the macOS leg with `swift build --product dl-score`
+        // (NOT a bare `swift build`, which would try to compile the iOS targets for macOS). The
+        // iOS app + tests always build via xcodebuild for the iOS destination.
+        .macOS("14"),
     ],
     products: [
         // App-logic library — consumed by the Xcode app target.
@@ -36,6 +43,9 @@ let package = Package(
                 "Auth",
             ]
         ),
+        // Headless transcript→score CLI (DL-37) — agent/CLI parity for scoring (Art. II/FR-018)
+        // + the `$DL_PIPELINE_SCORER` the eval harness needs (evals/runners/accuracy.sh).
+        .executable(name: "dl-score", targets: ["DLScore"]),
     ],
     dependencies: [
         // GRDB for SQLite / append-only event log (T055).
@@ -61,6 +71,10 @@ let package = Package(
             name: "DiamondLedgerCoreBindings",
             dependencies: ["DiamondLedgerCoreFFI"],
             path: "Generated",
+            // Generated/ also holds the binary XCFramework + README (siblings of the one Swift
+            // source). Exclude them so SwiftPM doesn't warn about "unhandled files".
+            // (SwiftPM requires `exclude` to precede `sources`.)
+            exclude: ["DiamondLedgerCore.xcframework", "README.md"],
             sources: ["DiamondLedgerCore.swift"],
             // UniFFI 0.28's generated bindings are Swift-5-shaped: they use a nonisolated global
             // `var initializationResult` that Swift 6's strict-concurrency checker rejects
@@ -81,23 +95,35 @@ let package = Package(
             path: "Sources/Core"
         ),
 
+        // MARK: - SpeechTypes
+        // Platform-agnostic ASR value layer (Transcript, TranscriberEngine, ConfidenceMapping).
+        // Foundation-only (no Apple ASR/AVFoundation), so Parse + the headless dl-score CLI can
+        // depend on `Transcript` WITHOUT pulling the iOS-26-only engines (DL-37 / ADR-0015).
+        .target(
+            name: "SpeechTypes",
+            path: "Sources/SpeechTypes"
+        ),
+
         // MARK: - DiamondSpeech
         // Two-engine ASR abstraction: SpeechAnalyzer (iOS 26 primary) + sherpa-onnx (fallback).
         // Requires iOS 26 for SpeechAnalyzer / DictationTranscriber (ADR-0007, T046–T048).
         // Named "DiamondSpeech" (not "Speech") to avoid shadowing Apple's system Speech.framework,
         // which conformers in AppleTranscriber.swift (T047) must `import Speech` directly.
+        // Re-exports SpeechTypes (@_exported) so `import DiamondSpeech` consumers see Transcript.
         .target(
             name: "DiamondSpeech",
+            dependencies: ["SpeechTypes"],
             path: "Sources/Speech"
         ),
 
         // MARK: - Parse
         // Deterministic grammar-constrained transcript → NormalizedPlay parser (T049–T050).
         // v1 = no LLM; FunctionGemma-270M + XGrammar is the v2 path.
-        // Depends on DiamondSpeech to receive `Transcript` values directly.
+        // Depends on SpeechTypes (the pure Transcript value) — NOT the iOS ASR engines — so it
+        // stays cross-platform for the headless scorer (DL-37).
         .target(
             name: "Parse",
-            dependencies: ["DiamondSpeech"],
+            dependencies: ["SpeechTypes"],
             path: "Sources/Parse"
         ),
 
@@ -124,6 +150,17 @@ let package = Package(
         .target(
             name: "Auth",
             path: "Sources/Auth"
+        ),
+
+        // MARK: - DLScore (headless CLI, macOS)
+        // transcript → GrammarParser → real Rust core → JSON. Restores agent/CLI parity for
+        // scoring (Art. II/FR-018) and is the `$DL_PIPELINE_SCORER` the eval harness invokes.
+        // Depends only on the cross-platform closure (SpeechTypes, Parse, Core) — never the iOS
+        // ASR engines or UI — so it builds for macOS. See ios/Sources/DLScore/main.swift.
+        .executableTarget(
+            name: "DLScore",
+            dependencies: ["SpeechTypes", "Parse", "Core"],
+            path: "Sources/DLScore"
         ),
 
         // MARK: - Tests

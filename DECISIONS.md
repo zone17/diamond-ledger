@@ -6,6 +6,85 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0015 — Headless transcript→score pipeline (`dl-score`) + macOS core slice: agent/CLI parity for scoring
+
+- **Status:** Accepted
+- **Date:** 2026-06-09
+- **Owner:** F-Integration (DL-37)
+- **Implements:** Agent/CLI parity for scoring (Art. II / FR-018); the `$DL_PIPELINE_SCORER`
+  interface the eval harness (`evals/runners/accuracy.sh`) was designed for; headless coverage of
+  SC-001/SC-002 prerequisites.
+- **Tickets:** DL-37 (toward #34 F-Integration, #37 H3, #65 accuracy)
+
+### Context
+
+The deterministic scoring pipeline — `transcript → GrammarParser → FactBridge → real Rust core →
+classification + Reisner cell` — existed **only inside the iOS app**. There was no way to run it
+off the device: not from a CLI, not from CI, not from an agent. Two concrete consequences:
+
+1. **Parity violation (Art. II / FR-018).** "Same primitives invokable by agent/API/CLI" did not
+   hold for the single most important capability — scoring a play. The capability was trapped
+   behind the SwiftUI push-to-talk UI.
+2. **Accuracy was unmeasurable headlessly.** `evals/runners/accuracy.sh`'s field-accuracy branch
+   requires `$DL_PIPELINE_SCORER` (an end-to-end scorer binary). None existed, so the whole
+   accuracy story was stuck at "self-consistency, advisory" with no path to a real number — the
+   exact vacuous-measurement risk the project warns about.
+
+The core ships as a UniFFI XCFramework, but only with **iOS** slices (device + simulator), so even
+the Rust core could not be linked into a macOS host binary.
+
+### Decision
+
+1. **Add a macOS slice to the core XCFramework.** `scripts/build-xcframework.sh` now also builds
+   `dl-core` for `aarch64-apple-darwin` + `x86_64-apple-darwin` and adds a `macos-arm64_x86_64`
+   slice. The core is platform-independent (integer-only, no iOS deps), so this is free.
+2. **Decouple the ASR value layer from the iOS engines.** `Transcript` / `TranscriberEngine` /
+   `ConfidenceMapping` move from the iOS-only `DiamondSpeech` target into a new Foundation-only
+   `SpeechTypes` target. `Parse` now depends on `SpeechTypes`, not the SpeechAnalyzer engines, so
+   the parser is cross-platform. `DiamondSpeech` re-exports `SpeechTypes` (`@_exported`) so existing
+   `import DiamondSpeech` consumers are unchanged.
+3. **Ship `dl-score`, a headless macOS CLI** (`ios/Sources/DLScore`): reads transcript lines, runs
+   `GrammarParser → DiamondCoreClient (real core)`, emits one JSON object per line
+   (classification, judgment-required, recommended call, Reisner cell, extracted facts). One
+   transcript = one fresh game (sidesteps the FR-007 pending-confirmation guard; matches the
+   per-transcript corpus model). It is a **measurement tool** — it never aborts; per-line failures
+   are reported in the line's `error` field.
+4. **Add a transcript→score regression gate** (`evals/runners/transcript-score.sh` +
+   `evals/transcript-regression/cases.jsonl`) as a **HARD CI gate** on `macos-latest`. Because the
+   core runs as the macOS slice (only the macOS SDK + rust needed — both on GitHub runners), this
+   is a real gate, unlike the advisory `ios-build` (which needs the iOS-26 SDK).
+
+### Why this is the right move (and what it caught)
+
+Building the harness immediately surfaced a real regression: every deterministic play was rendering
+the **same** Reisner cell (`6-3` groundout) — home runs, walks, flyouts all scored as a 6-3
+groundout. Root cause: the work branched off a `main` that predated DL-154/#162 (the FactBridge
+play-type fix). After rebasing onto #162, the harness confirmed correct per-play rendering
+(HR→HR, walk→BB, flyout→8, K→K, error→judgment/Card B). This converted #162 from "compiled but
+unrun" to "measured-correct end-to-end" — and the gate would catch that whole class of regression
+on the next PR. **The audio→transcript (ASR) leg stays device/sim-bound** (`DiamondSpeech`,
+iOS-26 `SpeechAnalyzer`); this ADR covers only the deterministic transcript→score leg, where most
+of the scoring risk lives and which we fully control.
+
+### Reversibility
+
+High. `SpeechTypes` is a pure refactor (types moved, re-exported). The macOS slice is additive
+(iOS slices unchanged). `dl-score` + the regression gate are new, isolated artifacts.
+
+### Impact
+
+- **Agent-native:** Restores scoring parity — an agent/CLI can now score a play headlessly.
+- **Testing:** First headless end-to-end coverage of the transcript→score seam; HARD CI gate.
+- **Migration:** None. Existing iOS build (`make xcframework` → xcodebuild) is unaffected; the
+  macOS leg builds via `swift build --product dl-score` (never a bare `swift build`, which would
+  try to compile the iOS-only targets for macOS).
+- **Follow-ups:** (a) full-game sequential scoring mode (confirm/resolve each play) for
+  state-dependent Reisner cells; (b) wire the gold game's `narration.txt` → `dl-score` into
+  `accuracy.sh` for SC-001/SC-002 once the human gold scorecard lands (h3_ready); (c) grammar
+  ambiguity on "single to left field" (parses ambiguous) — a separate Parse issue.
+
+---
+
 ## ADR-0014 — Retrosheet Grammar Contract v1.2: Date Format Fix + H2 Export Replay Parity
 
 - **Status:** Accepted

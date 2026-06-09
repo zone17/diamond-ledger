@@ -18,6 +18,7 @@
 ///   convert their native float confidence via `Int(clamp(native * 100, 0, 100).rounded())`.
 
 import Foundation
+import SpeechTypes
 
 // MARK: - WoZ script enum (public — consumed by UI/PushToTalk)
 

@@ -72,6 +72,17 @@ IOS_DEVICE_TARGET="aarch64-apple-ios"
 IOS_SIM_ARM64_TARGET="aarch64-apple-ios-sim"
 IOS_SIM_X86_TARGET="x86_64-apple-ios"
 
+# macOS triples (arm64 + x86_64) — the headless `dl-score` CLI (DL-37) and the eval harness
+# run the deterministic core OFF the device (macOS dev box + CI macos runner), restoring
+# agent/CLI parity for the scoring pipeline (Art. II / FR-018, ADR-0015). The Rust core is
+# platform-independent (integer-only, no iOS deps), so the same static lib builds for darwin.
+MACOS_ARM64_TARGET="aarch64-apple-darwin"
+MACOS_X86_TARGET="x86_64-apple-darwin"
+ALL_TARGETS=(
+    "${IOS_DEVICE_TARGET}" "${IOS_SIM_ARM64_TARGET}" "${IOS_SIM_X86_TARGET}"
+    "${MACOS_ARM64_TARGET}" "${MACOS_X86_TARGET}"
+)
+
 info()  { printf '\033[0;32m[xcframework]\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33m[xcframework] WARN\033[0m %s\n' "$*" >&2; }
 fail()  { printf '\033[0;31m[xcframework] FAIL\033[0m %s\n' "$*" >&2; exit 1; }
@@ -83,9 +94,9 @@ command -v cargo >/dev/null 2>&1      || fail "cargo not found — install rustu
 
 info "Profile: ${PROFILE}   Out: ${OUT_DIR}"
 
-# ── Step 1: ensure iOS targets are installed ──────────────────────────────────
-info "Ensuring rustup iOS targets are installed..."
-for t in "${IOS_DEVICE_TARGET}" "${IOS_SIM_ARM64_TARGET}" "${IOS_SIM_X86_TARGET}"; do
+# ── Step 1: ensure all targets are installed ──────────────────────────────────
+info "Ensuring rustup targets are installed (iOS device/sim + macOS)..."
+for t in "${ALL_TARGETS[@]}"; do
     if ! rustup target list --installed 2>/dev/null | grep -qx "$t"; then
         info "  rustup target add $t"
         rustup target add "$t"
@@ -93,8 +104,8 @@ for t in "${IOS_DEVICE_TARGET}" "${IOS_SIM_ARM64_TARGET}" "${IOS_SIM_X86_TARGET}
 done
 
 # ── Step 2: build the static lib per target (WITH the uniffi feature) ──────────
-info "Building ${CRATE} (--features uniffi) for the iOS targets..."
-for t in "${IOS_DEVICE_TARGET}" "${IOS_SIM_ARM64_TARGET}" "${IOS_SIM_X86_TARGET}"; do
+info "Building ${CRATE} (--features uniffi) for iOS + macOS targets..."
+for t in "${ALL_TARGETS[@]}"; do
     info "  cargo build ${PROFILE_FLAG} --features uniffi --target ${t}"
     cargo build ${PROFILE_FLAG} --features uniffi -p "${CRATE}" --target "${t}"
 done
@@ -102,7 +113,9 @@ done
 device_lib="${REPO_ROOT}/target/${IOS_DEVICE_TARGET}/${PROFILE}/${LIB_BASENAME}.a"
 sim_arm_lib="${REPO_ROOT}/target/${IOS_SIM_ARM64_TARGET}/${PROFILE}/${LIB_BASENAME}.a"
 sim_x86_lib="${REPO_ROOT}/target/${IOS_SIM_X86_TARGET}/${PROFILE}/${LIB_BASENAME}.a"
-for f in "${device_lib}" "${sim_arm_lib}" "${sim_x86_lib}"; do
+macos_arm_lib="${REPO_ROOT}/target/${MACOS_ARM64_TARGET}/${PROFILE}/${LIB_BASENAME}.a"
+macos_x86_lib="${REPO_ROOT}/target/${MACOS_X86_TARGET}/${PROFILE}/${LIB_BASENAME}.a"
+for f in "${device_lib}" "${sim_arm_lib}" "${sim_x86_lib}" "${macos_arm_lib}" "${macos_x86_lib}"; do
     [[ -f "$f" ]] || fail "expected static lib not produced: $f"
 done
 
@@ -141,19 +154,26 @@ module ${FFI_MODULE} {
 }
 EOF
 
-# ── Step 5: lipo the two simulator arches into one fat static lib ─────────────
+# ── Step 5: lipo per-platform arches into fat static libs ─────────────────────
+# An XCFramework needs ONE library per (platform, variant). Same-platform arches are fused
+# with lipo; distinct platforms (ios / ios-simulator / macos) stay separate -library slices.
 info "lipo-ing simulator arches (arm64 + x86_64)..."
 SIM_FAT="${GEN_TMP}/${LIB_BASENAME}-sim.a"
 lipo -create "${sim_arm_lib}" "${sim_x86_lib}" -output "${SIM_FAT}"
+
+info "lipo-ing macOS arches (arm64 + x86_64)..."
+MACOS_FAT="${GEN_TMP}/${LIB_BASENAME}-macos.a"
+lipo -create "${macos_arm_lib}" "${macos_x86_lib}" -output "${MACOS_FAT}"
 
 # ── Step 6: assemble the XCFramework (delete-before-regenerate) ────────────────
 mkdir -p "${OUT_DIR}"
 XCF="${OUT_DIR}/${FRAMEWORK_NAME}.xcframework"
 rm -rf "${XCF}"
-info "Creating ${FRAMEWORK_NAME}.xcframework..."
+info "Creating ${FRAMEWORK_NAME}.xcframework (ios device + ios-sim + macos)..."
 xcodebuild -create-xcframework \
     -library "${device_lib}" -headers "${HEADERS_DIR}" \
     -library "${SIM_FAT}"    -headers "${HEADERS_DIR}" \
+    -library "${MACOS_FAT}"  -headers "${HEADERS_DIR}" \
     -output "${XCF}"
 
 # Place the Swift bindings next to the framework (renamed to the framework name).

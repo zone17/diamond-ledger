@@ -104,8 +104,19 @@ info "FIELD ACCURACY MODE — gold game: ${GAME_ID}, scorer: ${REISNER_SCORER}"
 
 SCORER_BIN="${DL_PIPELINE_SCORER:-}"
 if [[ -z "${SCORER_BIN}" || ! -x "${SCORER_BIN}" ]]; then
-    fail "FIELD ACCURACY MODE requires the end-to-end pipeline scorer (audio→ASR→parse→core)."
-    fail "Set \$DL_PIPELINE_SCORER to the scorer binary (Squad B, T046–T050)."
+    fail "FIELD ACCURACY MODE requires the end-to-end pipeline scorer."
+    fail ""
+    fail "The headless TRANSCRIPT→score scorer now exists (DL-37 / ADR-0015): the \`dl-score\`"
+    fail "CLI (transcript → GrammarParser → real core → JSON). Build + point at it with:"
+    fail "    (cd ios && swift build --product dl-score)"
+    fail "    export DL_PIPELINE_SCORER=\"\$(cd ios && swift build --product dl-score --show-bin-path)/dl-score\""
+    fail "Feed the gold game's \`audio/narration.txt\` transcript fallback to it and diff the"
+    fail "play_type / reisner_catalyst against reisner/scorecard.json (SC-001/SC-002)."
+    fail ""
+    fail "The AUDIO→transcript (ASR) leg stays device/sim-bound (DiamondSpeech, iOS-26). For the"
+    fail "deterministic transcript→score path, a headless regression gate runs TODAY:"
+    fail "    bash evals/runners/transcript-score.sh   (evals/transcript-regression/cases.jsonl)"
+    fail ""
     fail "Refusing to emit a field-accuracy PASS without actually measuring it (INTERFACE.md §3.4)."
     exit 1
 fi
