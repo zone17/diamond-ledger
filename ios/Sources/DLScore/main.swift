@@ -37,7 +37,9 @@ import Core
 // MARK: - Output schema
 
 /// One scored line. Codable → JSON. Field names are snake_case to match the wire format the
-/// eval corpora and the Rust boundary use (DL-67/ADR-0009).
+/// eval corpora and the Rust boundary use (DL-67/ADR-0009). All fields past `classification`
+/// default to nil/false so the failure/success factories below stay one-liners (no 13-arg
+/// memberwise init repeated at every emit site).
 struct ScoredLine: Codable {
     let transcript: String
     /// The normalized facts the GrammarParser extracted (diagnostic — shows what the parser saw,
@@ -45,34 +47,49 @@ struct ScoredLine: Codable {
     let facts: [String: String]
     /// true iff the grammar parsed AND the core accepted the facts.
     let ok: Bool
-    /// "deterministic" | "judgment" | "out_of_format" | "parse_error"
+    /// "deterministic" | "judgment" | "out_of_format" | "parse_error" | "core_error"
     let classification: String
-    /// For a judgment play: "hit_vs_error" | "earned_vs_unearned" | "contested_credit" |
-    /// "ambiguous_advance". nil otherwise.
-    let judgment_kind: String?
+    /// The associated reason string for an `out_of_format` classification (nil otherwise).
+    var out_of_format_reason: String? = nil
+    /// For a judgment play: the JudgmentKind rawValue (e.g. "hitVsError"). nil otherwise.
+    var judgment_kind: String? = nil
     /// true iff the core surfaced an open judgment (Card B). The cardinal SC-003 signal.
-    let judgment_required: Bool
+    var judgment_required: Bool = false
+    /// The open judgment's decision id — an agent needs this to resolve it headlessly (FR-011).
+    var decision_id: UInt64? = nil
+    /// The alternative scoring-call tokens an agent/scorer may choose from to resolve the judgment.
+    var alternatives: [String]? = nil
+    /// One-line rationale for the core's recommended call (judgment path).
+    var recommended_reason: String? = nil
     /// Loop-control: "none" | "confirm" | "clarify" | "judgment".
-    let needs: String?
-    /// The core's recommended call token (e.g. "single", "groundout:6-3", "hit", "error:6").
-    let recommended_token: String?
+    var needs: String? = nil
+    /// The core's recommended call token (judgment path; e.g. "hit", "error:6").
+    var recommended_token: String? = nil
     /// Human-readable recommended label.
-    let recommended_label: String?
+    var recommended_label: String? = nil
     /// Rendered Reisner cell (situation/catalyst/runner-fate/pitch-marks).
-    let reisner_situation: String?
-    let reisner_catalyst: String?
-    let reisner_runner_fate: String?
+    var reisner_situation: String? = nil
+    var reisner_catalyst: String? = nil
+    var reisner_runner_fate: String? = nil
     /// Populated only when ok == false (parse failure / out-of-grammar / core error).
-    let error: String?
+    var error: String? = nil
+
+    /// A failed line (parse error / core error) — `ok=false`, only the diagnostic fields set.
+    static func failure(transcript: String, facts: [String: String], classification: String,
+                        error: String) -> ScoredLine {
+        ScoredLine(transcript: transcript, facts: facts, ok: false,
+                   classification: classification, error: error)
+    }
 }
 
 // MARK: - Helpers
 
-func classificationLabel(_ c: RecordPlayClassification) -> (String, String?) {
+/// (classification label, judgment kind, out-of-format reason) for a core classification.
+func classificationLabel(_ c: RecordPlayClassification) -> (String, String?, String?) {
     switch c {
-    case .deterministic:           return ("deterministic", nil)
-    case .judgment(let kind):      return ("judgment", kind.rawValue)
-    case .outOfFormat:             return ("out_of_format", nil)
+    case .deterministic:            return ("deterministic", nil, nil)
+    case .judgment(let kind):       return ("judgment", kind.rawValue, nil)
+    case .outOfFormat(let reason):  return ("out_of_format", nil, reason)
     }
 }
 
@@ -140,22 +157,11 @@ struct DLScore {
             case .ambiguous(let c):    reason = "ambiguous(\(c.count) candidates)"
             case .emptyInput:          reason = "empty_input"
             }
-            emit(ScoredLine(
-                transcript: transcript, facts: [:], ok: false, classification: "parse_error",
-                judgment_kind: nil, judgment_required: false, needs: nil,
-                recommended_token: nil, recommended_label: nil,
-                reisner_situation: nil, reisner_catalyst: nil, reisner_runner_fate: nil,
-                error: reason
-            ))
+            emit(.failure(transcript: transcript, facts: [:], classification: "parse_error", error: reason))
             return
         } catch {
-            emit(ScoredLine(
-                transcript: transcript, facts: [:], ok: false, classification: "parse_error",
-                judgment_kind: nil, judgment_required: false, needs: nil,
-                recommended_token: nil, recommended_label: nil,
-                reisner_situation: nil, reisner_catalyst: nil, reisner_runner_fate: nil,
-                error: "parse: \(error)"
-            ))
+            emit(.failure(transcript: transcript, facts: [:], classification: "parse_error",
+                          error: "parse: \(error)"))
             return
         }
 
@@ -170,27 +176,28 @@ struct DLScore {
                 gameId: game.gameId, ownerId: ownerId,
                 normalizedFacts: facts, correlationId: "p-\(corr)"
             )
-            let (cls, kind) = classificationLabel(r.classification)
+            let (cls, kind, oofReason) = classificationLabel(r.classification)
+            // Judgment payload — an agent needs decision_id + alternatives to RESOLVE it headlessly
+            // (FR-011), not just the boolean that one is open (agent-native parity, AN-1).
+            let j = r.judgment
             emit(ScoredLine(
                 transcript: transcript, facts: facts, ok: true, classification: cls,
+                out_of_format_reason: oofReason,
                 judgment_kind: kind,
                 judgment_required: r.needs == .judgment,
+                decision_id: j?.id,
+                alternatives: j.map { $0.alternatives.map(\.token) },
+                recommended_reason: j?.recommendation.oneLineReason,
                 needs: r.needs.rawValue,
-                recommended_token: r.judgment?.recommendation.call.token,
-                recommended_label: r.judgment?.recommendation.call.label,
+                recommended_token: j?.recommendation.call.token,
+                recommended_label: j?.recommendation.call.label,
                 reisner_situation: r.reisner.situationDiamond,
                 reisner_catalyst: r.reisner.catalystSymbols,
-                reisner_runner_fate: "\(r.reisner.runnerFate)",
-                error: nil
+                reisner_runner_fate: "\(r.reisner.runnerFate)"
             ))
         } catch {
-            emit(ScoredLine(
-                transcript: transcript, facts: facts, ok: false, classification: "core_error",
-                judgment_kind: nil, judgment_required: false, needs: nil,
-                recommended_token: nil, recommended_label: nil,
-                reisner_situation: nil, reisner_catalyst: nil, reisner_runner_fate: nil,
-                error: "core: \(error)"
-            ))
+            emit(.failure(transcript: transcript, facts: facts, classification: "core_error",
+                          error: "core: \(error)"))
         }
     }
 }

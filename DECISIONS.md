@@ -66,6 +66,22 @@ on the next PR. **The audio→transcript (ASR) leg stays device/sim-bound** (`Di
 iOS-26 `SpeechAnalyzer`); this ADR covers only the deterministic transcript→score leg, where most
 of the scoring risk lives and which we fully control.
 
+### Alternatives Considered
+
+1. **Run the scorer on the iOS Simulator (no macOS slice).** Drive the existing sim XCFramework
+   slice via `xcrun simctl spawn` / an XCUITest harness. Rejected: heavyweight and flaky for CI,
+   needs the iOS-26 SDK (the very constraint that makes `ios-build` advisory), and still wouldn't
+   give a plain CLI binary an agent can invoke.
+2. **Port the GrammarParser to Rust** so the whole pipeline lives in the existing `adapters/cli`
+   Rust binary (no Swift, no macOS slice). Rejected for v1: the parser is a reviewed, hardened
+   Swift artifact (DL-151) and a rewrite would duplicate it and risk behavioral drift; reusing it
+   via a thin Swift CLI is lower-risk. (A future Rust port remains open if Android needs it.)
+3. **Keep accuracy "self-consistency, advisory" until the gold game lands.** Rejected: leaves the
+   make-or-break capability unmeasured indefinitely and violates parity (Art. II) in the meantime.
+4. **Score full games (sequential confirm/resolve) from the start** rather than one-play-per-game.
+   Deferred (follow-up a): needs a judgment-resolution policy and gold per-play state; the
+   per-transcript model matches the existing corpora and unblocks the parity + measurement win now.
+
 ### Reversibility
 
 High. `SpeechTypes` is a pure refactor (types moved, re-exported). The macOS slice is additive
@@ -73,15 +89,29 @@ High. `SpeechTypes` is a pure refactor (types moved, re-exported). The macOS sli
 
 ### Impact
 
-- **Agent-native:** Restores scoring parity — an agent/CLI can now score a play headlessly.
-- **Testing:** First headless end-to-end coverage of the transcript→score seam; HARD CI gate.
+- **Agent-native:** Restores scoring parity for the read/classify leg — an agent/CLI can now score
+  a transcript headlessly, including the judgment payload (decision id + alternatives) needed to
+  resolve a Card B. The write/lifecycle verbs (confirm/resolve/finalize/correct) remain UI-only —
+  a tracked parity gap (follow-up d).
+- **Testing:** First headless coverage of the **deterministic, isolated-play** transcript→score
+  seam; HARD CI gate. NOT covered: state-dependent scoring (runners/outs/inning — fresh-game-per-
+  line), the audio→transcript ASR leg (device-bound), and the four judgment kinds beyond HitVsError.
+- **Security:** No new attack surface — `dl-score` reads stdin/a file and emits JSON; no network,
+  no auth, no secrets, no persisted state. The new CI job pins the same action SHAs as existing
+  jobs and routes no untrusted expressions into shell (Art. XXVI).
+- **Operational:** Adds one `macos-latest` CI job that builds the XCFramework + `dl-score` (~2–3
+  min, cargo-cached). A genuine toolchain/SDK outage on the runner now HARD-FAILS (not a silent
+  skip), so a vacuous green is impossible on Darwin; non-Darwin remains an advisory skip.
 - **Migration:** None. Existing iOS build (`make xcframework` → xcodebuild) is unaffected; the
   macOS leg builds via `swift build --product dl-score` (never a bare `swift build`, which would
   try to compile the iOS-only targets for macOS).
+- **Cost:** One added macOS CI job per PR (cargo-cached); negligible.
 - **Follow-ups:** (a) full-game sequential scoring mode (confirm/resolve each play) for
-  state-dependent Reisner cells; (b) wire the gold game's `narration.txt` → `dl-score` into
-  `accuracy.sh` for SC-001/SC-002 once the human gold scorecard lands (h3_ready); (c) grammar
-  ambiguity on "single to left field" (parses ambiguous) — a separate Parse issue.
+  state-dependent Reisner cells + the SC-003-under-prior-pending-state path; (b) wire the gold
+  game's `narration.txt` → `dl-score` into `accuracy.sh` for SC-001/SC-002 once the human gold
+  scorecard lands (h3_ready); (c) grammar ambiguity on "single to left field" (parses ambiguous) —
+  a separate Parse issue; (d) headless confirm/resolve/finalize verbs for full write-side parity;
+  (e) adversarial wrong-role corpus cases + the other three judgment kinds + double-play.
 
 ---
 

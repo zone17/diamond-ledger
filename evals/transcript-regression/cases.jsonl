@@ -11,7 +11,7 @@
 {"id":"tr-single","transcript":"single","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"1B"}
 {"id":"tr-hbp","transcript":"hit by pitch","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"HBP"}
 {"id":"tr-sacfly","transcript":"sacrifice fly to center","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"SF8"}
-{"id":"tr-judgment-error-ss","transcript":"reached on error by the shortstop","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_reisner_catalyst":"6"}
-{"id":"tr-judgment-error-3b","transcript":"error on the third baseman, batter reached first","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_reisner_catalyst":"5"}
+{"id":"tr-judgment-error-ss","transcript":"reached on error by the shortstop","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_judgment_kind":"hitVsError","expect_reisner_catalyst":"6"}
+{"id":"tr-judgment-error-3b","transcript":"error on the third baseman, batter reached first","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_judgment_kind":"hitVsError","expect_reisner_catalyst":"5"}
 {"id":"tr-guard-dropped-third-strike","transcript":"dropped third strike, batter reached first","expect_ok":false,"expect_classification":"parse_error","expect_judgment_required":false,"expect_error":"out_of_grammar"}
 {"id":"tr-guard-gibberish","transcript":"the quick brown fox jumps","expect_ok":false,"expect_classification":"parse_error","expect_judgment_required":false,"expect_error":"out_of_grammar"}
