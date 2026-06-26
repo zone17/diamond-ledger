@@ -21,10 +21,12 @@
 ///
 /// - SeeAlso: `ios/Sources/Core/CoreClient.swift` — `ownerId` used in every primitive call.
 /// - SeeAlso: `ios/Sources/UI/Share/` (T082, post-MVP) — explicit share action.
-/// - TODO: T081 — implement email + Apple Sign-In; establish authenticated `ownerId`;
-///   wire COPPA consent flow (FR-029); wire private-by-default posture (T055 / FR-023).
+/// - SeeAlso: `specs/001-voice-scorebook-core/contracts/owner_identity.md` — the contract.
+/// - Decision: ADR-0016 — v1 is on-device Sign in with Apple; email/Google deferred to the
+///   backend (an offline app has nothing to verify a password against).
 
 import Foundation
+import AuthenticationServices
 
 // MARK: - Auth session
 
@@ -34,8 +36,8 @@ import Foundation
 /// (FR-020 / T036). It MUST be cryptographically tied to the sign-in credential —
 /// a bare UUID generated client-side is NOT acceptable for the authority claim.
 ///
-/// TODO: T081 — replace with a real signed-in session (Keychain-backed).
-public struct AuthSession: Sendable {
+/// Persisted in the Keychain by `KeychainSessionStore` (Codable); restored on launch (ADR-0016).
+public struct AuthSession: Sendable, Codable, Equatable {
     /// Stable owner identity, passed to every `CoreClient` primitive call.
     public let ownerId: String
     /// Display name for UI (not used for authority decisions).
@@ -71,40 +73,105 @@ public enum AuthError: Error, Sendable {
     case coppaConsentRequired
     /// The sign-in method is not available on this device.
     case methodUnavailable(SignInMethod)
+    /// The user dismissed the sign-in flow (not an error to surface loudly).
+    case cancelled
+    /// The session could not be persisted to / cleared from the Keychain.
+    case persistenceFailed(String)
 }
 
-// MARK: - AuthStore placeholder
+// MARK: - AuthStore
 
-/// Manages the current `AuthSession`.
+/// Establishes and persists the authenticated owner session (T081 / ADR-0016).
 ///
-/// TODO: T081 — implement with Keychain-backed credential storage + Apple Sign-In entitlement.
-/// Until T081 lands, callers in development may use a development-only stub session
-/// (never shipped to production — gated by a `#if DEBUG` or scheme flag).
-public actor AuthStore {
+/// v1 authentication is **on-device Sign in with Apple**: the stable, app+team-scoped
+/// `ASAuthorizationAppleIDCredential.user` becomes `ownerId = "apple:<user>"`, persisted in the
+/// Keychain so the owner survives launches. The Rust core *validates* this `ownerId` for authority
+/// (FR-020/I5) but never *authenticates* it — that is this type's job. Email/Google are deferred
+/// to the sync/backend milestone (ADR-0016 §3); an offline app has no backend to verify a password.
+///
+/// `@MainActor`: sign-in is a UI flow and the session is consumed by the `@MainActor` `AppState`.
+@MainActor
+public final class AuthStore {
     public static let shared = AuthStore()
 
-    private var _session: AuthSession?
+    private let store: SessionStore
 
-    private init() {}
-
-    /// The currently authenticated session, or `nil` if not signed in.
-    public var session: AuthSession? { _session }
-
-    /// Sign in with email + password.
-    /// TODO: T081 — implement.
-    public func signIn(email: String, password: String) async throws -> AuthSession {
-        throw AuthError.notAuthenticated  // Placeholder — T081.
+    /// - Parameter store: session persistence (defaults to the Keychain-backed store; tests inject
+    ///   `InMemorySessionStore`).
+    public init(store: SessionStore = KeychainSessionStore()) {
+        self.store = store
     }
 
-    /// Sign in with Apple Sign-In.
-    /// TODO: T081 — implement (requires `com.apple.developer.applesignin` entitlement).
-    public func signInWithApple() async throws -> AuthSession {
-        throw AuthError.methodUnavailable(.apple)  // Placeholder — T081.
+    /// The Apple-credential namespace prefix for a v1 `ownerId`.
+    public static let appleOwnerPrefix = "apple:"
+
+    /// Derive the stable owner identity from an Apple credential user id (ADR-0016). Namespaced by
+    /// method so provenance is auditable and method namespaces can never collide.
+    public static func ownerId(forAppleUserID userID: String) -> String {
+        "\(appleOwnerPrefix)\(userID)"
     }
 
-    /// Sign out, clearing the stored session.
-    /// TODO: T081 — implement (clear Keychain credential + notify UI).
-    public func signOut() async {
-        _session = nil
+    /// Establish (and persist) a session from a completed Sign-in-with-Apple authorization.
+    ///
+    /// - Parameters:
+    ///   - appleUserID: `ASAuthorizationAppleIDCredential.user` — stable, app+team-scoped, opaque.
+    ///   - fullName: optional name from the first authorization (Apple sends it only once).
+    /// - Returns: the persisted `AuthSession`.
+    /// - Throws: `.invalidCredentials` (empty user id) or `.persistenceFailed` (Keychain).
+    @discardableResult
+    public func establishAppleSession(appleUserID: String,
+                                      fullName: PersonNameComponents?) throws -> AuthSession {
+        let trimmed = appleUserID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw AuthError.invalidCredentials("empty Apple user id") }
+
+        let session = AuthSession(ownerId: Self.ownerId(forAppleUserID: trimmed),
+                                  displayName: Self.displayName(from: fullName),
+                                  signInMethod: .apple)
+        try store.save(session)
+        return session
+    }
+
+    /// Restore a persisted session on launch. For an Apple session, verify the credential is still
+    /// valid; a revoked/absent credential signs the user out (clears storage, returns `nil`).
+    public func restoreSession() async -> AuthSession? {
+        guard let session = store.load() else { return nil }
+        switch session.signInMethod {
+        case .apple:
+            guard session.ownerId.hasPrefix(Self.appleOwnerPrefix) else {
+                store.clear()
+                return nil
+            }
+            let userID = String(session.ownerId.dropFirst(Self.appleOwnerPrefix.count))
+            let state = await Self.appleCredentialState(forUserID: userID)
+            if state == .authorized { return session }
+            store.clear()
+            return nil
+        case .email, .google:
+            // Reserved (ADR-0016 follow-up a) — no local credential to re-verify yet.
+            return session
+        }
+    }
+
+    /// Sign out: clear the persisted session.
+    public func signOut() {
+        store.clear()
+    }
+
+    // MARK: - Helpers
+
+    private static func displayName(from name: PersonNameComponents?) -> String {
+        guard let name else { return "Scorer" }
+        let formatted = PersonNameComponentsFormatter().string(from: name)
+        return formatted.isEmpty ? "Scorer" : formatted
+    }
+
+    private static func appleCredentialState(
+        forUserID userID: String
+    ) async -> ASAuthorizationAppleIDProvider.CredentialState {
+        await withCheckedContinuation { continuation in
+            ASAuthorizationAppleIDProvider().getCredentialState(forUserID: userID) { state, _ in
+                continuation.resume(returning: state)
+            }
+        }
     }
 }

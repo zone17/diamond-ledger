@@ -6,6 +6,110 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0016 — v1 owner identity is on-device Sign in with Apple; no-backend email/password deferred (T081)
+
+- **Status:** Accepted
+- **Date:** 2026-06-26
+- **Owner:** Squad B (T081, Story B0, #117/#118)
+- **Implements:** Owner-as-decider authority (FR-020/I5/T036), private-by-default (FR-023),
+  account/sign-in (FR-028), COPPA-aligned consent (FR-029); unblocks H1 real-core integration on
+  device (the core's authority assertion needs a *real* owner identity, not a stub).
+- **Tickets:** #118 (T081), #117 (Story B0); toward #34 (F-Integration MVP demo), #38 (T074)
+
+### Context
+
+The Rust core (`core/src/authz.rs`) does **authorization, not authentication**: every primitive
+calls `assert_authority(actor, game_authority)` (is `actor.id == owner_id`?) and
+`assert_nontrivial_identity(actor)` (reject empty / `anonymous` / `unknown`). It deliberately
+*trusts the adapter* to supply a real identity — proving the caller is who they claim is the
+client's job. Today the iOS client supplies that identity from a **dev stub** (`AppState.devSignIn`
+→ `dev-owner-<slug>`), so every authority and privacy claim (FR-020/FR-023) is currently vacuous,
+and `AppState.devSignIn` is not `#if DEBUG`-gated — it compiles into release.
+
+The spec asks for **email + social sign-in** (FR-028) while also requiring the app to be **fully
+offline / on-device** with the cloud used "only for later sync" (FR-026). These collide: an
+offline app with **no backend** has nothing to verify an email **password** against. Shipping an
+email/password form that silently accepts anything (as the current `SignInView` catch-block does in
+DEBUG) would be **fake authentication** — exactly the kind of proxy-not-real-signal the project
+forbids.
+
+### Decision
+
+1. **Sign in with Apple is the real v1 owner identity.** `ASAuthorizationAppleIDCredential.user`
+   is a stable, app+team-scoped, opaque identifier that is established on-device and persists
+   offline after first sign-in. The v1 `ownerId` is `apple:<credential.user>` — namespaced by
+   method so provenance is auditable and method namespaces can never collide.
+2. **Persist the session in the Keychain** (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`):
+   `{ ownerId, displayName, method }`. On launch, restore it and — for Apple sessions — verify
+   `ASAuthorizationAppleIDProvider.getCredentialState`; if the credential was revoked, sign out.
+3. **Email + password is deferred to the sync/backend milestone**, not shipped as a local fake.
+   The `SignInMethod.email`/`.google` cases remain in the type for forward-compat; the UI presents
+   only Apple for v1 (+ the `#if DEBUG` dev button). When a backend exists, email/password becomes
+   a real provider with the same `AuthSession` shape.
+4. **COPPA (FR-029): a minimal on-device age-gate now; verified parental consent deferred** with
+   the backend (verifiable consent is an out-of-band/server process — it cannot be done credibly
+   offline). The gate runs once before any game is recorded; under-13 is blocked from recording
+   pending the consent flow. This keeps the T070 privacy marker honest rather than decorative.
+5. **The core is unchanged.** `assert_nontrivial_identity` already rejects trivial ids; the agent
+   parity path keeps its named capability identity (`dl-score-harness`, a tracked trust boundary
+   per Art. XXIX). The only core-adjacent fix is at the iOS layer: **gate `AppState.devSignIn` in
+   `#if DEBUG`** so a release build cannot mint a `dev-owner-*` identity.
+
+### Why this is the right move
+
+It makes the authority/privacy claims **real** with the **minimum** that an offline app can honestly
+support, and it is the App-Store-required path anyway (an app with third-party or account sign-in
+must offer Sign in with Apple). It avoids building — and then having to secure and migrate — a
+password store the offline architecture cannot validate. It is squarely "minimal real sign-in"
+per T081, and it unblocks H1 (real core on device) without waiting on a backend.
+
+### Alternatives Considered
+
+1. **Email + password now, validated locally.** Rejected: with no backend there is nothing to
+   validate against; it is fake auth that implies a security guarantee it cannot keep.
+2. **Anonymous device identity (Keychain-generated UUID), no provider.** Rejected as the *primary*
+   path: it is a real *local* id but not a real *account* (no recovery, not portable across
+   devices, indistinguishable from the stub we are removing). Retained only as a possible
+   explicitly-labeled "local-only" fallback if a user has no Apple ID — out of scope for this slice.
+3. **Stand up a backend auth service for v1.** Rejected: violates the offline-first architecture
+   (FR-026) and ADR-0007's no-CRDT/sync-later posture; large scope for a demand-unvalidated product.
+4. **Keep the dev stub for the demo.** Rejected: the ~20-scorer demo (T074) is the artifact that
+   feeds the 2026-07-31 demand review; a stubbed owner makes its authority/privacy story untrue.
+
+### Threat model (Art. XXVI/XXVIII/XXIX)
+
+- **Identity origin:** on iOS the `ownerId` comes from a Keychain-stored Apple credential, never
+  from a user-typed field — so a user cannot impersonate another owner by typing their id. Games
+  are local and owner-bound; cross-device access requires sync (post-v1), where server-side
+  authorization will be (re)introduced.
+- **Adapter trust:** the core trusts the adapter's `owner_id` by design. The agent/CLI surface
+  (`dl-score-harness`) is a named, documented capability identity — not ambient authority.
+- **Storage:** Keychain item is device-scoped (`…ThisDeviceOnly`); no password is stored (Apple
+  holds the credential); "Hide My Email" is supported (we never store email). No identity is logged.
+
+### Reversibility
+
+High. All changes are on the iOS auth seam behind the existing `AuthSession`/`AuthStore` API and a
+new Keychain helper; the core, the contracts of every scoring primitive, and the agent path are
+untouched. Adding email/password later is additive (a new provider returning the same session).
+
+### Impact
+
+- **Agent-native:** unchanged — the headless path keeps its capability identity; parity holds.
+- **Security/privacy:** authority (FR-020) and private-by-default (FR-023) become *real*; the
+  release dev-stub hole is closed; a COPPA gate exists before any recording (FR-029).
+- **Build/provisioning:** requires the `com.apple.developer.applesignin` entitlement + the
+  capability enabled in the Apple Developer portal for the app id — a **human provisioning step**.
+  Code + `project.yml` entitlement land here; the portal toggle is a handoff item.
+- **Verification:** the Sign-in-with-Apple flow needs a real device + Apple ID + Xcode 26; like the
+  ASR leg it is **device-gated** — unit-testable parts (owner-id derivation, Keychain round-trip,
+  COPPA gate state) are covered; the full flow is verified on device.
+- **Follow-ups:** (a) email/password + Google as real providers when the sync backend exists;
+  (b) verified parental consent flow (FR-029) with that backend; (c) explicit share-link (T082,
+  #119); (d) "local-only" no-Apple-ID fallback identity if demand surfaces it.
+
+---
+
 ## ADR-0015 — Headless transcript→score pipeline (`dl-score`) + macOS core slice: agent/CLI parity for scoring
 
 - **Status:** Accepted

@@ -18,13 +18,16 @@
 /// - SeeAlso: `ios/Sources/UI/PushToTalk/PushToTalkView.swift` (T052)
 
 import SwiftUI
+import Auth
 
 // MARK: - RootView
 //
 // The `@main` app entry lives in the app target (App/DiamondLedgerApp.swift), which wraps
 // this library. `RootView` is the public root the app target renders.
 
-/// Gating router: shows SignInView when unauthenticated, MainView when signed in.
+/// Gating router (ADR-0016): unauthenticated → SignInView; signed-in but age gate unanswered →
+/// AgeGateView; under-13 → Under13BlockedView; otherwise → MainView. Restores a persisted owner
+/// session on launch.
 public struct RootView: View {
     @Environment(AppState.self) private var appState
 
@@ -32,12 +35,19 @@ public struct RootView: View {
 
     public var body: some View {
         Group {
-            if appState.session != nil {
-                MainView()
-            } else {
+            if appState.session == nil {
                 SignInView()
+            } else if appState.consentStatus == .blockedUnder13 {
+                Under13BlockedView()           // FR-029 — under-13 cannot record in v1.
+            } else if !appState.consentResolved {
+                AgeGateView()                  // FR-029 — ask once before any recording.
+            } else {
+                MainView()
             }
         }
         .animation(.easeInOut(duration: 0.25), value: appState.session != nil)
+        .animation(.easeInOut(duration: 0.25), value: appState.consentStatus)
+        // Restore a persisted owner session on launch (ADR-0016); revoked Apple credential → nil.
+        .task { await appState.restoreSession() }
     }
 }
