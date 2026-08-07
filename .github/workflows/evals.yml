@@ -81,15 +81,23 @@ jobs:
         run: |
           set -euo pipefail
           manifest=tools/ci/model-powered-paths.txt
-          if [ ! -f "$manifest" ]; then
-            echo "::error::$manifest is missing. It is the source of truth for which paths make a change model-powered."
-            exit 1
-          fi
           git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
-          patterns=$(sed -e 's/#.*//' -e 's#/\*\*$##' -e 's/[[:space:]]*$//' "$manifest" | grep -v '^$')
+          # Read the model-powered-path policy from the BASE branch, not the PR
+          # checkout: a PR must not be able to narrow the manifest it is judged
+          # against and thereby disable its own required check.
+          manifest_content=$(git show "origin/${BASE_REF}:$manifest" 2>/dev/null) || {
+            echo "::error::$manifest not found on the base branch origin/${BASE_REF}. The model-powered-path policy is read from the base so a PR cannot narrow the set it is judged against; restore it on the base branch."
+            exit 1
+          }
+          patterns=$(printf '%s\n' "$manifest_content" | sed -e 's/#.*//' -e 's#/\*\*$##' -e 's/[[:space:]]*$//' | grep -v '^$')
+          # Capture the changed-file list before matching. Never pipe git directly
+          # into `grep -q`: grep closes the pipe on first match, git dies with
+          # SIGPIPE (141), pipefail propagates it, the `if` reads false, and a real
+          # match on a large PR reads as "no model-powered path" — a fail-open green.
+          changed=$(git diff --name-only "origin/${BASE_REF}...HEAD")
           hit=false
           for p in $patterns; do
-            if git diff --name-only "origin/${BASE_REF}...HEAD" | grep -q "^${p}/"; then hit=true; fi
+            if grep -q "^${p}/" <<< "$changed"; then hit=true; fi
           done
           if [ "$hit" = "false" ]; then
             echo "::notice::No model-powered path touched — evals not required for this PR. Reporting green so the required check never blocks an unrelated change."
@@ -104,6 +112,9 @@ jobs:
           # than interpolated into the script body.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Passed through env, never interpolated: used to read the base-branch
+          # armed-state so a PR cannot re-add the scaffold marker to disarm.
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
           config=evals/promptfooconfig.yaml
@@ -126,8 +137,12 @@ jobs:
 
           # Guard 2 — is it still the scaffold? One marker line, deliberately easy
           # to delete, so arming the gate is a visible one-line diff in review.
-          if grep -q '^#[[:space:]]*promptfoo-scaffold:[[:space:]]*true' "$config"; then
-            fail_or_skip "evals/promptfooconfig.yaml is still the scaffold (it carries the '# promptfoo-scaffold: true' marker, a placeholder provider and example assertions). Write real suites per evals/README.md and delete that line to arm this gate."
+          # Judge the armed-state from the BASE branch so a PR cannot re-add the
+          # scaffold marker to disarm an already-armed gate. When the config is new
+          # in this PR (absent on base), fall back to the PR's own copy.
+          marker_src=$(git show "origin/${BASE_REF}:$config" 2>/dev/null) || marker_src=$(cat "$config")
+          if grep -q '^#[[:space:]]*promptfoo-scaffold:[[:space:]]*true' <<< "$marker_src"; then
+            fail_or_skip "evals/promptfooconfig.yaml is still the scaffold on the base branch (it carries the '# promptfoo-scaffold: true' marker, a placeholder provider and example assertions). Write real suites per evals/README.md and delete that line on the base branch to arm this gate."
           fi
 
           # Guard 3 — can it actually reach a model?
