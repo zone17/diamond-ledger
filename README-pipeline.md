@@ -2,6 +2,8 @@
 
 This repo was created from `zone17/project-template`. It carries the full pipeline configuration: run `specify workflow run idea-to-delivery --json` and work the gates. Machine layer (skills + hooks in `~/.claude/`) applies globally — nothing to install per-project. Full reference: the Pipeline v2.2 doc; implementation contract: the Pipeline Build Spec (Units 0–11).
 
+**Where are we?** Run `/pipeline-status` (or `bash tools/pipeline-status.sh`) for a deterministic scan of which phases are done and what's next. It writes `docs/pipeline-status.json`; the workflow's step 0 reads it (`tools/pipeline-status.sh --check <phase>`) to skip foundation phases already complete, so re-running the pipeline never re-does finished work.
+
 ## Phase A — Foundation (once per project)
 
 | # | Step | Command | Gate |
@@ -48,7 +50,8 @@ This repo was created from `zone17/project-template`. It carries the full pipeli
 
 1. `specify init --here --integration claude` (merges with these files), then `specify check` (exits 0 unconditionally — read its output, don't trust the exit code)
 2. `specify extension add <name>` once per extension — sync, reconcile, retrospective, test-coverage-drift-control — then wireframe via its ZIP URL (one extension per invocation; a multi-name call errors)
-3. Verify the machine layer is live (`design-foundation`, `feature-design`, `verify-acceptance`, `design-qa` skills; enforcement hooks) — restore from `zone17/claude-config` if missing
-4. `specify workflow run idea-to-delivery --json`
+3. `bash tools/ci/apply-ruleset.sh` — makes the three CI gates required status checks on `main` (idempotent; verifies on rerun). Without it the gates are advisory: a red PR can still merge. Needs `gh` with admin on the repo; read `tools/ci/README.md` for the solo-repo review-rule rationale and the arming checklist
+4. Verify the machine layer is live (`design-foundation`, `feature-design`, `verify-acceptance`, `design-qa` skills; enforcement hooks) — restore from `zone17/claude-config` if missing
+5. `specify workflow run idea-to-delivery --json`
 
 Keep this template the single source of truth: improvements to workflows/templates/CI land here, and existing projects pull them deliberately.
