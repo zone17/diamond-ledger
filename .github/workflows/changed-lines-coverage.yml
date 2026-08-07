@@ -78,9 +78,14 @@ jobs:
           # Code paths. Unlike the sacred-path workflows there is no manifest
           # file for these: the set is "wherever application code lives" and is
           # expected to be tuned per repo. Add your source roots here.
+          # Capture the changed-file list before matching. Never pipe git directly
+          # into `grep -q`: grep closes the pipe on first match, git dies with
+          # SIGPIPE (141), pipefail propagates it, the `if` reads false, and a real
+          # match on a large PR reads as "no code path" — a fail-open green.
+          changed=$(git diff --name-only "${COMPARE_BRANCH}...HEAD")
           hit=false
           for p in src lib app; do
-            if git diff --name-only "${COMPARE_BRANCH}...HEAD" | grep -q "^${p}/"; then hit=true; fi
+            if grep -q "^${p}/" <<< "$changed"; then hit=true; fi
           done
           if [ "$hit" = "false" ]; then
             echo "::notice::No code path touched — changed-lines coverage not required for this PR. Reporting green so the required check never blocks an unrelated change."
@@ -129,7 +134,8 @@ jobs:
           if [ -f package-lock.json ]; then
             npm ci --no-audit --no-fund
           else
-            npm install --no-audit --no-fund
+            echo "::error::No package-lock.json. Article XXVI requires reproducible installs — an unpinned, unlocked install fails the build rather than warning. Commit a lockfile (run 'npm install' locally and commit package-lock.json) before this gate can run."
+            exit 1
           fi
 
       # continue-on-error: the tests' own pass/fail is not this gate's business —
