@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stryker-mutator/stryker-js/master/packages/api/schema/stryker-core.json",
+  "packageManager": "npm",
+  "testRunner": "vitest",
+  "coverageAnalysis": "perTest",
+  "reporters": ["clear-text", "html", "json"],
+  "htmlReporter": { "fileName": "reports/mutation/mutation.html" },
+  "jsonReporter": { "fileName": "reports/mutation/mutation.json" },
+  "mutate": [
+    "src/auth/**/*.{js,jsx,mjs,cjs,ts,tsx}",
+    "src/payments/**/*.{js,jsx,mjs,cjs,ts,tsx}",
+    "src/billing/**/*.{js,jsx,mjs,cjs,ts,tsx}",
+    "migrations/**/*.{js,jsx,mjs,cjs,ts,tsx}",
+    "!**/*.{test,spec}.{js,jsx,mjs,cjs,ts,tsx}",
+    "!**/__tests__/**",
+    "!**/*.d.ts"
+  ],
+  "thresholds": {
+    "high": 90,
+    "low": 70,
+    "break": 60
+  },
+  "timeoutMS": 60000,
+  "timeoutFactor": 2,
+  "concurrency": 2,
+  "tempDirName": ".stryker-tmp",
+  "disableTypeChecks": "{src,migrations}/**/*.{js,jsx,mjs,cjs,ts,tsx}"
+}

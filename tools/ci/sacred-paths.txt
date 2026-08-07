@@ -1,0 +1,29 @@
+# Sacred paths — the code the constitution refuses to let ship on shallow tests.
+#
+# Article II (entry integrity), Article XXVI (authorization / security) and
+# Article XXI (mutation testing REQUIRED on these paths) all point at the same
+# set of directories. This file is the single place that set is written down.
+#
+# Two consumers read it, and they MUST agree:
+#
+#   1. tools/hooks-staging/tdd-gate.conf  (Unit 6) — SACRED_PATHS=...
+#      The pre-tool-use hook that demands a failing test before an edit to any
+#      of these files lands. It uses substring/glob matching on the lowercased
+#      path, so `auth/` there is the same rule as `src/auth/**` here.
+#   2. .github/workflows/mutation-testing.yml (Unit 8) — the `on.pull_request.paths`
+#      trigger and the Stryker `--mutate` globs.
+#      GitHub Actions cannot read a trigger filter out of a file, so the
+#      workflow mirrors these lines literally and then verifies the mirror
+#      against this file on every run. Drift fails the job loudly.
+#
+# Format: one glob per line, repo-root-relative, `#` starts a comment, blank
+# lines ignored. Keep the globs directory-shaped (`x/**`) — the workflow appends
+# the source-file extensions when it builds the Stryker mutate list.
+#
+# Adding a path here is a constitutional change: it widens both the TDD gate and
+# the mutation gate. Record it in DECISIONS.md.
+
+src/auth/**
+src/payments/**
+src/billing/**
+migrations/**

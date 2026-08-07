@@ -1,0 +1,226 @@
+# Changed-lines coverage — Article XIX (missing tests are a defect).
+#
+# The claim this workflow defends: a repo-wide coverage percentage is a lagging
+# average that hides every untested line you added today. This gate ignores the
+# average and asks one question — of the lines this pull request changed, what
+# fraction is executed by the suite? The floor is 80%, and it applies to the diff
+# only, so a legacy repo is never held hostage by code nobody touched.
+#
+# WHY THIS RUNS ON EVERY PR (Fix 2 from tools/ci/README.md)
+#   This job is a required status check, and a required check must report on
+#   every pull request — a trigger-level path filter would leave unrelated PRs
+#   stuck at "Expected — waiting for status" forever. The first step decides
+#   whether this PR touched a code path (src/, lib/, app/); when it did not,
+#   the job reports green in seconds. Two further guards keep it honest on a
+#   repo with no application yet: no package.json -> notice and skip; no
+#   coverage report -> see STRICTNESS KNOB.
+#
+# STRICTNESS KNOB
+#   REQUIRE_COVERAGE_REPORT below is 'false' while the app does not exist: a
+#   missing coverage.xml downgrades to a notice instead of failing the job. Flip
+#   it to 'true' the day a real test suite lands — otherwise a broken coverage
+#   command silently disables this gate, which is worse than not having it.
+#
+# SUPPLY CHAIN
+#   Every `uses:` is pinned to a full commit SHA; the trailing comment carries
+#   the version for Dependabot.
+
+name: changed-lines-coverage
+
+# No paths filter, deliberately: see WHY THIS RUNS ON EVERY PR above. The
+# code-path decision lives in the job's first steps.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changed-lines-coverage-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Minimum percentage of *changed* lines that must be covered.
+  DIFF_COVER_FAIL_UNDER: '80'
+  # See STRICTNESS KNOB above. 'true' = a missing coverage report fails the job.
+  REQUIRE_COVERAGE_REPORT: 'false'
+
+jobs:
+  # Job id and display name are both `changed-lines-coverage` so the status-check
+  # context is stable when this becomes a required check.
+  changed-lines-coverage:
+    name: changed-lines-coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # diff-cover diffs against the base branch, so the job needs history,
+          # not just the merge commit.
+          fetch-depth: 0
+
+      - name: Fetch the base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # Passed through env, never interpolated into the script: a branch name
+          # is attacker-controlled text on a fork pull request.
+          git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          echo "COMPARE_BRANCH=origin/${BASE_REF}" >> "$GITHUB_ENV"
+
+      - name: Decide whether this PR touches a code path
+        id: relevant
+        run: |
+          set -euo pipefail
+          # Code paths. Unlike the sacred-path workflows there is no manifest
+          # file for these: the set is "wherever application code lives" and is
+          # expected to be tuned per repo. Add your source roots here.
+          hit=false
+          for p in src lib app; do
+            if git diff --name-only "${COMPARE_BRANCH}...HEAD" | grep -q "^${p}/"; then hit=true; fi
+          done
+          if [ "$hit" = "false" ]; then
+            echo "::notice::No code path touched — changed-lines coverage not required for this PR. Reporting green so the required check never blocks an unrelated change."
+          fi
+          echo "hit=$hit" >> "$GITHUB_OUTPUT"
+
+      - name: Detect a JavaScript/TypeScript project
+        id: guard
+        if: steps.relevant.outputs.hit == 'true'
+        run: |
+          set -euo pipefail
+          if [ ! -f package.json ]; then
+            echo "::notice::No package.json at the repo root — no suite to measure. Skipping the changed-lines coverage gate."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "lockfile=false" >> "$GITHUB_OUTPUT"
+            echo "runner=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          if [ -f package-lock.json ]; then
+            echo "lockfile=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "lockfile=false" >> "$GITHUB_OUTPUT"
+          fi
+          # Prefer vitest when the project declares it; otherwise fall back to
+          # whatever `npm test` is wired to.
+          if grep -Eq '"vitest"[[:space:]]*:' package.json || grep -q 'vitest' package.json; then
+            echo "runner=vitest" >> "$GITHUB_OUTPUT"
+          else
+            echo "runner=npm" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Skipped-step outputs read as empty strings, and '' != 'true' is TRUE —
+      # so every step below must re-assert the code-path hit explicitly.
+      - name: Set up Node
+        if: steps.relevant.outputs.hit == 'true' && steps.guard.outputs.skip != 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: ${{ steps.guard.outputs.lockfile == 'true' && 'npm' || '' }}
+
+      - name: Install dependencies
+        if: steps.relevant.outputs.hit == 'true' && steps.guard.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      # continue-on-error: the tests' own pass/fail is not this gate's business —
+      # a dedicated test workflow owns that verdict, and failing here too would
+      # report the same breakage twice. What this gate needs is the coverage
+      # report, and the next step decides what to do when it is absent.
+      - name: Run the suite with coverage
+        if: steps.relevant.outputs.hit == 'true' && steps.guard.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          TEST_RUNNER: ${{ steps.guard.outputs.runner }}
+        run: |
+          set -uo pipefail
+          if [ "${TEST_RUNNER}" = "vitest" ]; then
+            # Cobertura XML is the format diff-cover reads.
+            npx vitest run --coverage \
+              --coverage.reporter=cobertura \
+              --coverage.reporter=text-summary
+          else
+            # Fallback for jest/mocha/nyc-style setups. `--` forwards the flag to
+            # the underlying runner. Configure the cobertura reporter in the
+            # project's own coverage config (jest: coverageReporters, nyc:
+            # .nycrc reporter) — it cannot be forced generically from here.
+            npm test -- --coverage
+          fi
+
+      - name: Locate the coverage report
+        if: steps.relevant.outputs.hit == 'true' && steps.guard.outputs.skip != 'true'
+        id: report
+        run: |
+          set -euo pipefail
+          found=""
+          for candidate in \
+            coverage/cobertura-coverage.xml \
+            coverage/cobertura.xml \
+            coverage.xml \
+            coverage/coverage.xml \
+            coverage/lcov.info; do
+            if [ -f "$candidate" ]; then found="$candidate"; break; fi
+          done
+          if [ -z "$found" ]; then
+            if [ "${REQUIRE_COVERAGE_REPORT}" = "true" ]; then
+              echo "::error::No coverage report was produced. The changed-lines coverage gate cannot run, and REQUIRE_COVERAGE_REPORT is 'true'. Fix the coverage command or the reporter configuration (cobertura XML is required)."
+              exit 1
+            fi
+            echo "::notice::No coverage report was produced, and REQUIRE_COVERAGE_REPORT is 'false' — skipping the changed-lines gate. Flip that knob to 'true' once a real suite exists, or this gate is decorative."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Found coverage report: $found"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "path=$found" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.relevant.outputs.hit == 'true' && steps.guard.outputs.skip != 'true' && steps.report.outputs.skip != 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install diff-cover
+        if: steps.relevant.outputs.hit == 'true' && steps.guard.outputs.skip != 'true' && steps.report.outputs.skip != 'true'
+        run: python -m pip install --disable-pip-version-check --quiet 'diff-cover>=9,<10'
+
+      - name: Enforce coverage on changed lines
+        if: steps.relevant.outputs.hit == 'true' && steps.guard.outputs.skip != 'true' && steps.report.outputs.skip != 'true'
+        env:
+          COVERAGE_REPORT: ${{ steps.report.outputs.path }}
+        run: |
+          set -euo pipefail
+          # COMPARE_BRANCH is origin/<base branch> — origin/main for a PR into
+          # main, and correct for release branches too, which a hardcoded
+          # origin/main would silently get wrong.
+          echo "Comparing against ${COMPARE_BRANCH}; floor is ${DIFF_COVER_FAIL_UNDER}% of changed lines."
+          diff-cover "${COVERAGE_REPORT}" \
+            --compare-branch "${COMPARE_BRANCH}" \
+            --fail-under "${DIFF_COVER_FAIL_UNDER}" \
+            --html-report changed-lines-coverage.html \
+            --markdown-report changed-lines-coverage.md
+          # RATCHET: 80 is the floor, not the target. Raise DIFF_COVER_FAIL_UNDER
+          # when the team clears it comfortably; never lower it to land a PR.
+
+      - name: Publish the report to the job summary
+        if: always() && hashFiles('changed-lines-coverage.md') != ''
+        run: cat changed-lines-coverage.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the coverage report
+        if: always() && hashFiles('changed-lines-coverage.html') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: changed-lines-coverage
+          path: |
+            changed-lines-coverage.html
+            changed-lines-coverage.md
+          retention-days: 14
