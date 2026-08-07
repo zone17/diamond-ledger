@@ -1,0 +1,187 @@
+# Evals as CI — Article XXIV.
+#
+# The claim this workflow defends: a model-powered capability without evals is
+# incomplete. Unit tests cannot tell you the assistant started fabricating a
+# filing deadline, started giving legal advice, or started rewriting a worker's
+# own words. A prompt edit is a behavior change, and it gets a suite run like any
+# other behavior change.
+#
+# WHY THIS RUNS ON EVERY PR (Fix 2 from tools/ci/README.md)
+#   This job is a required status check, and a required check must report on
+#   every pull request — a trigger-level path filter would leave unrelated PRs
+#   stuck at "Expected — waiting for status" forever. The first step decides,
+#   from tools/ci/model-powered-paths.txt, whether this PR touched a
+#   model-powered path; when it did not, the job reports green in seconds.
+#   When it did, three guards, checked in order, keep the gate honest rather
+#   than merely quiet:
+#     1. No evals/promptfooconfig.yaml   -> notice, skip.
+#     2. The config still carries the `# promptfoo-scaffold: true` marker -> notice,
+#        skip. The scaffold has a placeholder provider and example assertions;
+#        running it would prove nothing and fail on the placeholder. Deleting
+#        that one line is what arms this gate — see evals/README.md.
+#     3. No provider credentials in secrets -> notice, skip (or fail, see below).
+#   None of the three is a silent pass: each writes a ::notice:: onto the run.
+#
+# STRICTNESS KNOB
+#   REQUIRE_EVALS is 'false' while the suites are a scaffold. Flip it to 'true'
+#   the day the first model-powered surface ships. From then on a missing config
+#   or a missing API key fails the job instead of skipping it — which is the
+#   whole point of Article XXIV, and the moment this stops being decorative.
+#
+# SUPPLY CHAIN
+#   PROMPTFOO_VERSION is 'latest' for the scaffold, which is a mutable tag and
+#   therefore unacceptable for a required check: `latest` means an upstream
+#   release can change your gate's verdict overnight. Pin it to an exact version
+#   (e.g. '0.117.0') before arming this gate. Every `uses:` is pinned to a full
+#   commit SHA; the trailing comment carries the version for Dependabot.
+
+name: evals
+
+# No paths filter, deliberately: see WHY THIS RUNS ON EVERY PR above. The
+# model-powered decision lives in the job's first step, fed by
+# tools/ci/model-powered-paths.txt.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # See SUPPLY CHAIN above. Pin before this becomes a required check.
+  PROMPTFOO_VERSION: 'latest'
+  # See STRICTNESS KNOB above.
+  REQUIRE_EVALS: 'false'
+
+jobs:
+  # Job id and display name are both `evals` so the status-check context is
+  # stable when this becomes a required check.
+  evals:
+    name: evals
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The model-powered decision diffs against the base branch, so the
+          # job needs history, not just the merge commit.
+          fetch-depth: 0
+
+      - name: Decide whether this PR touches a model-powered path
+        id: relevant
+        env:
+          # Passed through env, never interpolated into the script: a branch
+          # name is attacker-controlled text on a fork pull request.
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          manifest=tools/ci/model-powered-paths.txt
+          if [ ! -f "$manifest" ]; then
+            echo "::error::$manifest is missing. It is the source of truth for which paths make a change model-powered."
+            exit 1
+          fi
+          git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          patterns=$(sed -e 's/#.*//' -e 's#/\*\*$##' -e 's/[[:space:]]*$//' "$manifest" | grep -v '^$')
+          hit=false
+          for p in $patterns; do
+            if git diff --name-only "origin/${BASE_REF}...HEAD" | grep -q "^${p}/"; then hit=true; fi
+          done
+          if [ "$hit" = "false" ]; then
+            echo "::notice::No model-powered path touched — evals not required for this PR. Reporting green so the required check never blocks an unrelated change."
+          fi
+          echo "hit=$hit" >> "$GITHUB_OUTPUT"
+
+      - name: Check for an armed eval suite
+        id: guard
+        if: steps.relevant.outputs.hit == 'true'
+        env:
+          # Empty string when the secret is not configured. Read into env rather
+          # than interpolated into the script body.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          config=evals/promptfooconfig.yaml
+          [ -f "$config" ] || config=evals/promptfooconfig.yml
+
+          fail_or_skip() {
+            if [ "${REQUIRE_EVALS}" = "true" ]; then
+              echo "::error::$1 REQUIRE_EVALS is 'true', so this is a failure: a model-powered change cannot merge without eval coverage (Article XXIV)."
+              exit 1
+            fi
+            echo "::notice::$1 REQUIRE_EVALS is 'false', so this run is skipped rather than failed."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          # Guard 1 — is there a suite at all?
+          if [ ! -f "$config" ]; then
+            fail_or_skip "No evals/promptfooconfig.yaml in this repo."
+          fi
+
+          # Guard 2 — is it still the scaffold? One marker line, deliberately easy
+          # to delete, so arming the gate is a visible one-line diff in review.
+          if grep -q '^#[[:space:]]*promptfoo-scaffold:[[:space:]]*true' "$config"; then
+            fail_or_skip "evals/promptfooconfig.yaml is still the scaffold (it carries the '# promptfoo-scaffold: true' marker, a placeholder provider and example assertions). Write real suites per evals/README.md and delete that line to arm this gate."
+          fi
+
+          # Guard 3 — can it actually reach a model?
+          if [ -z "${ANTHROPIC_API_KEY}" ] && [ -z "${OPENAI_API_KEY}" ]; then
+            fail_or_skip "No provider credentials: neither ANTHROPIC_API_KEY nor OPENAI_API_KEY is set in this repository's secrets, so the suites cannot run. (Note that secrets are unavailable to pull requests from forks by design — see tools/ci/README.md.)"
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "config=$config" >> "$GITHUB_OUTPUT"
+
+      # Skipped-step outputs read as empty strings, and '' != 'true' is TRUE —
+      # so every step below must re-assert the model-powered hit explicitly.
+      - name: Set up Node
+        if: steps.relevant.outputs.hit == 'true' && steps.guard.outputs.skip != 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Run the eval suites
+        if: steps.relevant.outputs.hit == 'true' && steps.guard.outputs.skip != 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PROMPTFOO_CONFIG: ${{ steps.guard.outputs.config }}
+          # Keep promptfoo's telemetry and cloud sharing off: eval inputs are
+          # modelled on worker records, and Article XXVI says those never leave
+          # the boundary. Do not remove these.
+          PROMPTFOO_DISABLE_TELEMETRY: '1'
+          PROMPTFOO_DISABLE_SHARING: '1'
+        run: |
+          set -euo pipefail
+          # promptfoo exits non-zero when an assertion fails, which is the gate.
+          npx --yes "promptfoo@${PROMPTFOO_VERSION}" eval \
+            -c "${PROMPTFOO_CONFIG}" \
+            --no-progress-bar \
+            --output evals-results.json
+
+      - name: Summarize results
+        if: always() && hashFiles('evals-results.json') != ''
+        run: |
+          set -euo pipefail
+          {
+            echo "### Eval results"
+            echo ""
+            echo '```json'
+            head -c 8000 evals-results.json
+            echo ""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload eval results
+        if: always() && hashFiles('evals-results.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: evals-results
+          path: evals-results.json
+          retention-days: 30

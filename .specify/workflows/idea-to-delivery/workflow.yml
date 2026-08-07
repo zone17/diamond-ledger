@@ -1,0 +1,228 @@
+schema_version: "1.0"
+workflow:
+  id: "idea-to-delivery"
+  name: "Idea → Delivery Pipeline"
+  version: "1.2.0"
+  author: "cryptozone"
+  description: "Full pipeline: PR/FAQ → discovery → design foundation → constitution → feature design → specify → clarify → design sign-off → plan → checklists → tasks → analyze → implement → verify → converge"
+
+requires:
+  speckit_version: ">=0.9.5"
+  integrations:
+    any:
+      - "claude"
+
+inputs:
+  idea:
+    type: string
+    default: ""
+    prompt: "The raw product idea (used by the once-per-project foundation phase; leave empty when skip_foundation=true)"
+  feature:
+    type: string
+    default: ""
+    prompt: "One-paragraph feature description for the per-feature chain"
+  feature_slug:
+    type: string
+    default: ""
+    prompt: "Stable lowercase-hyphenated feature slug (names docs/flows/<slug>.md)"
+  skip_foundation:
+    type: boolean
+    default: false
+    prompt: "Skip the once-per-project foundation phase (PR/FAQ → constitution)?"
+  integration:
+    type: string
+    default: "auto"
+    prompt: "Integration to use ('auto' uses the project's initialized integration)"
+
+steps:
+  # ── PHASE A — FOUNDATION · once per project ──────────────────────────────
+  - id: foundation
+    type: if
+    condition: "{{ inputs.skip_foundation == false }}"
+    then:
+      - id: product-idea
+        type: prompt
+        integration: "{{ inputs.integration }}"
+        prompt: "/the-pipeline:product-idea {{ inputs.idea }}"
+
+      - id: gate-prfaq
+        type: gate
+        message: "PR/FAQ written. Review docs/prfaq*.md — is the bet worth pressure-testing?"
+        options: [approve, reject]
+        on_reject: abort
+
+      - id: discovery
+        type: prompt
+        integration: "{{ inputs.integration }}"
+        prompt: "/the-pipeline:discovery pressure-test the PR/FAQ just written; produce the discovery brief with pre-registered falsification gates"
+
+      # Spec rule: the discovery gate verifies pre-registered success gates EXIST
+      # before a human ever sees the approve button. Static command only — never
+      # interpolate inputs or AI output into run: (plain string substitution).
+      - id: check-discovery-gates
+        type: shell
+        run: "grep -rlE 'FALSIFICATION|falsification|Kill switch|kill the' docs/discovery/ >/dev/null 2>&1 && echo present || echo missing"
+
+      - id: gate-discovery
+        type: if
+        condition: "{{ steps.check-discovery-gates.output.stdout contains 'present' }}"
+        then:
+          - id: gate-discovery-human
+            type: gate
+            message: "Discovery brief has pre-registered gates. Approve the bet? (An unmeasurable bet does not advance.)"
+            options: [approve, reject]
+            on_reject: abort
+        else:
+          - id: gate-discovery-missing
+            type: gate
+            message: "BLOCKED: no pre-registered falsification gates found in docs/discovery/. Re-run discovery — an unmeasurable bet does not advance."
+            options: [reject]
+            on_reject: abort
+
+      - id: design-foundation
+        type: prompt
+        integration: "{{ inputs.integration }}"
+        prompt: "/design-foundation run for this project: PR/FAQ + discovery brief are in docs/; produce docs/design-research.md, art directions, DESIGN.md, docs/design-principles.md"
+
+      - id: constitution
+        type: prompt
+        integration: "{{ inputs.integration }}"
+        prompt: "/constitution-from-prfaq render the constitution; DESIGN.md and docs/design-principles.md exist, so Article VIII must auto-bind"
+
+      - id: gate-ratification
+        type: gate
+        message: "Constitution rendered. Human ratification required — unwired Enforcement Matrix rows are debt listed in the Sync Impact Report."
+        options: [approve, reject]
+        on_reject: abort
+        show_file: ".specify/memory/constitution.md"
+
+  # ── PHASE B — DEFINITION · per feature ───────────────────────────────────
+  - id: feature-design
+    type: prompt
+    integration: "{{ inputs.integration }}"
+    prompt: "/feature-design {{ inputs.feature }}"
+
+  - id: specify
+    type: command
+    command: speckit.specify
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.feature }} — transcribe the validated design in docs/flows/{{ inputs.feature_slug }}.md; acceptance criteria in EARS notation, one per stable AC-ID"
+
+  - id: clarify
+    type: command
+    command: speckit.clarify
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.feature_slug }}"
+
+  # Wireframe loop (Unit 3 — extension installed). review's sign-off writes
+  # approved wireframe paths into spec.md under ## UI Mockup, which plan/tasks/
+  # implement load as binding visual constraints.
+  - id: wireframe-generate
+    type: command
+    command: speckit.wireframe.generate
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.feature_slug }} both"
+
+  - id: wireframe-review
+    type: command
+    command: speckit.wireframe.review
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.feature_slug }}"
+
+  - id: gate-design-signoff
+    type: gate
+    message: "Design sign-off: wireframes reviewed and signed into spec.md ## UI Mockup? Approved visuals are gating exit criteria — plan/tasks/implement must honor them."
+    options: [approve, reject]
+    on_reject: abort
+    show_file: "docs/flows/{{ inputs.feature_slug }}.md"
+
+  - id: plan
+    type: command
+    command: speckit.plan
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.feature_slug }} — constrained by the constitution; include threat model, data/privacy boundaries, contract-first API definitions"
+
+  - id: checklist-ux
+    type: command
+    command: speckit.checklist
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "UX"
+  - id: checklist-security
+    type: command
+    command: speckit.checklist
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "Security"
+  - id: checklist-a11y
+    type: command
+    command: speckit.checklist
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "A11y"
+
+  - id: tasks
+    type: command
+    command: speckit.tasks
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.feature_slug }}"
+
+  - id: analyze
+    type: command
+    command: speckit.analyze
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.feature_slug }}"
+
+  - id: gate-analyze
+    type: gate
+    message: "Cross-artifact analysis complete. No implementation with open analyze conflicts — approve only if the report is clean."
+    options: [approve, reject]
+    on_reject: retry
+
+  # ── PHASE C — BUILD & VERIFY ─────────────────────────────────────────────
+  - id: implement
+    type: prompt
+    integration: "{{ inputs.integration }}"
+    prompt: "ce-plan then ce-work the feature per specs/{{ inputs.feature_slug }}/ on a typed branch; TDD and supply-chain gates apply; /speckit.implement is the fallback executor"
+
+  - id: verify-acceptance
+    type: prompt
+    integration: "{{ inputs.integration }}"
+    prompt: "/verify-acceptance parse spec.md AC-IDs for {{ inputs.feature_slug }}, drive the running app, emit docs/verification/ report; nonzero on any FAIL"
+
+  - id: design-qa
+    type: prompt
+    integration: "{{ inputs.integration }}"
+    prompt: "/design-qa screenshot built screens, compare against spec.md UI Mockup + DESIGN.md Banned Defaults, run axe-core"
+
+  - id: gate-verification
+    type: gate
+    message: "Verification report green? E2E acceptance + design QA must pass before ship."
+    options: [approve, reject]
+    on_reject: retry
+
+  - id: converge-sync
+    type: command
+    command: speckit.sync.analyze
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.feature_slug }}"
+
+  - id: converge-retrospective
+    type: command
+    command: speckit.retrospective.analyze
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.feature_slug }}"
+
+  - id: compound-reminder
+    type: prompt
+    integration: "{{ inputs.integration }}"
+    prompt: "ce-compound: capture non-obvious learnings from this feature into docs/solutions/ and cross-reference pattern files"

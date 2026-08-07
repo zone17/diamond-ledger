@@ -1,0 +1,26 @@
+# Model-powered paths — where a change can alter what a model says to a worker.
+#
+# Article XXIV: any shipped capability where a model influences output MUST have
+# eval coverage. This file names the paths whose contents shape that output, so
+# a PR touching them runs the eval suites before it can merge.
+#
+# Consumer: .github/workflows/evals.yml — the `on.pull_request.paths` trigger.
+# GitHub Actions cannot read a trigger filter out of a file, so that workflow
+# mirrors these lines literally and verifies the mirror on every run.
+#
+# Format: one glob per line, repo-root-relative, `#` starts a comment, blank
+# lines ignored.
+#
+# Per-repo tuning: this default assumes prompts live in `prompts/`, agent/skill
+# definitions in `skills/`, and the suites themselves in `evals/`. A repo that
+# keeps prompt text inline in application code should add those modules here
+# (e.g. `src/agents/**`, `src/copy/**`) — otherwise a prompt edit ships without
+# ever running an eval, which is exactly the failure Article XXIV names.
+#
+# Note the leading anchor: `skills/**` matches a top-level `skills/` directory
+# only. Claude Code's own `.claude/skills/**` is tooling, not product surface,
+# and is deliberately NOT in this list.
+
+prompts/**
+skills/**
+evals/**

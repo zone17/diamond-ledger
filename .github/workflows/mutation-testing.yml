@@ -1,0 +1,205 @@
+# Mutation testing on the sacred paths — Article XXI.
+#
+# The claim this workflow defends: on entry integrity, authorization, auth and
+# payments, a test that still passes against a deliberately broken implementation
+# is a defect, not coverage. Line coverage cannot see that. Stryker can: it
+# breaks the code on purpose and fails the build when the suite does not notice.
+#
+# WHY THIS RUNS ON EVERY PR (Fix 2 from tools/ci/README.md)
+#   This job is a required status check, and a required check must report on
+#   every pull request — a trigger-level path filter would leave unrelated PRs
+#   stuck at "Expected — waiting for status" forever. So the trigger is
+#   unfiltered and the first step decides, from tools/ci/sacred-paths.txt,
+#   whether this PR touched a sacred path. When it did not, the job reports
+#   green in seconds and every expensive step is skipped. The manifest is the
+#   single source of truth: there is no trigger mirror left to drift.
+#
+# PYTHON REPOS
+#   Same gate, different runner. Replace the Node steps with:
+#     python -m pip install mutmut
+#     mutmut run --paths-to-mutate "src/auth,src/payments,src/billing,migrations" \
+#                --runner "python -m pytest -x -q"
+#     mutmut results          # then fail the job below the score floor
+#   mutmut exits non-zero when surviving mutants remain, so the floor is enforced
+#   by parsing `mutmut results` rather than by a --break-at flag. MutPy is the
+#   older alternative (`mut.py --target src.auth --unit-test tests -m`); it is
+#   unmaintained, so prefer mutmut, or cosmic-ray for very large suites.
+#
+# SUPPLY CHAIN
+#   Every `uses:` is pinned to a full commit SHA (the trailing comment carries
+#   the human-readable version for Dependabot). This gate is a required check
+#   and runs with repository context, so a mutable tag would be a supply-chain
+#   path into CI.
+
+name: mutation-testing
+
+# No paths filter, deliberately: see WHY THIS RUNS ON EVERY PR above. The
+# sacred-path decision lives in the job's first step, fed by
+# tools/ci/sacred-paths.txt.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-testing-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Job id and display name are both `mutation` so the status-check context is
+  # stable and predictable when this becomes a required check.
+  mutation:
+    name: mutation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The sacred-path decision diffs against the base branch, so the job
+          # needs history, not just the merge commit.
+          fetch-depth: 0
+
+      - name: Decide whether this PR touches a sacred path
+        id: sacred
+        env:
+          # Passed through env, never interpolated into the script: a branch
+          # name is attacker-controlled text on a fork pull request.
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          manifest=tools/ci/sacred-paths.txt
+          if [ ! -f "$manifest" ]; then
+            echo "::error::$manifest is missing. It is the source of truth for the sacred paths shared with tools/hooks-staging/tdd-gate.conf."
+            exit 1
+          fi
+          git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          patterns=$(sed -e 's/#.*//' -e 's#/\*\*$##' -e 's/[[:space:]]*$//' "$manifest" | grep -v '^$')
+          hit=false
+          for p in $patterns; do
+            if git diff --name-only "origin/${BASE_REF}...HEAD" | grep -q "^${p}/"; then hit=true; fi
+          done
+          if [ "$hit" = "false" ]; then
+            echo "::notice::No sacred path touched — mutation testing not required for this PR. Reporting green so the required check never blocks an unrelated change."
+          fi
+          echo "hit=$hit" >> "$GITHUB_OUTPUT"
+
+      - name: Detect a JavaScript/TypeScript project
+        id: guard
+        if: steps.sacred.outputs.hit == 'true'
+        run: |
+          set -euo pipefail
+          if [ ! -f package.json ]; then
+            echo "::notice::No package.json at the repo root — nothing for Stryker to mutate. Skipping. (A Python repo should use the mutmut steps commented at the top of this file.)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "lockfile=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          if [ -f package-lock.json ]; then
+            echo "lockfile=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No package-lock.json. Installing without a lockfile means CI is not reproducible and the supply-chain gate (Article XXVI) has nothing to check against."
+            echo "lockfile=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Skipped-step outputs read as empty strings, and '' != 'true' is TRUE —
+      # so every step below must re-assert the sacred-path hit explicitly, or a
+      # skipped detection would run the whole pipeline.
+      - name: Set up Node
+        if: steps.sacred.outputs.hit == 'true' && steps.guard.outputs.skip != 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          # Enabling the npm cache without a lockfile is a hard error in
+          # setup-node, so it is switched on only when one exists.
+          cache: ${{ steps.guard.outputs.lockfile == 'true' && 'npm' || '' }}
+
+      - name: Install dependencies
+        if: steps.sacred.outputs.hit == 'true' && steps.guard.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Build the mutate globs from tools/ci/sacred-paths.txt
+        if: steps.sacred.outputs.hit == 'true' && steps.guard.outputs.skip != 'true'
+        id: globs
+        run: |
+          set -euo pipefail
+          # Each directory-shaped glob (`src/auth/**`) becomes a source-file glob.
+          # Entries that already name files (contain `*.`) are passed through.
+          # Tests and type declarations are excluded: mutating a test proves nothing.
+          #
+          # The loop writes to a file rather than being wrapped in $( ), because
+          # bash cannot parse a quoted `case` pattern inside a command
+          # substitution — `*'*.'*)` there is a syntax error, not a pattern.
+          sed -e 's/#.*//' -e 's/[[:space:]]*$//' tools/ci/sacred-paths.txt \
+            | grep -v '^$' > /tmp/sacred-globs.txt
+          : > /tmp/mutate-globs.txt
+          while IFS= read -r glob; do
+            case "$glob" in
+              *'*.'*)  printf '%s\n' "$glob" ;;
+              */'**')  printf '%s/*.{js,jsx,mjs,cjs,ts,tsx}\n' "$glob" ;;
+              */)      printf '%s**/*.{js,jsx,mjs,cjs,ts,tsx}\n' "$glob" ;;
+              *)       printf '%s/**/*.{js,jsx,mjs,cjs,ts,tsx}\n' "$glob" ;;
+            esac >> /tmp/mutate-globs.txt
+          done < /tmp/sacred-globs.txt
+          mutate=$(paste -sd, - < /tmp/mutate-globs.txt)
+          mutate="${mutate},!**/*.{test,spec}.{js,jsx,mjs,cjs,ts,tsx},!**/__tests__/**,!**/*.d.ts"
+          echo "Stryker will mutate: $mutate"
+          echo "mutate=$mutate" >> "$GITHUB_OUTPUT"
+          # Nothing to mutate is not a pass. This step only runs when the
+          # detection step saw a sacred path in the diff, so an empty match
+          # means the globs are wrong.
+          found=0
+          for dir in $(sed -e 's/#.*//' -e 's#/\*\*$##' -e 's/[[:space:]]*$//' tools/ci/sacred-paths.txt | grep -v '^$'); do
+            if [ -d "$dir" ]; then found=1; fi
+          done
+          echo "found_sources=$found" >> "$GITHUB_OUTPUT"
+          if [ "$found" = "0" ]; then
+            echo "::notice::A sacred path was touched by this PR but none of those directories exist in the checkout (a deletion, or a rename away from the sacred tree). Nothing to mutate."
+          fi
+
+      - name: Run Stryker
+        if: steps.sacred.outputs.hit == 'true' && steps.guard.outputs.skip != 'true' && steps.globs.outputs.found_sources == '1'
+        env:
+          MUTATE_GLOBS: ${{ steps.globs.outputs.mutate }}
+        run: |
+          set -euo pipefail
+          # THRESHOLD: tools/ci/stryker.config.json sets thresholds.break = 60,
+          # so Stryker exits non-zero below a 60% mutation score.
+          #
+          # RATCHET UPWARD. 60 is a starting floor for a suite that does not exist
+          # yet, not the standard. Article XXI's floor for these paths is 80%
+          # killed mutants. Raise thresholds.break by 5 whenever a sprint lands
+          # above the current floor, until it reads 80 — and never lower it to
+          # make a red build green. Lowering it is a DECISIONS.md entry.
+          #
+          # Local equivalent: npx stryker run tools/ci/stryker.config.json
+          # Override on the CLI with --thresholds.break 80 if you need a one-off.
+          #
+          # Required devDependencies (add them when you create src/auth/**):
+          #   @stryker-mutator/core, and the runner plugin matching your test
+          #   runner — @stryker-mutator/vitest-runner (this config's default) or
+          #   @stryker-mutator/jest-runner. Without the plugin Stryker exits with
+          #   a configuration error, which is the correct loud failure.
+          if [ -x node_modules/.bin/stryker ]; then
+            npx stryker run tools/ci/stryker.config.json --mutate "$MUTATE_GLOBS"
+          else
+            echo "::warning::@stryker-mutator/core is not a devDependency; falling back to a one-off npx download. Add it to package.json so the version is locked."
+            npx --yes @stryker-mutator/core@^8.0.0 run tools/ci/stryker.config.json --mutate "$MUTATE_GLOBS"
+          fi
+
+      - name: Upload the mutation report
+        if: always() && hashFiles('reports/mutation/**') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutation-report
+          path: reports/mutation/
+          retention-days: 14
