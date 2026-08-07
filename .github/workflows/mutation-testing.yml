@@ -71,15 +71,28 @@ jobs:
         run: |
           set -euo pipefail
           manifest=tools/ci/sacred-paths.txt
-          if [ ! -f "$manifest" ]; then
-            echo "::error::$manifest is missing. It is the source of truth for the sacred paths shared with tools/hooks-staging/tdd-gate.conf."
-            exit 1
-          fi
           git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
-          patterns=$(sed -e 's/#.*//' -e 's#/\*\*$##' -e 's/[[:space:]]*$//' "$manifest" | grep -v '^$')
+          # Read the sacred-path policy from the BASE branch, not the PR checkout:
+          # a PR must not be able to narrow the manifest it is judged against and
+          # thereby disable its own required check.
+          manifest_content=$(git show "origin/${BASE_REF}:$manifest" 2>/dev/null) || {
+            echo "::error::$manifest not found on the base branch origin/${BASE_REF}. The sacred-path policy is read from the base so a PR cannot narrow the set it is judged against; restore it on the base branch."
+            exit 1
+          }
+          patterns=$(printf '%s\n' "$manifest_content" | sed -e 's/#.*//' -e 's#/\*\*$##' -e 's/[[:space:]]*$//' | grep -v '^$')
+          # Persist the base manifest so the later mutate-globs and found-sources
+          # steps build Stryker's scope from the base policy too — not the PR
+          # checkout, which a PR could narrow to shrink what actually gets mutated
+          # even after this step correctly detected the sacred-path hit.
+          printf '%s\n' "$manifest_content" > "$RUNNER_TEMP/sacred-paths-base.txt"
+          # Capture the changed-file list before matching. Never pipe git directly
+          # into `grep -q`: grep closes the pipe on first match, git dies with
+          # SIGPIPE (141), pipefail propagates it, the `if` reads false, and a real
+          # match on a large PR reads as "no sacred path" — a fail-open green.
+          changed=$(git diff --name-only "origin/${BASE_REF}...HEAD")
           hit=false
           for p in $patterns; do
-            if git diff --name-only "origin/${BASE_REF}...HEAD" | grep -q "^${p}/"; then hit=true; fi
+            if grep -q "^${p}/" <<< "$changed"; then hit=true; fi
           done
           if [ "$hit" = "false" ]; then
             echo "::notice::No sacred path touched — mutation testing not required for this PR. Reporting green so the required check never blocks an unrelated change."
@@ -124,7 +137,8 @@ jobs:
           if [ -f package-lock.json ]; then
             npm ci --no-audit --no-fund
           else
-            npm install --no-audit --no-fund
+            echo "::error::No package-lock.json. Article XXVI requires reproducible installs — an unpinned, unlocked install fails the build rather than warning. Commit a lockfile (run 'npm install' locally and commit package-lock.json) before this gate can run."
+            exit 1
           fi
 
       - name: Build the mutate globs from tools/ci/sacred-paths.txt
@@ -139,7 +153,9 @@ jobs:
           # The loop writes to a file rather than being wrapped in $( ), because
           # bash cannot parse a quoted `case` pattern inside a command
           # substitution — `*'*.'*)` there is a syntax error, not a pattern.
-          sed -e 's/#.*//' -e 's/[[:space:]]*$//' tools/ci/sacred-paths.txt \
+          # Read from the base manifest persisted by the detection step, not the
+          # PR checkout, so the mutate scope reflects the base policy.
+          sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$RUNNER_TEMP/sacred-paths-base.txt" \
             | grep -v '^$' > /tmp/sacred-globs.txt
           : > /tmp/mutate-globs.txt
           while IFS= read -r glob; do
@@ -158,7 +174,7 @@ jobs:
           # detection step saw a sacred path in the diff, so an empty match
           # means the globs are wrong.
           found=0
-          for dir in $(sed -e 's/#.*//' -e 's#/\*\*$##' -e 's/[[:space:]]*$//' tools/ci/sacred-paths.txt | grep -v '^$'); do
+          for dir in $(sed -e 's/#.*//' -e 's#/\*\*$##' -e 's/[[:space:]]*$//' "$RUNNER_TEMP/sacred-paths-base.txt" | grep -v '^$'); do
             if [ -d "$dir" ]; then found=1; fi
           done
           echo "found_sources=$found" >> "$GITHUB_OUTPUT"
