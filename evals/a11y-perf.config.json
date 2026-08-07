@@ -1,0 +1,12 @@
+{
+  "a11y-perf-scaffold": true,
+  "_comment": "Scaffold for the a11y-perf gate (.github/workflows/a11y-perf.yml). Fill in real routes and budgets, pin AXE_VERSION/LHCI_VERSION in the workflow, then delete the \"a11y-perf-scaffold\": true line to arm the gate. See tools/ci/README.md > Arming checklist.",
+  "routes": [
+    "http://localhost:3000/"
+  ],
+  "budgets": {
+    "note": "Lighthouse budgets live in the project's lighthouserc.js/json (URLs, local server command, assertions). This file only lists the routes axe-core scans; the scaffold marker above keeps the gate skipping until both are real.",
+    "performance": 0.9,
+    "accessibility": 1.0
+  }
+}
