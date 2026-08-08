@@ -1,0 +1,150 @@
+# Accessibility + performance budget — Articles VII/IX (design law) as CI.
+#
+# The claim this workflow defends: a design system that is only enforced by
+# review drifts. axe-core catches the accessibility regressions a human misses
+# (contrast, names, roles, landmarks); a performance budget catches the bundle
+# and Core-Web-Vitals regressions that creep in one dependency at a time. Both
+# run against the BUILT app, not the source, because that is what a user gets.
+#
+# WHY THIS RUNS ON EVERY PR (Fix 2 from tools/ci/README.md)
+#   Like the other gates, the trigger is unfiltered so the check always reports,
+#   and the first step decides whether there is a frontend to test. A repo with
+#   no web app reports green in seconds. Three guards, checked in order:
+#     1. No package.json with a build script -> notice, skip.
+#     2. The config still carries the `# a11y-perf-scaffold: true` marker
+#        (evals/a11y-perf.config.json) -> notice, skip. Deleting that line, after
+#        filling in real routes/budgets, is what arms this gate.
+#     3. Build fails or produces no servable output -> the gate reports the build
+#        failure (that IS the finding).
+#
+# STRICTNESS KNOB
+#   REQUIRE_A11Y is 'false' while the scaffold stands: an axe violation or a
+#   budget breach warns. Flip to 'true' once real routes and budgets are set —
+#   from then on a violation fails the job. Not added to branch protection by
+#   apply-ruleset.sh yet: arm it, watch it green for a few PRs, then add the
+#   `a11y-perf` context to the ruleset deliberately.
+#
+# SUPPLY CHAIN
+#   Every `uses:` is pinned to a full commit SHA; the trailing comment carries
+#   the version for Dependabot. Pin the axe/lighthouse CLIs to exact versions in
+#   evals/a11y-perf.config.json before arming — a mutable tag can change a
+#   required check's verdict overnight (same rule as evals.yml's PROMPTFOO_VERSION).
+
+name: a11y-perf
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a11y-perf-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # See STRICTNESS KNOB above.
+  REQUIRE_A11Y: 'false'
+  # axe-core CLI and Lighthouse CI versions. Pinned before arming (SUPPLY CHAIN).
+  AXE_VERSION: '4.10.0'
+  LHCI_VERSION: '0.14.0'
+
+jobs:
+  # Job id and display name are both `a11y-perf` so the status-check context is
+  # stable if this is later added to branch protection.
+  a11y-perf:
+    name: a11y-perf
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Decide whether there is a frontend to test
+        id: guard
+        run: |
+          set -euo pipefail
+          config=evals/a11y-perf.config.json
+          fail_or_skip() {
+            if [ "${REQUIRE_A11Y}" = "true" ]; then
+              echo "::error::$1 REQUIRE_A11Y is 'true', so this is a failure: a design-law regression cannot merge without an a11y/perf pass (Articles VII/IX)."
+              exit 1
+            fi
+            echo "::notice::$1 REQUIRE_A11Y is 'false', so this run is skipped rather than failed."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          # Guard 1 — is there a buildable web app at all?
+          if [ ! -f package.json ] || ! grep -q '"build"[[:space:]]*:' package.json; then
+            echo "::notice::No package.json build script — nothing to render for axe/Lighthouse. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Guard 2 — is the config still the scaffold?
+          if [ ! -f "$config" ]; then
+            fail_or_skip "No $config in this repo (routes to scan + perf budgets)."
+          fi
+          if grep -q '"a11y-perf-scaffold"[[:space:]]*:[[:space:]]*true' "$config"; then
+            fail_or_skip "$config is still the scaffold. Fill in real routes and budgets and remove the '\"a11y-perf-scaffold\": true' line to arm this gate."
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          if [ -f package-lock.json ]; then echo "lockfile=true" >> "$GITHUB_OUTPUT"; else echo "lockfile=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Set up Node
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: ${{ steps.guard.outputs.lockfile == 'true' && 'npm' || '' }}
+
+      - name: Install dependencies
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            echo "::error::No package-lock.json. Article XXVI requires reproducible installs — commit a lockfile before this gate can run."
+            exit 1
+          fi
+
+      - name: Build the app
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          npm run build
+
+      # Lighthouse CI reads its own config (lighthouserc.js/json) for the URLs,
+      # the local server command, and the budget assertions; axe runs against the
+      # same served routes. Both are configured in the project, not forced here —
+      # a template cannot know a project's routes. The step surfaces either tool's
+      # non-zero exit as the finding; REQUIRE_A11Y decides fail vs warn.
+      - name: Run axe-core + Lighthouse budget
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          REQUIRE_A11Y: ${{ env.REQUIRE_A11Y }}
+        run: |
+          set -uo pipefail
+          status=0
+          echo "Running Lighthouse CI (perf budget) …"
+          npx --yes "@lhci/cli@${LHCI_VERSION}" autorun || status=$?
+          echo "Running axe-core against the configured routes …"
+          # The project's config lists the routes; axe-core exits non-zero on a
+          # violation. See evals/a11y-perf.config.json for the route list.
+          npx --yes "@axe-core/cli@${AXE_VERSION}" $(jq -r '.routes[]?' evals/a11y-perf.config.json 2>/dev/null | tr '\n' ' ') || status=$?
+          if [ "$status" != "0" ]; then
+            if [ "${REQUIRE_A11Y}" = "true" ]; then
+              echo "::error::axe-core or the Lighthouse budget reported a regression (Articles VII/IX)."
+              exit 1
+            fi
+            echo "::warning::axe-core or the Lighthouse budget reported a regression, but REQUIRE_A11Y is 'false' — not failing yet. Arm this gate once the app is clean."
+          fi
+
+      - name: Upload reports
+        if: always() && hashFiles('.lighthouseci/**') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: a11y-perf-reports
+          path: .lighthouseci/
+          retention-days: 14

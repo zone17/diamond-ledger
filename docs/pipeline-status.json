@@ -1,0 +1,35 @@
+{
+  "schema": "pipeline-status/v1",
+  "foundation": {
+    "done": 1,
+    "total": 4,
+    "phases": [
+      {
+        "id": "product-idea",
+        "label": "PR/FAQ (the bet)",
+        "done": false,
+        "evidence": ""
+      },
+      {
+        "id": "discovery",
+        "label": "Discovery (validate the bet)",
+        "done": false,
+        "evidence": ""
+      },
+      {
+        "id": "design-foundation",
+        "label": "Design foundation",
+        "done": false,
+        "evidence": ""
+      },
+      {
+        "id": "constitution",
+        "label": "Constitution (binding law)",
+        "done": true,
+        "evidence": ".specify/memory/constitution.md"
+      }
+    ]
+  },
+  "features": [],
+  "next_phase": "product-idea"
+}
