@@ -11,11 +11,11 @@
     },
     "idea-to-delivery": {
       "name": "Idea \u2192 Delivery Pipeline",
-      "version": "1.2.0",
+      "version": "1.5.0",
       "description": "Full pipeline: PR/FAQ \u2192 discovery \u2192 design foundation \u2192 constitution \u2192 feature design \u2192 specify \u2192 clarify \u2192 design sign-off \u2192 plan \u2192 checklists \u2192 tasks \u2192 analyze \u2192 implement \u2192 verify \u2192 converge",
       "source": ".specify/workflows/idea-to-delivery.yml",
       "installed_at": "2026-08-07T03:13:07.509208+00:00",
-      "updated_at": "2026-08-07T03:13:07.509399+00:00"
+      "updated_at": "2026-08-08T14:44:39.933657+00:00"
     }
   }
 }

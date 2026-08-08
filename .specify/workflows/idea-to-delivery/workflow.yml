@@ -2,7 +2,7 @@ schema_version: "1.0"
 workflow:
   id: "idea-to-delivery"
   name: "Idea → Delivery Pipeline"
-  version: "1.2.0"
+  version: "1.5.0"
   author: "cryptozone"
   description: "Full pipeline: PR/FAQ → discovery → design foundation → constitution → feature design → specify → clarify → design sign-off → plan → checklists → tasks → analyze → implement → verify → converge"
 
@@ -35,10 +35,27 @@ inputs:
     prompt: "Integration to use ('auto' uses the project's initialized integration)"
 
 steps:
+  # ── STEP 0 — deterministic status scan ───────────────────────────────────
+  # Refresh docs/pipeline-status.json before anything runs, so the run (and a
+  # human watching) sees which phases are already done. A foundation phase is
+  # done when its artifact exists on disk; to skip an already-complete phase,
+  # gate it on `tools/pipeline-status.sh --check <phase>` (exit 0 = done) — e.g.
+  # pass skip_foundation=true when this step reports foundation-complete.
+  - id: pipeline-status
+    type: shell
+    run: "bash tools/pipeline-status.sh >/dev/null 2>&1 || true; if bash tools/pipeline-status.sh --check constitution >/dev/null 2>&1; then echo foundation-complete; else echo foundation-incomplete; fi"
+
   # ── PHASE A — FOUNDATION · once per project ──────────────────────────────
+  # Runs unless skip_foundation was passed. Step 0 refreshes
+  # docs/pipeline-status.json and prints foundation-complete / foundation-incomplete
+  # (from `pipeline-status.sh --check constitution`); on an established repo it
+  # reports complete, and the run is launched with skip_foundation=true so the
+  # pipeline does not re-do finished work. Per-phase auto-skip is available via
+  # `tools/pipeline-status.sh --check <phase>` for callers that want it wired
+  # into a nested `if` here.
   - id: foundation
     type: if
-    condition: "{{ inputs.skip_foundation == false }}"
+    condition: "{{ inputs.skip_foundation == false and steps.pipeline-status.output.stdout contains 'foundation-incomplete' }}"
     then:
       - id: product-idea
         type: prompt
@@ -95,6 +112,19 @@ steps:
         options: [approve, reject]
         on_reject: abort
         show_file: ".specify/memory/constitution.md"
+
+  # ── PHASE A→B boundary — clean pause before per-feature work ─────────────
+  # The foundation is once-per-project; feature work is per-feature. This gate
+  # is the checkpoint between them: it confirms the operator is starting the
+  # named feature. It is also the first CLEAN pause a headless run reaches after
+  # step 0 skips a complete foundation — prompt steps dispatch an agent and
+  # block in `specify workflow run --json`, so a gate (which pauses for a human)
+  # is what makes the run resumable rather than wedged at the first prompt.
+  - id: gate-start-feature
+    type: gate
+    message: "Foundation complete (or skipped by step 0). Start per-feature work on '{{ inputs.feature_slug }}'? Approve to run feature-design → specify → … for this feature."
+    options: [approve, reject]
+    on_reject: abort
 
   # ── PHASE B — DEFINITION · per feature ───────────────────────────────────
   - id: feature-design
