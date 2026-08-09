@@ -11,12 +11,21 @@ This repo was created from `zone17/project-template`. It carries the full pipeli
 | 3 | Discovery — validate the bet | `/the-pipeline:discovery` | ▓ pre-registered falsification gates required |
 | 4 | Design foundation | `/design-foundation` | — |
 | 5 | Constitution — binding law | `/constitution-from-prfaq` → `/speckit.constitution` | ▓ human ratification |
+| 5b | Feature backlog — derive `docs/roadmap.md` | `/feature-backlog` | ▓ human ranks + approves the order |
+
+The backlog closes the "I want X" authoring gap: the PR/FAQ, discovery brief, and constitution
+already contain every feature implicitly, so `/feature-backlog` derives ordered,
+feature-design-ready briefs (riskiest-assumption-first) plus a promised-but-unplanned ledger and
+an explicit v1 line. The human **reorders `docs/roadmap.md`** to rank — that file's order is the
+ranking act. `gate-start-feature` then presents the topmost unfinished v1 item
+(`tools/pipeline-status.sh --next-feature`) instead of asking for a hand-typed brief, and the
+status board shows the roadmap burn-down (`backlog` section of `docs/pipeline-status.json`).
 
 ## Phase B — Definition (per feature)
 
 | # | Step | Command | Gate |
 |---|------|---------|------|
-| 6 | Feature design | `/feature-design` | prototype approval |
+| 6 | Feature design | `/feature-design` (brief fed verbatim from the approved roadmap item) | prototype approval |
 | 7 | Specify (EARS ACs) | `/speckit.specify` | — |
 | 8 | Clarify | `/speckit.clarify` | — |
 | 9 | Design sign-off | `speckit.wireframe.generate` → `review` | ▓ signs `## UI Mockup` into spec.md |
