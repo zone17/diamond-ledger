@@ -76,6 +76,21 @@ final class T081OwnerIdentityTests: XCTestCase {
         XCTAssertEqual(restored?.ownerId, "email:u1")
     }
 
+    /// An `.apple` session whose `ownerId` lost its `apple:` namespace is corrupt — restore must
+    /// clear it rather than hand back an identity whose provenance can no longer be proven
+    /// (ADR-0016: "namespaced by method so provenance is auditable"). This branch runs entirely
+    /// before the device-gated credential-state call, so it is verifiable off-device.
+    func testRestoreClearsMalformedAppleSession() async throws {
+        let store = InMemorySessionStore()
+        try store.save(AuthSession(ownerId: "not-apple-namespaced",
+                                   displayName: "Pat",
+                                   signInMethod: .apple))
+        let auth = AuthStore(store: store)
+        let restored = await auth.restoreSession()
+        XCTAssertNil(restored, "a malformed .apple session must not restore")
+        XCTAssertNil(store.load(), "the corrupt item must be cleared, not left to retry forever")
+    }
+
     func testSignOutClearsStore() throws {
         let store = InMemorySessionStore()
         let auth = AuthStore(store: store)
@@ -87,9 +102,12 @@ final class T081OwnerIdentityTests: XCTestCase {
 
     // MARK: - COPPA age gate (FR-029)
 
-    private func freshGate() -> ConsentGate {
-        let defaults = UserDefaults(suiteName: "test.consent.\(UUID().uuidString)")!
-        return ConsentGate(defaults: defaults)
+    private func freshDefaults() -> UserDefaults {
+        UserDefaults(suiteName: "test.consent.\(UUID().uuidString)")!
+    }
+
+    private func freshGate(owner: String = "apple:owner") -> ConsentGate {
+        ConsentGate(ownerId: owner, defaults: freshDefaults())
     }
 
     func testConsentGateStartsUnknownAndBlocksRecording() {
@@ -99,9 +117,9 @@ final class T081OwnerIdentityTests: XCTestCase {
     }
 
     func testConsentGateAdultAllowsRecordingAndPersists() {
-        let defaults = UserDefaults(suiteName: "test.consent.\(UUID().uuidString)")!
-        ConsentGate(defaults: defaults).record(isUnder13: false)
-        let reloaded = ConsentGate(defaults: defaults)   // new instance, same store
+        let defaults = freshDefaults()
+        ConsentGate(ownerId: "apple:u1", defaults: defaults).record(isUnder13: false)
+        let reloaded = ConsentGate(ownerId: "apple:u1", defaults: defaults)  // new instance, same store
         XCTAssertEqual(reloaded.status, .allowed)
         XCTAssertTrue(reloaded.recordingAllowed)
     }
@@ -111,5 +129,28 @@ final class T081OwnerIdentityTests: XCTestCase {
         gate.record(isUnder13: true)
         XCTAssertEqual(gate.status, .blockedUnder13)
         XCTAssertFalse(gate.recordingAllowed)
+    }
+
+    /// The answer binds to the owner, not the device (FR-029). On a shared family device, one
+    /// adult's "13 or older" must never pre-answer the gate for a child who signs in afterwards.
+    func testConsentAnswerDoesNotLeakBetweenOwners() {
+        let defaults = freshDefaults()   // one device
+        ConsentGate(ownerId: "apple:adult", defaults: defaults).record(isUnder13: false)
+
+        let child = ConsentGate(ownerId: "apple:child", defaults: defaults)
+        XCTAssertEqual(child.status, .unknown, "a second owner must be asked their own age")
+        XCTAssertFalse(child.recordingAllowed)
+    }
+
+    /// The reverse leak: a child's answer must block only that child — a later adult on the same
+    /// device is asked normally — while still blocking the child on every later sign-in.
+    func testUnder13BlockIsScopedToItsOwnerAndSurvivesReSignIn() {
+        let defaults = freshDefaults()
+        ConsentGate(ownerId: "apple:child", defaults: defaults).record(isUnder13: true)
+
+        XCTAssertEqual(ConsentGate(ownerId: "apple:child", defaults: defaults).status, .blockedUnder13,
+                       "the block must survive the child signing in again")
+        XCTAssertEqual(ConsentGate(ownerId: "apple:adult", defaults: defaults).status, .unknown,
+                       "a different owner must not inherit the block")
     }
 }

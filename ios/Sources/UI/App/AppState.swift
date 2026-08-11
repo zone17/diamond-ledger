@@ -79,12 +79,25 @@ public final class AppState {
     /// The currently signed-in session (`nil` → shows SignInView).
     var session: AuthSession?
 
-    /// COPPA age-gate status (FR-029 / ADR-0016 §4). Stored (not computed) so SwiftUI observes
-    /// changes when the user answers the gate.
-    private(set) var consentStatus: ConsentGate.Status
+    /// COPPA age-gate status for the **signed-in owner** (FR-029 / ADR-0016 §4). Stored (not
+    /// computed) so SwiftUI observes changes when the user answers the gate; kept in step with
+    /// `session` by `refreshConsentStatus()`. No owner signed in → `.unknown`.
+    private(set) var consentStatus: ConsentGate.Status = .unknown
 
-    /// The age-gate backing store (`UserDefaults`).
-    private let consentGate = ConsentGate()
+    /// True until the launch-time session restore settles, so routing can hold a neutral screen
+    /// instead of flashing the sign-in screen at an owner who is already signed in.
+    private(set) var isRestoringSession = true
+
+    /// Backing store for the per-owner age gate (injectable so tests never touch real defaults).
+    private let consentDefaults: UserDefaults
+
+    /// Owns Keychain session persistence (injectable so tests never touch the real Keychain).
+    private let authStore: AuthStore
+
+    /// The signed-in owner's age gate, or `nil` when nobody is signed in.
+    private var consentGate: ConsentGate? {
+        session.map { ConsentGate(ownerId: $0.ownerId, defaults: consentDefaults) }
+    }
 
     /// Whether the signed-in user has answered the age gate (any answer).
     var consentResolved: Bool { consentStatus != .unknown }
@@ -131,9 +144,18 @@ public final class AppState {
 
     // MARK: Init
 
-    public init(core: any CoreClient) {
+    /// - Parameters:
+    ///   - core: the scoring core (real `DiamondCoreClient` in the app, `MockCore` in tests).
+    ///   - consentDefaults: age-gate backing store; tests inject a throwaway suite.
+    ///   - authStore: session persistence; tests inject one backed by `InMemorySessionStore`.
+    public init(core: any CoreClient,
+                consentDefaults: UserDefaults = .standard,
+                authStore: AuthStore? = nil) {
         self.core = core
-        self.consentStatus = ConsentGate().status   // same UserDefaults as `consentGate`
+        self.consentDefaults = consentDefaults
+        self.authStore = authStore ?? .shared
+        // `consentStatus` stays `.unknown` until an owner is signed in — the gate belongs to the
+        // owner, so there is no answer to read before we know who they are.
     }
 
     /// Called when a presented sheet is dismissed. Unsticks the push-to-talk loop so the mic
@@ -167,49 +189,72 @@ public final class AppState {
 
     // MARK: - Auth actions
 
+    /// Recompute the age-gate status for the current owner, then enforce the FR-029 storage rule.
+    ///
+    /// **Invariant: an owner known to be under 13 keeps no persisted session.** The Keychain item
+    /// holds their display name and a persistent identifier — personal information under COPPA —
+    /// and sign-in necessarily writes it before the gate can be shown. Purging here (rather than
+    /// waiting for the child to tap Sign out) is what makes "no under-13 PII stored" true. The
+    /// in-memory session is deliberately kept so `Under13BlockedView` can still explain why.
+    private func refreshConsentStatus() {
+        consentStatus = consentGate?.status ?? .unknown
+        if consentStatus == .blockedUnder13 {
+            authStore.signOut()
+        }
+    }
+
     /// Restore a persisted owner session on launch (ADR-0016). For an Apple session this also
     /// verifies the credential is still valid; a revoked credential leaves `session == nil`.
     func restoreSession() async {
-        if let restored = await AuthStore.shared.restoreSession() {
-            session = restored
-        }
+        defer { isRestoringSession = false }
+        guard session == nil else { return }
+        let restored = await authStore.restoreSession()
+        // A sign-in can complete while the credential check is in flight — never clobber it with
+        // the older persisted identity, or the in-memory owner and the Keychain would disagree.
+        guard session == nil, let restored else { return }
+        session = restored
+        refreshConsentStatus()
     }
 
     /// Complete Sign in with Apple (T081 / FR-020 / I5): derive + persist the owner identity.
-    func completeAppleSignIn(appleUserID: String, fullName: PersonNameComponents?) {
-        do {
-            session = try AuthStore.shared.establishAppleSession(appleUserID: appleUserID,
-                                                                 fullName: fullName)
-        } catch {
-            presentedError = AppError(message: "Could not save your sign-in. Please try again.")
-        }
+    ///
+    /// Throws rather than swallowing: at this point `SignInView` is the only view on screen, so a
+    /// failure has to surface there — `presentedError` is rendered by `MainView`, which is not in
+    /// the hierarchy yet, and the user would otherwise see the sheet close and nothing happen.
+    func completeAppleSignIn(appleUserID: String, fullName: PersonNameComponents?) throws {
+        session = try authStore.establishAppleSession(appleUserID: appleUserID, fullName: fullName)
+        refreshConsentStatus()
     }
 
-    /// Record the one-time COPPA age-gate answer (FR-029). Mutating `consentStatus` republishes so
-    /// `RootView` re-routes (adult → app, under-13 → blocked).
+    /// Record the signed-in owner's one-time COPPA age-gate answer (FR-029). Mutating
+    /// `consentStatus` republishes so `RootView` re-routes (adult → app, under-13 → blocked).
     func recordAgeResponse(isUnder13: Bool) {
-        consentGate.record(isUnder13: isUnder13)
-        consentStatus = consentGate.status
+        consentGate?.record(isUnder13: isUnder13)
+        refreshConsentStatus()
     }
 
     #if DEBUG
     /// Sign in with a development stub (DEBUG only — a release build cannot mint this identity).
     /// The `dev-owner-*` id satisfies the core's non-trivial-identity guard for MockCore demos; it
-    /// is NOT persisted to the Keychain, so it never survives a relaunch. It also clears the age
-    /// gate in-memory (the dev shortcut bypasses sign-in *and* consent friction); the real Apple
-    /// path does not, so it still routes through `AgeGateView`.
+    /// is NOT persisted to the Keychain, so it never survives a relaunch. The shortcut also answers
+    /// the age gate **for the dev owner only** — recording it against that owner rather than
+    /// forcing an in-memory `.allowed` is what stops the bypass from leaking into a real Apple
+    /// sign-in later in the same launch.
     func devSignIn(displayName: String = "Demo Scorer") {
         let ownerId = "dev-owner-\(displayName.lowercased().replacingOccurrences(of: " ", with: "-"))"
         session = AuthSession(ownerId: ownerId, displayName: displayName, signInMethod: .email)
-        consentStatus = .allowed   // in-memory only; not persisted to UserDefaults
+        consentGate?.record(isUnder13: false)
+        refreshConsentStatus()
     }
     #endif
 
     func signOut() {
-        AuthStore.shared.signOut()
+        authStore.signOut()
         session = nil
         activeGame = nil
         pttState = .idle
+        // No owner, no standing answer — the next owner to sign in answers the gate themselves.
+        refreshConsentStatus()
     }
 
     // MARK: - Game actions
@@ -261,6 +306,15 @@ public final class AppState {
     func recordPlay(facts: [String: String]) async {
         guard let game = activeGame,
               let ownerId = session?.ownerId, !ownerId.isEmpty else { return }
+
+        // FR-029: the contract gates `recordPlay` explicitly, not only game creation. Reaching a
+        // play with an unsatisfied gate is unreachable through today's UI (an active game implies
+        // a passed createGame), but stating it here keeps the invariant local and true — it would
+        // otherwise break silently the day an active game is restored from disk.
+        guard recordingAllowed else {
+            presentedError = AppError(message: "Confirm your age before recording a play.")
+            return
+        }
 
         // Guard: a play is already pending in the (stateful) core. Don't try to record a new one —
         // the real core would reject it (FR-007 PendingConfirmation). Instead REOPEN the pending

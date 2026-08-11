@@ -1,16 +1,18 @@
-/// Auth.swift — T003 / T081 placeholder (Squad B, Story B0)
+/// Auth.swift — T003 / T081 (Squad B, Story B0)
 ///
-/// Email + social sign-in; private-by-default account/owner identity (T081 / FR-028 / FR-020 / I5).
+/// Private-by-default account/owner identity (T081 / FR-028 / FR-020 / I5).
 ///
 /// **Why this must be real at MVP (remediation G1/G2, tasks.md Story B0):**
 ///   The owner-as-decider authority assertion in the Rust core (T036 / FR-020 / I5) binds to an
 ///   authenticated owner identity supplied by this module. An anonymous stub does NOT satisfy the
-///   authority or privacy claims. A minimal real sign-in (email or social) is the MVP requirement;
-///   a placeholder token is acceptable only during development against `MockCore` (T008).
+///   authority or privacy claims. A minimal real sign-in is the MVP requirement; a placeholder
+///   token is acceptable only during development against `MockCore` (T008).
 ///
-/// **Sign-in methods (FR-028):**
-///   - Email + password (primary — no third-party dependency required for MVP)
-///   - Social (Apple Sign-In mandatory for App Store; Google/other optional fast-follow)
+/// **Sign-in methods (FR-028 / ADR-0016):**
+///   - Sign in with Apple — the v1 owner identity, established and verified on-device
+///   - Email + password and Google — deferred to the sync/backend milestone (ADR-0016 §3); an
+///     offline app has no backend to verify a password against, so shipping a local email form
+///     would be fake authentication
 ///
 /// **Private-by-default (FR-023):**
 ///   A scorebook is private to the authenticated owner until an explicit share action (T082).

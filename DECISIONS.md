@@ -48,8 +48,17 @@ forbids.
    a real provider with the same `AuthSession` shape.
 4. **COPPA (FR-029): a minimal on-device age-gate now; verified parental consent deferred** with
    the backend (verifiable consent is an out-of-band/server process — it cannot be done credibly
-   offline). The gate runs once before any game is recorded; under-13 is blocked from recording
-   pending the consent flow. This keeps the T070 privacy marker honest rather than decorative.
+   offline). The gate runs once **per owner** before any game is recorded; under-13 is blocked from
+   recording pending the consent flow. This keeps the T070 privacy marker honest rather than
+   decorative. Two properties make it honest rather than nominal, both added during T081 review:
+   - **The answer binds to the `ownerId`, not the device.** A device-global answer let one owner's
+     response pre-answer the gate for the next person to sign in — on the shared family device this
+     app is built for, an adult's "13 or older" would have silently opened recording for a child.
+   - **A known under-13 owner keeps no persisted session.** Sign-in necessarily writes
+     `{ownerId, displayName}` to the Keychain before the gate can be shown, so answering "under 13"
+     deletes that item (and keeps deleting it on any later sign-in by that owner). Without this,
+     "No under-13 PII stored" was false: a child's real name and a persistent identifier stayed at
+     rest until they chose to sign out.
 5. **The core is unchanged.** `assert_nontrivial_identity` already rejects trivial ids; the agent
    parity path keeps its named capability identity (`dl-score-harness`, a tracked trust boundary
    per Art. XXIX). The only core-adjacent fix is at the iOS layer: **gate `AppState.devSignIn` in
@@ -86,6 +95,9 @@ per T081, and it unblocks H1 (real core on device) without waiting on a backend.
   (`dl-score-harness`) is a named, documented capability identity — not ambient authority.
 - **Storage:** Keychain item is device-scoped (`…ThisDeviceOnly`); no password is stored (Apple
   holds the credential); "Hide My Email" is supported (we never store email). No identity is logged.
+  The item is deleted outright once an owner answers the age gate as under 13 (§4). Note the item
+  is not migrated to another device, but *is* included in an encrypted local backup — treat it as
+  device-scoped, not backup-exempt.
 
 ### Reversibility
 

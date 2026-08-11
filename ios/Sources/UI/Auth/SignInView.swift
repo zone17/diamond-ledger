@@ -101,7 +101,15 @@ struct SignInView: View {
                 errorMessage = "Unexpected credential type from Sign in with Apple."
                 return
             }
-            appState.completeAppleSignIn(appleUserID: credential.user, fullName: credential.fullName)
+            do {
+                try appState.completeAppleSignIn(appleUserID: credential.user,
+                                                 fullName: credential.fullName)
+            } catch {
+                // The sign-in screen is the only view on screen here, so the failure has to be
+                // shown on it — AppState.presentedError is rendered by MainView, which is not in
+                // the hierarchy yet, and the user would just see the sheet close and nothing happen.
+                errorMessage = "Could not save your sign-in. Please try again."
+            }
         case .failure(let error):
             // User dismissing the sheet is not an error to surface.
             if (error as? ASAuthorizationError)?.code == .canceled { return }

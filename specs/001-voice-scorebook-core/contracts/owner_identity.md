@@ -18,10 +18,11 @@ AuthSession {
 }
 SignInMethod  = apple | email | google       // email/google reserved (ADR-0016 follow-up a)
 AuthError     = notAuthenticated
-              | invalidCredentials(string)
-              | coppaConsentRequired          // FR-029 gate not satisfied
+              | invalidCredentials(string)     // empty/rejected Apple credential
+              | persistenceFailed(string)      // Keychain write/clear failed
+              | coppaConsentRequired           // reserved: no caller throws it in v1 (see below)
               | methodUnavailable(SignInMethod)
-              | cancelled                     // user dismissed the Apple sheet
+              | cancelled                      // user dismissed the Apple sheet
 ```
 
 `ownerId` MUST be non-trivial (the core rejects empty / `anonymous` / `unknown`) and MUST originate
@@ -29,15 +30,27 @@ from a credential, never from a user-typed field (ADR-0016 threat model).
 
 ## Operations
 
+The `ASAuthorizationController` flow itself is owned by the **view** (`SignInView`'s
+`SignInWithAppleButton`), not by `AuthStore`: SwiftUI hands back a completed authorization, and the
+store's job starts there. So the capability surface is the three synchronous/async calls below —
+there is deliberately no `signInWithApple()` on `AuthStore`.
+
 ```
-signInWithApple() async throws -> AuthSession      // ASAuthorizationController, on-device
+establishAppleSession(appleUserID: string, fullName: PersonName?) throws -> AuthSession
+                                                   // derives ownerId, persists to the Keychain
 restoreSession()  async        -> AuthSession?     // Keychain read + Apple credential-state check
-signOut()         async                            // clears the Keychain item + in-memory session
+signOut()                                          // clears the Keychain item + in-memory session
 ```
 
 > COPPA (FR-029): `recordPlay` and game creation MUST NOT proceed until the one-time age gate is
-> satisfied. Under-13 is blocked from recording pending the deferred verified-consent flow
-> (ADR-0016 §4); the gate decision is persisted so it is asked once.
+> satisfied **for the signed-in owner**. The gate is a state check, not a thrown error: the client
+> exposes `recordingAllowed` (owner signed in AND a 13+ answer) and refuses with a user-facing
+> message; `AuthError.coppaConsentRequired` stays reserved for the backend milestone, when an
+> agent/CLI caller needs a structured refusal. Under-13 is blocked from recording pending the
+> deferred verified-consent flow (ADR-0016 §4).
+>
+> The answer is persisted **per owner**, not per device — a device-global answer would let one
+> owner's response pre-answer the gate for the next person to sign in on a shared device.
 
 ## Preconditions
 
@@ -48,13 +61,21 @@ signOut()         async                            // clears the Keychain item +
 
 ## Behavior
 
-1. `signInWithApple` runs `ASAuthorizationController` with an `.appleID` request (scopes: full name
-   for `displayName`). On success it derives `ownerId = "apple:" + credential.user`, builds the
-   `AuthSession`, and persists it in the Keychain (`…AfterFirstUnlockThisDeviceOnly`).
-2. `restoreSession` reads the Keychain item on launch; for an `.apple` session it calls
-   `getCredentialState(forUserID:)` and returns `nil` (signing out) if the credential is
-   `.revoked`/`.notFound`.
+1. `SignInView` runs `SignInWithAppleButton` (scopes: full name for `displayName`) and hands the
+   completed authorization to `establishAppleSession`, which derives
+   `ownerId = "apple:" + credential.user`, builds the `AuthSession`, and persists it in the
+   Keychain (`…AfterFirstUnlockThisDeviceOnly`). A persistence failure is surfaced on the sign-in
+   screen — the only view on screen at that moment.
+2. `restoreSession` reads the Keychain item on launch. An `.apple` session whose `ownerId` has lost
+   its `apple:` namespace is treated as corrupt: the item is cleared and `nil` returned. Otherwise
+   it calls `getCredentialState(forUserID:)` and returns `nil` (signing out) unless the credential
+   is `.authorized`.
 3. `signOut` deletes the Keychain item and clears the in-memory session.
+4. **Under-13 purge (FR-029).** Sign-in necessarily persists `{ownerId, displayName}` before the
+   age gate can be shown. The moment the owner answers "under 13", that Keychain item is deleted
+   and stays deleted on every later sign-in by that owner — a child's name and persistent
+   identifier are never left at rest. The in-memory session survives only so the blocked screen can
+   explain the refusal.
 
 ## Postconditions
 
