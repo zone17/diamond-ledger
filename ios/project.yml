@@ -23,6 +23,14 @@ targets:
     dependencies:
       - package: LedgerPkg
         product: DiamondLedgerLib
+    # Sign in with Apple (T081 / ADR-0016) — the v1 owner-identity provider. The capability must
+    # ALSO be enabled for the app id in the Apple Developer portal (human provisioning step), and
+    # requires a signing team (see DEVELOPMENT_TEAM in the signing config).
+    entitlements:
+      path: DiamondLedger.entitlements
+      properties:
+        com.apple.developer.applesignin:
+          - Default
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.diamondledger.DiamondLedger

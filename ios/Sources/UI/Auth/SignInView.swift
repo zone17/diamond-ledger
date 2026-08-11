@@ -1,53 +1,48 @@
-/// SignInView.swift — T081 (Squad B, Story B0)
+/// SignInView.swift — T081 (Squad B, Story B0 / ADR-0016)
 ///
-/// Minimal sign-in that establishes a real `ownerId` (not anonymous) before any
-/// `CoreClient` primitive can be called (FR-020 / I5 / G1/G2).
+/// Establishes a real `ownerId` via **Sign in with Apple** before any `CoreClient` primitive can
+/// be called (FR-020 / I5 / FR-023). The Apple credential's stable `user` id becomes the owner
+/// identity the Rust core's authority assertion (T036) validates against.
 ///
-/// MVP implementation: email + password form (primary path). Apple Sign-In is
-/// required for App Store distribution (T081 full implementation); the button is
-/// present and routes to the TODO Apple Sign-In path.
+/// Email/password + Google are deferred to the sync/backend milestone (ADR-0016 §3) — an offline
+/// app has nothing to verify a password against, so we do not ship a fake email form.
 ///
-/// **Why real sign-in matters at MVP (analysis remediation G1/G2):**
-/// The Rust core's owner-as-decider authority assertion (T036/FR-020/I5) binds to
-/// an authenticated `ownerId`. A device-generated UUID does NOT satisfy the
-/// authority or privacy claims — a real sign-in is required.
-///
-/// **Dev mode**: in `#if DEBUG` builds a "Dev Sign-In" button short-circuits to a
-/// stub session for faster iteration against MockCore. This path MUST NOT ship.
+/// **Dev mode**: in `#if DEBUG` builds a "Dev Sign-In" button short-circuits to a stub session for
+/// faster iteration against MockCore. `AppState.devSignIn` is itself `#if DEBUG`, so a release build
+/// cannot mint a stub identity.
 
 import SwiftUI
+import AuthenticationServices
 import Auth
 
 struct SignInView: View {
     @Environment(AppState.self) private var appState
 
-    @State private var email: String = ""
-    @State private var password: String = ""
-    @State private var isSigningIn: Bool = false
     @State private var errorMessage: String?
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
                 logo
+                Spacer()
 
                 VStack(spacing: 16) {
-                    emailField
-                    passwordField
-                    signInButton
+                    SignInWithAppleButton(.signIn) { request in
+                        request.requestedScopes = [.fullName]
+                    } onCompletion: { result in
+                        handleAppleResult(result)
+                    }
+                    .signInWithAppleButtonStyle(.black)
+                    .frame(height: 48)
+                    .accessibilityIdentifier("sign-in-apple")
 
-                    divider
-
-                    appleSignInButton
+                    #if DEBUG
+                    devSignInButton
+                    #endif
                 }
                 .padding(.horizontal, 32)
 
-                #if DEBUG
-                devSignInButton
-                #endif
-
                 Spacer()
-
                 privacyNote
             }
             .navigationTitle("Diamond Ledger")
@@ -78,59 +73,6 @@ struct SignInView: View {
         }
     }
 
-    private var emailField: some View {
-        TextField("Email", text: $email)
-            .keyboardType(.emailAddress)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .textFieldStyle(.roundedBorder)
-    }
-
-    private var passwordField: some View {
-        SecureField("Password", text: $password)
-            .textFieldStyle(.roundedBorder)
-    }
-
-    private var signInButton: some View {
-        Button {
-            Task { await signInWithEmail() }
-        } label: {
-            if isSigningIn {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 44)
-            } else {
-                Text("Sign In")
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 44)
-            }
-        }
-        .buttonStyle(.borderedProminent)
-        .disabled(email.isEmpty || password.isEmpty || isSigningIn)
-    }
-
-    private var divider: some View {
-        HStack {
-            VStack { Divider() }
-            Text("or")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            VStack { Divider() }
-        }
-    }
-
-    private var appleSignInButton: some View {
-        // TODO: T081 — replace with `SignInWithAppleButton` + AuthenticationServices.
-        Button {
-            errorMessage = "Apple Sign-In — coming in T081 full implementation."
-        } label: {
-            Label("Sign in with Apple", systemImage: "apple.logo")
-                .frame(maxWidth: .infinity)
-                .frame(height: 44)
-        }
-        .buttonStyle(.bordered)
-    }
-
     #if DEBUG
     private var devSignInButton: some View {
         Button("Dev Sign-In (debug only)") {
@@ -152,24 +94,26 @@ struct SignInView: View {
 
     // MARK: - Actions
 
-    private func signInWithEmail() async {
-        guard !email.isEmpty, !password.isEmpty else { return }
-        isSigningIn = true
-        defer { isSigningIn = false }
-
-        do {
-            let session = try await AuthStore.shared.signIn(email: email, password: password)
-            appState.session = session
-        } catch AuthError.invalidCredentials(let msg) {
-            errorMessage = msg
-        } catch {
-            // TODO: T081 — for MVP against MockCore, fall through to dev stub so the demo works.
-            // This produces a stable ownerId from the email address.
-            #if DEBUG
-            appState.devSignIn(displayName: email.components(separatedBy: "@").first ?? email)
-            #else
+    private func handleAppleResult(_ result: Result<ASAuthorization, Error>) {
+        switch result {
+        case .success(let authorization):
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+                errorMessage = "Unexpected credential type from Sign in with Apple."
+                return
+            }
+            do {
+                try appState.completeAppleSignIn(appleUserID: credential.user,
+                                                 fullName: credential.fullName)
+            } catch {
+                // The sign-in screen is the only view on screen here, so the failure has to be
+                // shown on it — AppState.presentedError is rendered by MainView, which is not in
+                // the hierarchy yet, and the user would just see the sheet close and nothing happen.
+                errorMessage = "Could not save your sign-in. Please try again."
+            }
+        case .failure(let error):
+            // User dismissing the sheet is not an error to surface.
+            if (error as? ASAuthorizationError)?.code == .canceled { return }
             errorMessage = "Sign-in failed: \(error.localizedDescription)"
-            #endif
         }
     }
 }
