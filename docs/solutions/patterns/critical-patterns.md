@@ -85,5 +85,40 @@ identity). See `tasks.md` T036/T081.
 
 ---
 
+## P1-5 — A gate is keyed to what it protects, and deletes what preceded it
+
+A consent/eligibility/privacy gate must persist its answer against **the identity it protects**, not
+against the device, install, or session that happens to be convenient. And when the flow *forces*
+collection before the decision (authenticate → then ask age), the gate needs a **retroactive arm**
+that deletes what was already collected — a gate that only blocks the next step is a half gate.
+
+Both halves failed in T081 (PR #172): a device-global COPPA key let an adult's "13 or older"
+silently pre-answer the gate for a child signing in next on the same iPad, and an under-13 answer
+left the child's real name + persistent identifier in the Keychain while the contract claimed "No
+under-13 PII stored."
+
+```swift
+// One place states the invariant: status follows the owner, and being blocked purges storage.
+private func refreshConsentStatus() {
+    consentStatus = consentGate?.status ?? .unknown      // keyed by ownerId, not by device
+    if consentStatus == .blockedUnder13 { authStore.signOut() }   // retroactive arm
+}
+```
+
+**Detection:** a consent/eligibility key in `UserDefaults`/`localStorage`/cookies with no identity
+component; a `record*Response` that writes only a flag; a "we never store X" claim in a contract or
+ADR with no deletion call in the diff that would make it true; routing that checks `session == nil`
+before the blocked state (which bounces the blocked user away from the screen explaining the block).
+**Rule:** key the answer by the protected identity; recompute on every identity change; delete
+already-collected data the moment the gate says it may not be kept.
+**When to apply:** every consent, age, eligibility, entitlement, or permission gate — especially any
+gate whose answer outlives one session or whose device may be shared.
+
+**Test at the right altitude:** a gate unit-tested against one fresh store cannot reveal a
+cross-identity leak. Drive two identities through one store, and make the enforcement layer
+injectable so the purge and the routing are testable without real Keychain/UserDefaults.
+
+---
+
 *See [common-solutions.md](./common-solutions.md) for P2/P3 recurring solutions. Full project map +
 invariant index: [`docs/PROJECT_CONTEXT.md`](../../PROJECT_CONTEXT.md).*

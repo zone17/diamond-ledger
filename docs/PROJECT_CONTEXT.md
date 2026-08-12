@@ -97,6 +97,7 @@ the underlying detail docs.
 | `/watch-ci` gate choreography (+ `skipped`≠`failure`) | `workflow-issues/watch-ci-gate-choreography.md` |
 | Private-repo branch-protection fallback · unauthored template root commit | `conventions/` |
 | SwiftUI swipe-dismissible `.sheet` → reconcile owner state in `onDismiss` (gesture-dismiss skips button handlers) | `ui-bugs/swiftui-sheet-ondismiss-state-reconciliation.md` |
+| **A privacy gate is keyed to the identity it protects, and deletes what preceded it** (P1-5) — a device-global consent answer leaks across owners on a shared device; data collected before the gate must be purged when the gate says no | `logic-errors/privacy-gate-scoped-to-device-not-identity.md` |
 
 ## 7. Anti-patterns (do not reintroduce)
 
@@ -106,6 +107,9 @@ the underlying detail docs.
 - **Spec Kit `NNN-` branch names** (fail the Article XVIII CI regex) — use `feat/<squad>/<TICKET>-<slug>`.
 - **A `build/` source dir** (silently `.gitignore`d) — name it `app/` or force-add.
 - **Committing/pushing to `main`** (hook-blocked) — always branch + PR; `/watch-ci` after.
+- **A consent/eligibility gate keyed to the device, install, or session** instead of the identity it protects — it silently
+  becomes a weaker control the moment two people share hardware. Key it by `ownerId`, recompute on identity change, and
+  purge data already collected before the gate ran (P1-5).
 
 ## 8. Methodology & workflow
 
