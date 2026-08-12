@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.zone17.gate-metrics</string>
+
+  <!-- Executes a copy from ~/.claude/tools, not the repo: launchd agents get no
+       macOS TCC grant for ~/Desktop, so /bin/bash cannot read a script there.
+       Re-copy after editing the repo version, which stays source of truth.
+       (Same constraint documented for com.zone17.compound-audit.) -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/fp/.claude/tools/gate-metrics-exporter.sh</string>
+  </array>
+
+  <!-- Every 15 minutes: the gate-outcome panels use increase() over a range, so
+       a periodic push builds the time series the rate panels need. -->
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>/Users/fp</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/fp</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/fp/.claude/logs/gate-metrics.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/fp/.claude/logs/gate-metrics.err.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
