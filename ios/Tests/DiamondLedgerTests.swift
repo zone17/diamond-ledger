@@ -23,12 +23,13 @@ import XCTest
 /// Replace with real tests at T056 / T071.
 final class DiamondLedgerPlaceholderTests: XCTestCase {
 
-    /// Verifies that `AuthStore.shared` is reachable (module linkage smoke test).
-    func testAuthStoreIsAccessible() async {
-        let store = AuthStore.shared
-        let session = await store.session
-        // No session until T081 is implemented.
-        XCTAssertNil(session, "Expected no session before T081 sign-in is implemented.")
+    /// Verifies that `AuthStore` is reachable and restores no session from an empty store
+    /// (module linkage smoke test). Full owner-identity coverage lives in `T081OwnerIdentityTests`.
+    @MainActor
+    func testAuthStoreRestoresNilWhenEmpty() async {
+        let store = AuthStore(store: InMemorySessionStore())
+        let restored = await store.restoreSession()
+        XCTAssertNil(restored, "Expected no session when nothing is persisted.")
     }
 
     /// Verifies that `EventStore` can be instantiated (Persistence module smoke test).
