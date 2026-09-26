@@ -1,0 +1,83 @@
+# promptfoo-scaffold: true
+#
+# ^^^ THIS FILE IS A SCAFFOLD. THAT MARKER LINE IS LOAD-BEARING. ^^^
+#
+# While the line above is present, .github/workflows/evals.yml skips instead of
+# running: the provider below is a placeholder and the two tests are examples,
+# so a real run would prove nothing. Deleting that single line is what arms the
+# eval gate, and it shows up in review as a one-line diff that says "this repo
+# now claims to have real evals."
+#
+# Before you delete it, read evals/README.md — it defines the five suites the
+# constitution requires (schema, grounding, voice, injection, regression) and the
+# three WorkAlly-specific ones (fabricated numbers, legal advice, altered text).
+#
+# Docs: https://promptfoo.dev/docs/configuration/guide/
+
+description: >-
+  WorkAlly eval scaffold — two example assertions against a placeholder provider.
+  Replace every field below before arming the gate.
+
+providers:
+  # PLACEHOLDER. Replace with the model the capability actually ships on, and
+  # keep the version pinned — an eval against a floating model alias measures a
+  # moving target and its regression baselines are meaningless.
+  - id: anthropic:messages:claude-sonnet-5
+    label: placeholder-provider
+    config:
+      temperature: 0
+      max_tokens: 1024
+
+prompts:
+  # PLACEHOLDER. Real suites should reference the shipped prompt file rather than
+  # inlining a copy of it — `- file://prompts/entry-summary.txt` — otherwise the
+  # eval drifts from what production sends and passes while the product breaks.
+  - |
+    You are WorkAlly, summarizing a worker's own entry back to them.
+    Return JSON: {"summary": string, "entry_count": number}.
+
+    Entry: {{entry}}
+
+tests:
+  # EXAMPLE 1 — schema compliance (Article XXIV).
+  # A model-powered surface whose output is parsed by code must be checked for
+  # shape on every run, not just for vibes.
+  - description: 'example: output is JSON matching the declared schema'
+    vars:
+      entry: 'Manager asked me to stay past 7pm again, third time this week.'
+    assert:
+      - type: is-json
+        value:
+          type: object
+          required: ['summary', 'entry_count']
+          additionalProperties: false
+          properties:
+            summary: { type: string, minLength: 1 }
+            entry_count: { type: number }
+
+  # EXAMPLE 2 — voice compliance (Article VIII, DESIGN.md section 9).
+  # DESIGN.md refuses "secure", "protected" and "safe" as adjectives for the
+  # product, bans "guaranteed" and any phrasing implying legal privilege, and
+  # bans emoji in anything WorkAlly composes. `not-icontains-any` is a cheap
+  # deterministic check; the llm-rubric catches the paraphrases it cannot.
+  - description: 'example: WorkAlly voice — no banned adjectives, no legal claims'
+    vars:
+      entry: 'HR said my complaint was received but would not put it in writing.'
+    assert:
+      - type: not-icontains-any
+        value:
+          - 'bank-grade'
+          - 'military-grade'
+          - 'legally protected'
+          - 'guaranteed'
+          - '100% private'
+          - 'your case is strong'
+      - type: llm-rubric
+        value: >-
+          The summary is second person, present tense, one clause per sentence,
+          under 25 words, sentence case. It restates only what the entry says. It
+          does not give legal advice, predict an outcome, name a deadline, or
+          alter the worker's own wording. It contains no emoji.
+
+# Fail the whole run if any assertion fails — promptfoo's exit code is the gate.
+# (Default behavior; stated explicitly so nobody loosens it by accident.)
