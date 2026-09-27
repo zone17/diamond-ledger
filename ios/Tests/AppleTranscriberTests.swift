@@ -1,4 +1,4 @@
-/// AppleTranscriberTests.swift — T047 / DL-80 (Squad B, Story B2).
+/// AppleTranscriberTests.swift — T047 / DL-80 (Squad B, Story B2) + DL-157 biasing adapter.
 ///
 /// Unit tests for the **compile/logic-testable seams** of the real iOS-26 `SpeechAnalyzer`
 /// `AppleTranscriber`. These do NOT exercise live speech recognition — `SpeechAnalyzer` /
@@ -8,8 +8,9 @@
 /// What IS covered here (deterministic, no mic, no network):
 ///   - `RosterContextBuilder` contextual-strings assembly from a roster (ordering, dedup, bounding,
 ///     reserved-roster-slot budgeting) — FR domain-accuracy seam.
-///   - `BiasingStrategy.choose` at the FR-008 confidence boundary (when the contextual-biasing pass
-///     overrides vs keeps the SpeechAnalyzer hypothesis).
+///   - `BiasingStrategy.choose` as a thin adapter over `SpeechTypes.BiasingDecision` (DL-157):
+///     the four-guard override rule, the R20 confidence cap, and the re-pinned P0b invariant.
+///   - The `parserThreshold` mirror is pinned equal to `GrammarParser.lowConfidenceThreshold`.
 ///   - `ConfidenceMapping.toInt` boundaries (shared Apple/Sherpa rounding contract, ADR-0007).
 ///   - `AppleTranscriber.makePCMBuffer` PCM construction + the `consuming AudioBuffer` release
 ///     lifecycle (FR-022 process-don't-store).
@@ -17,10 +18,12 @@
 ///   - `TranscriberEngineSelector` engine selection (stub in sim, kind reporting — ADR-0010).
 ///
 /// - SeeAlso: `ios/Sources/Speech/AppleTranscriber.swift`
+/// - SeeAlso: `ios/Sources/SpeechTypes/BiasingDecision.swift` — the rule itself (+ its own tests)
 /// - SeeAlso: `MANUAL-TESTING.md` — the on-device accuracy human-verification step.
 
 import XCTest
 import Foundation
+import Parse
 @testable import DiamondSpeech
 
 // MARK: - RosterContextBuilder (contextual-strings assembly from a roster)
@@ -86,7 +89,7 @@ final class RosterContextBuilderTests: XCTestCase {
     }
 }
 
-// MARK: - FR-008 / default confidence safety (P0 fix, DL-80 code review)
+// MARK: - FR-008 / default confidence safety (P0 fix, DL-80 code review) + DL-157 policy pins
 
 /// Pins the `defaultConfidenceWhenUnreported` value relative to `GrammarParser.lowConfidenceThreshold`.
 ///
@@ -97,8 +100,32 @@ final class RosterContextBuilderTests: XCTestCase {
 @available(iOS 26, *)
 final class FR008DefaultConfidenceTests: XCTestCase {
 
-    /// The threshold the GrammarParser uses to trigger its clarify/ambiguity path.
-    private let parserThreshold = 70  // GrammarParser.lowConfidenceThreshold
+    /// The threshold the GrammarParser uses to trigger its clarify/ambiguity path, as mirrored
+    /// inside DiamondSpeech (which cannot import Parse).
+    private let parserThreshold = BiasingStrategy.parserThreshold
+
+    /// The mirror must equal the real thing. `DiamondSpeech` restates the integer because it must
+    /// not depend on `Parse`; this test is what keeps the two from drifting.
+    func testParserThreshold_matchesGrammarParser() {
+        XCTAssertEqual(BiasingStrategy.parserThreshold, GrammarParser.lowConfidenceThreshold,
+                       "BiasingStrategy.parserThreshold must mirror GrammarParser.lowConfidenceThreshold")
+    }
+
+    /// R20 / ADR-0017: hands-free scoring from a biased correction stays closed on this build.
+    func testSilentScoringSwitch_isOff() {
+        XCTAssertFalse(BiasingStrategy.silentScoringEnabled,
+                       "the silent-scoring switch flips only on on-device measurement after T046")
+        XCTAssertFalse(BiasingStrategy.policy.silentScoringEnabled)
+        XCTAssertEqual(BiasingStrategy.policy.parserThreshold, GrammarParser.lowConfidenceThreshold)
+    }
+
+    /// The cap an accepted correction carries must itself sit below the parser threshold, so no
+    /// biased text can reach the parser as "confident enough to score silently".
+    func testPolicyCap_isBelowParserThreshold() {
+        let capInt = ConfidenceMapping.toInt(BiasingStrategy.policy.cappedConfidence)
+        XCTAssertLessThan(capInt, GrammarParser.lowConfidenceThreshold,
+                          "capped confidence \(capInt) must be < \(GrammarParser.lowConfidenceThreshold)")
+    }
 
     func testDefaultConfidence_isBelowParserThreshold() {
         // This is the P0 structural safety pin: an unmeasured SpeechAnalyzer result MUST default
@@ -138,60 +165,171 @@ final class FR008DefaultConfidenceTests: XCTestCase {
     }
 }
 
-// MARK: - BiasingStrategy.choose (FR-008 confidence-boundary behavior of the biasing pass)
+// MARK: - BiasingStrategy.choose (thin adapter over BiasingDecision — DL-157 Key Decision 3)
 //
-// NOTE on removed tests (P0b fix):
-//   `testChoose_baseHasNoConfidence_prefersAnyBiased` and `testChoose_biasedAtBoundaryEqual_prefersBiased`
-//   were removed because they certified the UNSAFE behavior where a nil base confidence causes
-//   unconditional override by the biased hypothesis. That behavior is the exact P0b defect.
-//   `applyBiasing` is no longer called from the hot path; when it is re-enabled under follow-up
-//   #157, the strategy must require a positive base confidence AND an edit-distance agreement check
-//   before overriding — at which point safe variants of those tests can be re-added.
+// History: the DL-80 review removed `testChoose_baseHasNoConfidence_prefersAnyBiased` and
+// `testChoose_biasedAtBoundaryEqual_prefersBiased` because they certified the UNSAFE behavior where
+// a nil base confidence caused an unconditional override (P0b). DL-157 settles the rule the other
+// way round: the decision rests on the BIASED leg's measured confidence plus token agreement, the
+// biased engine may correct words but never confidence, and an accepted correction is capped below
+// the parser threshold while silent scoring is off. The exhaustive guard-order coverage lives in
+// `BiasingDecisionTests`; these tests pin the adapter — that `choose` really delegates, with the
+// production policy and the contextual set that was actually sent to the recognizer.
 
 @available(iOS 26, *)
 final class BiasingStrategyTests: XCTestCase {
 
+    /// The contextual set a live transcription carries with an empty roster: the lexicon.
+    private let lexicon = RosterContextBuilder.build(roster: [])
+
     func testChoose_nilBiased_keepsBase() {
-        let out = BiasingStrategy.choose(baseText: "ground out 6 3", baseConfidence: 0.9, biased: nil)
+        let out = BiasingStrategy.choose(
+            baseText: "ground out 6 3", baseConfidence: 0.9, biased: nil, contextualStrings: lexicon)
         XCTAssertEqual(out, .init(text: "ground out 6 3", confidence: 0.9))
     }
 
     func testChoose_emptyBiased_keepsBase() {
-        let out = BiasingStrategy.choose(baseText: "ground out", baseConfidence: 0.7, biased: ("   ", 0.99))
+        let out = BiasingStrategy.choose(
+            baseText: "ground out", baseConfidence: 0.7, biased: ("   ", 0.99), contextualStrings: lexicon)
         XCTAssertEqual(out.text, "ground out", "whitespace-only biased result is ignored")
         XCTAssertEqual(out.confidence, 0.7)
     }
 
-    func testChoose_biasedMoreConfident_prefersBiased() {
-        // Biased hypothesis wins only when base confidence IS known and biased ≥ base.
+    /// Known base confidence, all guards pass: the words are corrected but the confidence is still
+    /// capped (silent scoring off) — the biased leg's 0.85 never reaches the parser as-is.
+    func testChoose_knownBase_agreedCorrection_overridesTextWithCap() {
         let out = BiasingStrategy.choose(
             baseText: "ground out to sean", baseConfidence: 0.60,
-            biased: ("ground out to short", 0.85))
+            biased: ("ground out to short", 0.85), contextualStrings: lexicon)
         XCTAssertEqual(out.text, "ground out to short")
-        XCTAssertEqual(out.confidence, 0.85)
+        XCTAssertEqual(out.confidence, BiasingStrategy.policy.cappedConfidence)
+        XCTAssertEqual(out.confidence, 0.69)
     }
 
+    /// R19: biasing never lowers a known confidence — a less-confident biased leg (here also below
+    /// the threshold) keeps the base and its own 0.90.
     func testChoose_biasedLessConfident_keepsBase() {
         let out = BiasingStrategy.choose(
-            baseText: "home run", baseConfidence: 0.90, biased: ("homer", 0.50))
+            baseText: "home run", baseConfidence: 0.90, biased: ("homer", 0.50), contextualStrings: lexicon)
         XCTAssertEqual(out.text, "home run", "less-confident biased result does not override")
         XCTAssertEqual(out.confidence, 0.90)
     }
 
-    /// P0b safety pin: when base confidence is nil (the ONLY production state for SpeechAnalyzer
-    /// today), choose MUST return the base text unchanged, not the biased text. Unconditionally
-    /// overriding with the biased hypothesis when confidence is unknown fabricates a wrong play.
-    func testChoose_baseHasNoConfidence_keepsBase_notBiased() {
-        // This is the INVERTED version of the removed unsafe test. The biased text must NOT win
-        // when the base has no confidence signal — that would be an unconditional fabrication.
+    /// R19 at the top end: both legs above the threshold, base higher → base wins with its own
+    /// confidence (guard 7, `baseMoreConfident`).
+    func testChoose_knownBaseHigherThanBiased_keepsBaseAndItsConfidence() {
         let out = BiasingStrategy.choose(
+            baseText: "ground out to sean", baseConfidence: 0.95,
+            biased: ("ground out to short", 0.85), contextualStrings: lexicon)
+        XCTAssertEqual(out.text, "ground out to sean")
+        XCTAssertEqual(out.confidence, 0.95)
+    }
+
+    /// P0b safety pin, re-pinned to the settled invariant: a nil base (the ONLY production state
+    /// for SpeechAnalyzer today) plus a FAILED guard keeps the base text with NIL confidence — the
+    /// biased text must not win and no confidence may be fabricated. Two failing guards are shown:
+    /// a biased confidence under the threshold, and a divergent text.
+    func testChoose_baseHasNoConfidence_keepsBase_notBiased() {
+        // Guard 3: biased confidence 0.40 < 0.70.
+        let lowConf = BiasingStrategy.choose(
             baseText: "ground out", baseConfidence: nil,
-            biased: ("ground out 6 3", 0.4))
+            biased: ("ground out 6 3", 0.4), contextualStrings: lexicon)
         XCTAssertEqual(
-            out.text, "ground out",
-            "nil base confidence → keep base: biased must NOT unconditionally override (P0b / Article VII)")
-        XCTAssertNil(out.confidence,
+            lowConf.text, "ground out",
+            "nil base + under-threshold biased confidence → keep base (P0b / Article VII)")
+        XCTAssertNil(lowConf.confidence,
             "with nil base confidence the outcome confidence must also be nil (no fabricated signal)")
+
+        // Guard 4: confident but divergent (4 of 6 tokens differ → 0.67 > 0.30).
+        let divergent = BiasingStrategy.choose(
+            baseText: "ground out", baseConfidence: nil,
+            biased: ("ground out six three at first", 0.95), contextualStrings: lexicon)
+        XCTAssertEqual(divergent.text, "ground out",
+            "nil base + divergent biased text → keep base even at 0.95 biased confidence")
+        XCTAssertNil(divergent.confidence)
+
+        // Guard 3 at the exact boundary: 0.65 (< 0.70) — the plan's canonical example.
+        let boundary = BiasingStrategy.choose(
+            baseText: "ground out to sean", baseConfidence: nil,
+            biased: ("ground out to short", 0.65), contextualStrings: lexicon)
+        XCTAssertEqual(boundary.text, "ground out to sean")
+        XCTAssertNil(boundary.confidence)
+    }
+
+    /// DL-157 Key Decision 3: a nil base with every guard passing (biased 0.85 ≥ 0.70, one OOV
+    /// token "sean" replaced by the contextual "short") corrects the WORDS but caps the
+    /// confidence below the parser threshold (silent scoring off) — never the biased leg's 0.85.
+    func testChoose_nilBase_allGuardsPass_overridesTextButCapsConfidence() {
+        let out = BiasingStrategy.choose(
+            baseText: "ground out to sean", baseConfidence: nil,
+            biased: ("ground out to short", 0.85), contextualStrings: lexicon)
+        XCTAssertEqual(out.text, "ground out to short", "agreed correction: biased words win")
+        XCTAssertEqual(out.confidence, 0.69, "R20 cap: (70 - 1) / 100, never the biased 0.85")
+        XCTAssertLessThan(ConfidenceMapping.toInt(out.confidence ?? 1),
+                          GrammarParser.lowConfidenceThreshold,
+                          "a capped correction still lands in the parser's clarify path")
+    }
+
+    /// Guard 6: a known-vocabulary word swapped for another known-vocabulary word ("single" →
+    /// "double", both in the lexicon) is exactly the kind of plausible mis-hear biasing must never
+    /// "correct" — keep the base.
+    func testChoose_inVocabularySwap_keepsBase() {
+        let out = BiasingStrategy.choose(
+            baseText: "single to short", baseConfidence: nil,
+            biased: ("double to short", 0.95), contextualStrings: lexicon)
+        XCTAssertEqual(out.text, "single to short", "single→double is a known→known swap: refused")
+        XCTAssertNil(out.confidence)
+    }
+
+    /// Guard 5: a differing token that is NOT in the contextual set cannot be introduced.
+    func testChoose_nonContextualToken_keepsBase() {
+        let out = BiasingStrategy.choose(
+            baseText: "ground out to sean", baseConfidence: nil,
+            biased: ("ground out to shawn", 0.95), contextualStrings: lexicon)
+        XCTAssertEqual(out.text, "ground out to sean", "'shawn' is not contextual: refused")
+        XCTAssertNil(out.confidence)
+    }
+
+    /// The roster really reaches the decision: with "Wright" in the contextual set (as
+    /// `RosterContextBuilder` assembles it), the OOV "rite" may be corrected to the player's name;
+    /// with the lexicon alone it may not.
+    func testChoose_rosterName_isContextual_onlyWhenSent() {
+        let withRoster = RosterContextBuilder.build(roster: ["Wright"])
+        let corrected = BiasingStrategy.choose(
+            baseText: "fly ball to rite caught", baseConfidence: nil,
+            biased: ("fly ball to Wright caught", 0.90), contextualStrings: withRoster)
+        XCTAssertEqual(corrected.text, "fly ball to Wright caught", "roster name is contextual")
+        XCTAssertEqual(corrected.confidence, 0.69, "still capped — words, never confidence")
+
+        let refused = BiasingStrategy.choose(
+            baseText: "fly ball to rite caught", baseConfidence: nil,
+            biased: ("fly ball to Wright caught", 0.90), contextualStrings: lexicon)
+        XCTAssertEqual(refused.text, "fly ball to rite caught", "without the roster, 'Wright' is OOV")
+        XCTAssertNil(refused.confidence)
+    }
+
+    /// The adapter and the pure decision agree on the same inputs — `choose` is a delegation,
+    /// not a second implementation (KTD2).
+    func testChoose_matchesBiasingDecision_onTheSameInputs() {
+        let cases: [(String, Float?, (String, Float)?)] = [
+            ("ground out to sean", nil, ("ground out to short", 0.85)),
+            ("ground out to sean", 0.60, ("ground out to short", 0.85)),
+            ("single to short", nil, ("double to short", 0.95)),
+            ("home run", 0.90, ("homer", 0.50)),
+            ("", nil, ("ground out", 0.99)),
+            ("ground out", nil, nil),
+        ]
+        for (base, baseConf, biased) in cases {
+            let adapter = BiasingStrategy.choose(
+                baseText: base, baseConfidence: baseConf, biased: biased, contextualStrings: lexicon)
+            let pure = BiasingDecision.decide(
+                base: base, baseConfidence: baseConf,
+                biased: biased.map { BiasedHypothesis(text: $0.0, confidence: $0.1) },
+                vocabulary: ContextualVocabulary(phrases: lexicon),
+                policy: BiasingStrategy.policy)
+            XCTAssertEqual(adapter.text, pure.text, "text for \(base) / \(String(describing: biased))")
+            XCTAssertEqual(adapter.confidence, pure.confidence, "confidence for \(base)")
+        }
     }
 }
 
@@ -258,6 +396,25 @@ final class AppleTranscriberPCMTests: XCTestCase {
             // Expected — and the move-only buffer was consumed by the call (compiler-enforced).
         } catch {
             XCTFail("expected audioTooShort, got \(error)")
+        }
+    }
+
+    /// The buffer the push-to-talk pipeline synthesizes today (capture T046 absent): a nominal
+    /// 1.0 s duration but NO bytes. The duration guard passes and the PCM builder must still
+    /// refuse it as `audioTooShort` — a visible error, not a recognition attempt on nothing.
+    func testTranscribe_emptyBytesWithNominalDuration_throwsAudioTooShort() async {
+        let transcriber = AppleTranscriber()
+        let emptyBuffer = AudioBuffer(rawBytes: Data(), durationSeconds: 1.0, capturedAt: Date())
+        do {
+            _ = try await transcriber.transcribe(buffer: emptyBuffer)
+            XCTFail("expected audioTooShort for an empty capture")
+        } catch TranscriberError.audioTooShort {
+            // Expected.
+        } catch TranscriberError.permissionDenied {
+            // Also acceptable off-device: a denied/restricted speech authorization is checked
+            // before the PCM builder. Either way nothing is recognized silently.
+        } catch {
+            XCTFail("expected audioTooShort (or permissionDenied), got \(error)")
         }
     }
 

@@ -122,7 +122,14 @@ struct NewGameView: View {
         guard !home.isEmpty, !visitor.isEmpty else { return }
         isCreating = true
         defer { isCreating = false }
-        await appState.createGame(homeTeam: home, visitorTeam: visitor)
+        // Lineups feed the active roster (DL-157 R21/R22: ASR biasing + parser name masking).
+        // Only what is on screen counts: with the toggle off, names typed earlier are not sent.
+        await appState.createGame(
+            homeTeam: home,
+            visitorTeam: visitor,
+            homeLineup: showLineups ? homeLineup : [],
+            visitorLineup: showLineups ? visitorLineup : []
+        )
         // AppState.createGame dismisses the sheet on success.
     }
 }

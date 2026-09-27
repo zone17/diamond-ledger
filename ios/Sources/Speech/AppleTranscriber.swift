@@ -26,13 +26,18 @@
 ///   transcription, and keep `SFSpeechRecognizer.contextualStrings` for vocabulary-sensitive
 ///   recognition; the two frameworks coexist and may be mixed per feature.
 ///
-///   The baseball lexicon + roster are stored on the actor via `setContextualStrings` and assembled
-///   by `RosterContextBuilder`. The `SFSpeechRecognizer.contextualStrings` hybrid biasing pass
-///   (`applyBiasing`) is implemented but **deferred from the hot path** (follow-up #157): because
-///   `SpeechTranscriber` never provides a confidence signal, the nil-base branch of
-///   `BiasingStrategy.choose` would unconditionally override the analyzer's text with a biased
-///   hypothesis regardless of agreement — a fabricated wrong play (P0b / Article VII). A
-///   conservative, roster-wired, edit-distance-gated strategy is needed before enabling.
+///   The baseball lexicon + roster are stored on the actor via `setContextualStrings` (the live
+///   push-to-talk path sets the active game's roster before EVERY transcribe — DL-157 R21) and
+///   assembled by `RosterContextBuilder`. The `SFSpeechRecognizer.contextualStrings` hybrid
+///   biasing pass (`applyBiasing`) now runs on the hot path (DL-157 / ADR-0017), but ONLY under
+///   the four-guard policy of `SpeechTypes.BiasingDecision`, which `BiasingStrategy.choose`
+///   delegates to: the biased leg must carry a measured confidence at or above the parser
+///   threshold, agree with the base at the token level, differ only in contextual (roster /
+///   lexicon) tokens, and never replace an in-vocabulary token. "The biased engine may correct
+///   words, never confidence": with the silent-scoring switch OFF (`BiasingStrategy.silentScoringEnabled`,
+///   R20) an accepted correction is capped BELOW the parser threshold, so it improves the Clarify
+///   candidates but can never open hands-free scoring. Every guard failure keeps the analyzer's
+///   text and its (nil → conservative default) confidence untouched (P0b / Article VII).
 ///
 /// ## Concurrency (Swift 6 / actor isolation)
 ///   Declared as an `actor` — all SpeechAnalyzer/AssetInventory calls are actor-isolated, so there
@@ -84,14 +89,14 @@ import Speech
 ///   any transcript without a real confidence signal — never a silent wrong play (Article VII).
 ///   See `defaultConfidenceWhenUnreported`.
 ///
-/// ## Contextual biasing — deferred from the hot path (P0b fix, DL-80 code review)
-///   The `applyBiasing` / `SFSpeechRecognizer` second-recognizer pass is NOT run on the hot path.
-///   Because `SpeechAnalyzer` never provides a base confidence, `BiasingStrategy.choose`'s
-///   nil-base branch would unconditionally override with the biased text, creating a path where a
-///   lexicon/roster phrase the speaker didn't say becomes the confident hypothesis. Until a
-///   conservative, roster-wired, edit-distance-gated strategy is designed (follow-up #157), the
-///   `SpeechAnalyzer` result is returned directly. `applyBiasing` is kept for the follow-up but
-///   MUST NOT be called from `runTranscription`.
+/// ## Contextual biasing — enabled under the four-guard policy (DL-157, was P0b-deferred)
+///   The `applyBiasing` / `SFSpeechRecognizer` second-recognizer pass runs in `runTranscription`
+///   after the analyzer's final text is known, whenever a contextual set is in force. It is
+///   best-effort (any engine failure or empty result keeps the base) and the override rule is
+///   the pure `SpeechTypes.BiasingDecision` (see the file header): a nil base confidence no longer
+///   means "override unconditionally" (the DL-80 P0b defect) — it means the decision rests on the
+///   biased leg's MEASURED confidence plus agreement, and the accepted text is capped below the
+///   parser threshold while `BiasingStrategy.silentScoringEnabled` is `false` (R20 / ADR-0017).
 @available(iOS 26, *)
 public actor AppleTranscriber: Transcriber {
 
@@ -286,6 +291,11 @@ public actor AppleTranscriber: Transcriber {
     ///   any unmeasured SpeechAnalyzer result, letting the scorer confirm before it becomes a play.
     ///   When the SDK eventually exposes a real confidence, `confidence(from:)` is the single place
     ///   to wire it, and this default becomes a genuine fallback rather than the universal path.
+    ///
+    ///   The DL-157 biasing pass does not change this picture: a correction the four guards accept
+    ///   carries at most `BiasingStrategy.policy.cappedConfidence` (0.69 → 69 < 70) while silent
+    ///   scoring is off, and every rejected correction leaves the nil base confidence in place so
+    ///   this default still applies. No path stamps an unmeasured hypothesis at or above 70.
     static let defaultConfidenceWhenUnreported: Float = 0.60
 
     /// Constructs the `SpeechTranscriber` module configured for offline single-utterance use.
@@ -325,8 +335,8 @@ public actor AppleTranscriber: Transcriber {
     ///     `AsyncSequence`) and via the surrounding Task; `analyzer.cancelAndFinishNow()` is called
     ///     in a `defer` so a thrown/cancelled path always tears the analyzer down.
     ///
-    /// NOTE: The `applyBiasing` / SFSpeechRecognizer second-recognizer pass is intentionally NOT
-    /// called here (P0b fix — see the type-level doc comment and follow-up #157).
+    /// After the final hypothesis is collected, the `applyBiasing` / SFSpeechRecognizer pass runs
+    /// under the four-guard `BiasingDecision` policy (DL-157) — see the type-level doc comment.
     private nonisolated static func runTranscription(
         pcmBuffer: sending AVAudioPCMBuffer,
         contextualStrings: [String],
@@ -413,25 +423,35 @@ public actor AppleTranscriber: Transcriber {
             }
         }() as (String, Float?)
 
-        // Return the SpeechAnalyzer result directly.
-        // The SFSpeechRecognizer contextual-biasing second-recognizer pass (applyBiasing) is NOT
-        // called here. Because iOS 26's SpeechTranscriber exposes no confidence signal, baseConfidence
-        // is always nil → BiasingStrategy.choose's nil-base branch would unconditionally override the
-        // text with the biased hypothesis, regardless of agreement — fabricating a wrong play with
-        // apparent confidence (P0b / Article VII). A conservative, roster-wired, edit-distance-gated
-        // strategy is tracked in follow-up #157.
-        return (finalText, nativeConfidence ?? defaultConfidenceWhenUnreported)
+        // DL-157: the contextual-biasing pass, gated by the four-guard `BiasingDecision` policy.
+        // Only attempted when a contextual set is in force and the analyzer produced words (an
+        // empty base is never a starting point for a play — guard 2 would refuse it anyway, and
+        // `transcribe` throws for it). Best-effort: `applyBiasing` returns the base on any engine
+        // failure, so this can never block a transcription. A rejected correction leaves the base
+        // text AND its nil confidence untouched, which falls through to the conservative default.
+        let baseTrimmed = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !contextualStrings.isEmpty, !baseTrimmed.isEmpty else {
+            return (finalText, nativeConfidence ?? defaultConfidenceWhenUnreported)
+        }
+        let outcome = await applyBiasing(
+            baseText: finalText,
+            baseConfidence: nativeConfidence,
+            pcmBuffer: pcmBuffer,
+            contextualStrings: contextualStrings,
+            locale: locale)
+        return (outcome.text, outcome.confidence ?? defaultConfidenceWhenUnreported)
     }
 
     /// `nonisolated` contextual-biasing pass. Building the `SFSpeechAudioBufferRecognitionRequest`
     /// here (outside the actor) means the request is never `self`-isolated, so it can be
     /// `sending`-transferred into `SFRecognitionBridge` without a data race. The non-Sendable PCM
-    /// buffer arrives via a `sending` parameter (ownership transferred from `transcribe`, which no
-    /// longer touches it). Best-effort: any failure or empty result keeps the base hypothesis.
-    /// NOT called from the hot path (see type-level doc and follow-up #157).
-    /// Kept for the follow-up conservative biasing implementation. P1 robustness: guards
-    /// `supportsOnDeviceRecognition` to avoid a never-resolving callback when the recognizer
-    /// would route to the network (no on-device model loaded), which with
+    /// buffer arrives via a `sending` parameter (ownership transferred from `runTranscription`,
+    /// whose analyzer has already finished with it and which never touches it again); `append`
+    /// copies its audio into the request, and the buffer is not referenced after that (FR-022).
+    /// Best-effort: any failure or empty result keeps the base hypothesis.
+    /// Called from `runTranscription` (DL-157) once the analyzer's final text is known.
+    /// P1 robustness: guards `supportsOnDeviceRecognition` to avoid a never-resolving callback
+    /// when the recognizer would route to the network (no on-device model loaded), which with
     /// `requiresOnDeviceRecognition = true` would produce an immediate error — but the explicit
     /// guard makes the intent unambiguous and avoids any state where we'd enqueue a recognition
     /// task that Apple cannot service on-device.
@@ -463,7 +483,8 @@ public actor AppleTranscriber: Transcriber {
             return .init(text: baseText, confidence: baseConfidence)
         }
         return BiasingStrategy.choose(
-            baseText: baseText, baseConfidence: baseConfidence, biased: biased)
+            baseText: baseText, baseConfidence: baseConfidence, biased: biased,
+            contextualStrings: contextualStrings)
     }
 
     /// Extracts a native confidence in [0, 1] from a `SpeechTranscriber` result, if the framework
@@ -638,41 +659,62 @@ public enum RosterContextBuilder {
 /// **Best-effort, never fatal:** if the bias engine is unavailable (no recognizer, denied auth,
 /// off-device-only refusal) or produces nothing, the base SpeechAnalyzer hypothesis is returned
 /// unchanged. The biasing pass can only *improve* or *confirm* — it never blocks a transcription.
+///
+/// **Thin adapter (DL-157 / KTD2):** the override rule itself is NOT implemented here. `choose`
+/// delegates to the pure `SpeechTypes.BiasingDecision.decide` — the same function the `dl-bias`
+/// harness runs over the adversarial corpus — so what ships on device is exactly what was measured.
 enum BiasingStrategy {
     struct Outcome: Sendable, Equatable {
         let text: String
         let confidence: Float?
     }
 
-    /// Pure decision: given a base hypothesis (from `SpeechAnalyzer`) and an optional biased
-    /// hypothesis (from the `SFSpeechRecognizer` contextual pass), choose which to keep.
+    /// Mirrors `GrammarParser.lowConfidenceThreshold` (70). `DiamondSpeech` must not import
+    /// `Parse` (Package.swift: it depends only on `SpeechTypes`), so the integer is restated here
+    /// and pinned equal by `FR008DefaultConfidenceTests.testParserThreshold_matchesGrammarParser`.
+    static let parserThreshold = 70
+
+    /// R20 policy switch (ADR-0017): hands-free scoring from a biased correction stays CLOSED.
+    /// `false` caps every accepted correction at `parserThreshold - 1` so it can improve the
+    /// Clarify candidates but never parse silently. It flips to `true` only on on-device
+    /// measurement after live capture lands (T046) — never on fixture evidence alone.
+    static let silentScoringEnabled = false
+
+    /// The policy in force on device: parser threshold 70, 0.30 agreement threshold, R20 cap on.
+    static var policy: BiasingPolicy {
+        BiasingPolicy(parserThreshold: parserThreshold, silentScoringEnabled: silentScoringEnabled)
+    }
+
+    /// Decide whether the biased hypothesis (from the `SFSpeechRecognizer` contextual pass) may
+    /// replace the base (from `SpeechAnalyzer`), and with what confidence.
     ///
-    /// ## Conservative override rule (P0b fix — Article VII / FR-008)
-    ///   - If the biased result is nil or empty/whitespace → keep the base.
-    ///   - If the base has NO confidence signal (`baseConfidence == nil`) → keep the base.
-    ///     Rationale: a nil base means the framework gave us no quality measure. Overriding the
-    ///     analyzer's text with a biased hypothesis without any real confidence signal fabricates
-    ///     a confident wrong play (the P0b defect in the first DL-80 submission). The biased result
-    ///     must only override when there is a KNOWN base confidence to compare against.
-    ///   - If base confidence IS known AND biasedConf ≥ baseConfidence → prefer biased.
-    ///   - Else → keep the base.
+    /// Pure and total: a thin adapter over `BiasingDecision.decide` (see its file header for the
+    /// eight-step guard order). In short — the biased leg needs a measured confidence at or above
+    /// the parser threshold, must agree with the base at the token level, may only introduce
+    /// tokens from `contextualStrings`, may never replace a token that is itself contextual, and
+    /// never beats a known, higher base confidence. On any guard failure the base is returned
+    /// exactly as given (text and confidence, `nil` when unknown — no fabricated signal, P0b).
+    /// On override the biased text is returned verbatim with its confidence capped by `policy`.
     ///
-    /// NOTE: Until follow-up #157 adds an edit-distance agreement guard and confirms the biasing
-    /// pass is roster-wired, `applyBiasing` is not called from the hot path, so this method is
-    /// only exercised in tests and future re-enabling logic.
-    static func choose(baseText: String, baseConfidence: Float?, biased: (String, Float)?) -> Outcome {
-        guard let (biasedText, biasedConf) = biased,
-              !biasedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return Outcome(text: baseText, confidence: baseConfidence)
-        }
-        // P0b: nil base confidence → keep base unchanged. Never override without a real signal.
-        guard let knownBase = baseConfidence else {
-            return Outcome(text: baseText, confidence: nil)
-        }
-        if biasedConf >= knownBase {
-            return Outcome(text: biasedText, confidence: biasedConf)
-        }
-        return Outcome(text: baseText, confidence: baseConfidence)
+    /// - Parameters:
+    ///   - baseText: the analyzer's final text.
+    ///   - baseConfidence: the analyzer's native confidence in 0…1, or `nil` (the iOS-26 reality).
+    ///   - biased: the contextual pass's `(text, minimum segment confidence)`, or `nil`.
+    ///   - contextualStrings: the exact phrase set that was sent to the recognizer
+    ///     (`RosterContextBuilder.build`'s output — lexicon + roster).
+    static func choose(
+        baseText: String,
+        baseConfidence: Float?,
+        biased: (String, Float)?,
+        contextualStrings: [String]
+    ) -> Outcome {
+        let decision = BiasingDecision.decide(
+            base: baseText,
+            baseConfidence: baseConfidence,
+            biased: biased.map { BiasedHypothesis(text: $0.0, confidence: $0.1) },
+            vocabulary: ContextualVocabulary(phrases: contextualStrings),
+            policy: policy)
+        return Outcome(text: decision.text, confidence: decision.confidence)
     }
 }
 
