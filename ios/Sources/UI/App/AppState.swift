@@ -141,6 +141,11 @@ public final class AppState {
         voiceReadiness.flatMap(Self.readinessMessage(for:))
     }
 
+    /// Builds the microphone capture for ONE press (DL-176 U4, KTD1). Called once per press, never
+    /// reused: after a media-services reset the audio engine must be rebuilt, and `LiveAudioCapture`
+    /// holds one engine for its lifetime. Tests inject a fake yielding synthetic PCM.
+    let captureFactory: @Sendable () -> any AudioCaptureSource
+
     // MARK: Navigation
 
     /// The currently presented sheet (card A/B, new-game, clarify, etc.)
@@ -160,6 +165,14 @@ public final class AppState {
     }
 
     var pttState: PTTState = .idle
+
+    /// The press in flight, from touch-down until its utterance is handed to the transcriber or
+    /// discarded. Owned by `PushToTalkPipeline`; never observed by views.
+    @ObservationIgnored var currentPress: PTTPress?
+
+    /// True from a touch-down until its touch-up. One touch is one press: drags within it never
+    /// start another capture, even after a cap or interruption ended the first (plan U4).
+    @ObservationIgnored var pttTouchActive = false
 
     // MARK: Error banner
 
@@ -182,13 +195,16 @@ public final class AppState {
     ///   - transcriberFactory: ASR engine resolution per capture; `nil` = `TranscriberEngineSelector`.
     ///   - speechReadiness: permission/model readiness; `nil` = `SpeechReadiness.live()`. The live
     ///     providers are only touched by `startNewGame` / `refreshVoiceReadiness`, never at init.
+    ///   - captureFactory: one microphone capture per press; `nil` = a fresh `LiveAudioCapture`.
     public init(core: any CoreClient,
                 consentDefaults: UserDefaults = .standard,
                 authStore: AuthStore? = nil,
                 transcriberFactory: (@Sendable (WoZScript) async -> any Transcriber)? = nil,
-                speechReadiness: SpeechReadiness? = nil) {
+                speechReadiness: SpeechReadiness? = nil,
+                captureFactory: (@Sendable () -> any AudioCaptureSource)? = nil) {
         self.core = core
         self.speechReadiness = speechReadiness ?? .live()
+        self.captureFactory = captureFactory ?? { LiveAudioCapture() }
         self.consentDefaults = consentDefaults
         self.authStore = authStore ?? .shared
         self.transcriberFactory = transcriberFactory
@@ -347,6 +363,29 @@ public final class AppState {
                 + "manual entry."
         }
     }
+
+    /// User-facing text for a capture cut off while the button was held (DL-176 R3). Captured audio
+    /// is discarded, so every message says nothing was scored and how to try again.
+    nonisolated static func interruptionMessage(for reason: CaptureEvent.InterruptionReason) -> String {
+        let retry = " Nothing was scored — hold the button and say the play again."
+        switch reason {
+        case .phoneCall:
+            return "Recording stopped: a call took the microphone." + retry
+        case .otherInterruption:
+            return "Recording stopped: another app or Siri took the microphone." + retry
+        case .routeChange:
+            return "Recording stopped: the microphone changed (headset or Bluetooth)." + retry
+        case .mediaServicesReset:
+            return "Recording stopped: the phone's audio system restarted." + retry
+        case .background:
+            return "Recording stopped because Diamond Ledger left the screen." + retry
+        }
+    }
+
+    /// Shown when a released capture comes back with no audio because it was interrupted during
+    /// the release tail (the interruption's own reason was not observed first).
+    nonisolated static let captureInterruptedMessage =
+        "Recording was interrupted, so nothing was scored. Hold the button and say the play again."
 
     /// Called by `startNewGame` (and directly by tests). The optional lineups (nine name fields per team on
     /// the New Game screen) become `activeRoster` — visitor first, then home (batting order).

@@ -7,12 +7,14 @@
 ///   - the push-to-talk pipeline hands that roster to the engine (`setContextualStrings`) before
 ///     EVERY `transcribe`, and to the parser (`parse(_:roster:)`) — asserted with a recording fake;
 ///   - the simulator's Stub engine still plays the canned script through to Card A;
-///   - the Apple engine, fed the still-empty synthesized buffer (capture T046 absent), surfaces a
-///     VISIBLE error rather than silence;
+///   - the Apple engine, fed a too-short capture, surfaces a VISIBLE error rather than silence;
 ///   - a real engine's out-of-grammar transcript routes to manual entry, never the WoZ canned facts.
 ///
-/// Uses `MockCore` and injected stores (`InMemorySessionStore`, a throwaway `UserDefaults`
-/// suite) — nothing here touches the Keychain, the real defaults, the mic, or a recognizer.
+/// Every utterance goes through the real press path (`speak`: touch-down → capture → touch-up →
+/// transcribe) with a `FakeAudioCapture` yielding 1 s of synthetic PCM and a ready fake
+/// `SpeechReadiness` (DL-176 U4). Uses `MockCore` and injected stores (`InMemorySessionStore`, a
+/// throwaway `UserDefaults` suite) — nothing here touches the Keychain, the real defaults, the
+/// mic, a permission API, or a recognizer.
 ///
 /// - SeeAlso: `ios/Sources/UI/PushToTalk/PushToTalkView.swift` — `PushToTalkPipeline`
 /// - SeeAlso: `ios/Sources/UI/App/AppState.swift` — `activeRoster`, `transcriberFactory`
@@ -35,6 +37,8 @@ actor RecordingTranscriber: Transcriber {
 
     nonisolated let engine: TranscriberEngine
     private(set) var events: [Event] = []
+    /// `durationSeconds` of every buffer received, in order.
+    private(set) var durations: [Double] = []
     private let text: String
     private let confidence: Int
 
@@ -49,6 +53,7 @@ actor RecordingTranscriber: Transcriber {
     var isAvailable: Bool { true }
 
     func transcribe(buffer: consuming AudioBuffer) async throws -> Transcript {
+        durations.append(buffer.durationSeconds)
         _ = consume buffer
         events.append(.transcribe)
         return Transcript(text: text, confidence: confidence, engine: engine, finalizedAt: Date())
@@ -76,8 +81,11 @@ final class T157PushToTalkWiringTests: XCTestCase {
         visitors + ["Jo Vance", "Kip Marsh", "Lou Diaz", "Max Ito", "Ned Fox"]
     }
 
-    /// A fully isolated AppState. `transcriber` (if any) is what the pipeline resolves.
-    private func makeAppState(transcriber: (any Transcriber)? = nil) -> AppState {
+    /// A fully isolated AppState. `transcriber` (if any) is what the pipeline resolves. Voice is
+    /// ready and every press captures `captureSeconds` of synthetic PCM (DL-176 U4), so these
+    /// tests keep their meaning with real capture wired in.
+    private func makeAppState(transcriber: (any Transcriber)? = nil,
+                              captureSeconds: Double = 1.0) async -> AppState {
         let defaults = UserDefaults(suiteName: "test.t157.\(UUID().uuidString)")!
         let factory: (@Sendable (WoZScript) async -> any Transcriber)?
         if let transcriber {
@@ -85,10 +93,13 @@ final class T157PushToTalkWiringTests: XCTestCase {
         } else {
             factory = nil
         }
+        let frames = syntheticPCM(seconds: captureSeconds)
         return AppState(core: MockCore(),
                         consentDefaults: defaults,
                         authStore: AuthStore(store: InMemorySessionStore()),
-                        transcriberFactory: factory)
+                        transcriberFactory: factory,
+                        speechReadiness: await readySpeechReadiness(),
+                        captureFactory: { FakeAudioCapture(frames: frames) })
     }
 
     private func signIn(_ appState: AppState) throws {
@@ -121,7 +132,7 @@ final class T157PushToTalkWiringTests: XCTestCase {
     // MARK: activeRoster lifecycle
 
     func test_createGame_withNineNames_setsActiveRoster() async throws {
-        let appState = makeAppState()
+        let appState = await makeAppState()
         try signIn(appState)
         XCTAssertEqual(appState.activeRoster, [], "no roster before a game")
 
@@ -132,7 +143,7 @@ final class T157PushToTalkWiringTests: XCTestCase {
     }
 
     func test_createGame_withoutLineups_leavesRosterEmpty() async throws {
-        let appState = makeAppState()
+        let appState = await makeAppState()
         try signIn(appState)
         await appState.createGame(homeTeam: "Hawks", visitorTeam: "Owls")
         XCTAssertNotNil(appState.activeGame)
@@ -140,7 +151,7 @@ final class T157PushToTalkWiringTests: XCTestCase {
     }
 
     func test_createGame_refused_doesNotSetRoster() async throws {
-        let appState = makeAppState()
+        let appState = await makeAppState()
         try appState.completeAppleSignIn(appleUserID: "adult-1", fullName: nil)   // gate unanswered
         await startGameExpectingRefusal(appState)
         XCTAssertNil(appState.activeGame)
@@ -153,7 +164,7 @@ final class T157PushToTalkWiringTests: XCTestCase {
     }
 
     func test_signOut_clearsActiveRoster() async throws {
-        let appState = makeAppState()
+        let appState = await makeAppState()
         try signIn(appState)
         await startGame(appState)
         XCTAssertFalse(appState.activeRoster.isEmpty)
@@ -165,7 +176,7 @@ final class T157PushToTalkWiringTests: XCTestCase {
     }
 
     func test_exitGameWithoutFinalizing_clearsActiveRoster() async throws {
-        let appState = makeAppState()
+        let appState = await makeAppState()
         try signIn(appState)
         await startGame(appState)
 
@@ -176,7 +187,7 @@ final class T157PushToTalkWiringTests: XCTestCase {
     }
 
     func test_newGame_replacesPreviousRoster() async throws {
-        let appState = makeAppState()
+        let appState = await makeAppState()
         try signIn(appState)
         await startGame(appState)
         appState.exitGameWithoutFinalizing()
@@ -191,12 +202,12 @@ final class T157PushToTalkWiringTests: XCTestCase {
 
     func test_pipeline_setsContextualStringsWithRoster_beforeEveryTranscribe() async throws {
         let fake = RecordingTranscriber()
-        let appState = makeAppState(transcriber: fake)
+        let appState = await makeAppState(transcriber: fake)
         try signIn(appState)
         await startGame(appState)
         let roster = appState.activeRoster
 
-        await PushToTalkPipeline.score(script: .groundOut63, appState: appState)
+        await speak(appState)
 
         var events = await fake.events
         XCTAssertEqual(events, [.setContextualStrings(roster), .transcribe],
@@ -211,7 +222,7 @@ final class T157PushToTalkWiringTests: XCTestCase {
         XCTAssertNil(appState.activeGame?.pendingResult)
 
         // Second utterance: set again, before transcribe again — not once per engine.
-        await PushToTalkPipeline.score(script: .groundOut63, appState: appState)
+        await speak(appState)
         events = await fake.events
         XCTAssertEqual(events, [.setContextualStrings(roster), .transcribe,
                                 .setContextualStrings(roster), .transcribe],
@@ -220,11 +231,11 @@ final class T157PushToTalkWiringTests: XCTestCase {
 
     func test_pipeline_emptyRoster_stillSetsContextualStrings() async throws {
         let fake = RecordingTranscriber()
-        let appState = makeAppState(transcriber: fake)
+        let appState = await makeAppState(transcriber: fake)
         try signIn(appState)
         await startGame(appState, withLineups: false)
 
-        await PushToTalkPipeline.score(script: .groundOut63, appState: appState)
+        await speak(appState)
 
         let events = await fake.events
         XCTAssertEqual(events, [.setContextualStrings([]), .transcribe],
@@ -245,12 +256,12 @@ final class T157PushToTalkWiringTests: XCTestCase {
     func test_pipeline_passesRosterToParser_surnameNeverReadAsPosition() async throws {
         let transcript = "fly ball to wright, caught"
 
-        let withRoster = makeAppState(transcriber: RecordingTranscriber(text: transcript))
+        let withRoster = await makeAppState(transcriber: RecordingTranscriber(text: transcript))
         try signIn(withRoster)
         await withRoster.createGame(homeTeam: "Hawks", visitorTeam: "Owls",
                                     homeLineup: ["Wright"], visitorLineup: ["Ana Ruiz"])
         XCTAssertEqual(withRoster.activeRoster, ["Ana Ruiz", "Wright"])
-        await PushToTalkPipeline.score(script: .groundOut63, appState: withRoster)
+        await speak(withRoster)
         guard case .clarify(let candidates) = withRoster.presentedSheet else {
             return XCTFail("masked surname + defaulted fielder must clarify, got \(String(describing: withRoster.presentedSheet))")
         }
@@ -259,10 +270,10 @@ final class T157PushToTalkWiringTests: XCTestCase {
         XCTAssertNotEqual(candidates.first?.facts["fielder"], "9", "never right field from 'wright'")
         XCTAssertEqual(withRoster.pttState, .idle)
 
-        let withoutRoster = makeAppState(transcriber: RecordingTranscriber(text: transcript))
+        let withoutRoster = await makeAppState(transcriber: RecordingTranscriber(text: transcript))
         try signIn(withoutRoster)
         await startGame(withoutRoster, withLineups: false)
-        await PushToTalkPipeline.score(script: .groundOut63, appState: withoutRoster)
+        await speak(withoutRoster)
         guard case .clarify(let legacyCandidates) = withoutRoster.presentedSheet else {
             return XCTFail("no-roster parse must clarify (no fielder stated; 'wright' is not 'right'), got \(String(describing: withoutRoster.presentedSheet))")
         }
@@ -280,12 +291,11 @@ final class T157PushToTalkWiringTests: XCTestCase {
         TranscriberEngineSelector.forceStub = true
         #endif
         // Default factory → TranscriberEngineSelector → StubTranscriber (forceStub).
-        let appState = makeAppState()
+        let appState = await makeAppState()
         try signIn(appState)
         await startGame(appState)
-        appState.pttState = .processing   // as stopListening() does
 
-        await PushToTalkPipeline.score(script: .groundOut63, appState: appState)
+        await speak(appState)
 
         guard case .cardA = appState.presentedSheet else {
             return XCTFail("Stub groundOut63 must reach Card A, got \(String(describing: appState.presentedSheet))")
@@ -296,41 +306,52 @@ final class T157PushToTalkWiringTests: XCTestCase {
     }
 
     #if DEBUG
-    /// The facilitator panel path uses the Stub directly regardless of the resolved engine.
+    /// The facilitator panel path uses the Stub directly regardless of the resolved engine, and
+    /// bypasses capture and readiness (DL-176 U4).
     /// DEBUG-only: the panel and its Stub branch are compiled out of release builds (DL-176 KTD6).
     func test_pipeline_facilitatorScripted_usesStub_evenWhenFactoryIsARealEngine() async throws {
         let fake = RecordingTranscriber(text: "the quick brown fox")   // would NOT parse
-        let appState = makeAppState(transcriber: fake)
+        let capture = ControlledCapture(frames: syntheticPCM(seconds: 1.0))
+        let probe = CaptureFactoryProbe(capture)
+        let appState = AppState(core: MockCore(),
+                                consentDefaults: UserDefaults(suiteName: "test.t157.\(UUID().uuidString)")!,
+                                authStore: AuthStore(store: InMemorySessionStore()),
+                                transcriberFactory: { @Sendable _ in fake },
+                                speechReadiness: SpeechReadiness(microphone: FakeVoicePermission(.denied),
+                                                                 speech: FakeVoicePermission(.denied),
+                                                                 model: FakePreloader([.fail])),
+                                captureFactory: probe.factory)
         try signIn(appState)
         await startGame(appState)
 
-        await PushToTalkPipeline.score(script: .groundOut63, facilitatorScripted: true, appState: appState)
+        await PushToTalkPipeline.scoreFacilitatorScript(.groundOut63, appState: appState)
 
         let events = await fake.events
         XCTAssertEqual(events, [], "the facilitator path never touches the resolved engine")
+        XCTAssertEqual(probe.buildCount, 0, "the facilitator path never captures")
+        XCTAssertEqual(capture.startCalls, 0)
+        XCTAssertNil(appState.voiceReadiness, "the facilitator path never evaluates readiness")
         guard case .cardA = appState.presentedSheet else {
             return XCTFail("facilitator groundOut63 must reach Card A, got \(String(describing: appState.presentedSheet))")
         }
     }
     #endif
 
-    // MARK: Apple engine with the empty synthesized buffer → visible error, not silence
+    // MARK: Apple engine with a too-short capture → visible error, not silence
 
-    /// Capture (T046) is still absent, so the pipeline's buffer has no bytes. On the Apple engine
-    /// that is `audioTooShort` (or `permissionDenied` where speech access is restricted) — it must
-    /// surface as an error banner with the PTT loop reset, never as silence or a fabricated play.
-    func test_pipeline_appleEngine_emptyBuffer_surfacesVisibleError() async throws {
+    /// A 0.1 s capture (a tap, not a hold) is under the Apple engine's 0.3 s floor, so it throws
+    /// `audioTooShort` before touching the recognizer — it must surface as an error banner with
+    /// the PTT loop reset, never as silence or a fabricated play (DL-176 U4).
+    func test_pipeline_appleEngine_tooShortCapture_surfacesVisibleError() async throws {
         guard #available(iOS 26, *) else { throw XCTSkip("AppleTranscriber needs iOS 26") }
-        let appState = makeAppState(transcriber: AppleTranscriber())
+        let appState = await makeAppState(transcriber: AppleTranscriber(), captureSeconds: 0.1)
         try signIn(appState)
         await startGame(appState)
-        appState.pttState = .processing
 
-        await PushToTalkPipeline.score(script: .groundOut63, appState: appState)
+        await speak(appState)
 
-        let error = try XCTUnwrap(appState.presentedError, "an empty capture must be a VISIBLE error")
-        XCTAssertFalse(error.message.contains("couldn’t be completed"),
-                       "the reason must be spelled out, not an opaque NSError description: \(error.message)")
+        let error = try XCTUnwrap(appState.presentedError, "a too-short capture must be a VISIBLE error")
+        XCTAssertEqual(error.message, PushToTalkPipeline.message(for: TranscriberError.audioTooShort))
         XCTAssertEqual(appState.pttState, .idle, "the PTT loop is reset so the mic can be pressed again")
         XCTAssertNil(appState.presentedSheet, "no card, no clarify — nothing was recognized")
         XCTAssertNil(appState.activeGame?.pendingResult, "nothing reached the core")
@@ -340,6 +361,9 @@ final class T157PushToTalkWiringTests: XCTestCase {
         let message = PushToTalkPipeline.message(for: TranscriberError.audioTooShort)
         XCTAssertTrue(message.lowercased().contains("no audio"), message)
         XCTAssertTrue(message.lowercased().contains("capture"), message)
+        XCTAssertFalse(message.lowercased().contains("wired"),
+                       "capture is wired now; the message must not say otherwise: \(message)")
+        XCTAssertTrue(message.lowercased().contains("hold"), "tells the scorer what to do: \(message)")
     }
 
     func test_pipeline_message_everyErrorBranch_isReadableAndDistinct() {
@@ -363,11 +387,11 @@ final class T157PushToTalkWiringTests: XCTestCase {
 
     func test_pipeline_realEngine_outOfGrammar_routesToManualEntry_notCannedFacts() async throws {
         let fake = RecordingTranscriber(text: "the quick brown fox jumps over")
-        let appState = makeAppState(transcriber: fake)
+        let appState = await makeAppState(transcriber: fake)
         try signIn(appState)
         await startGame(appState)
 
-        await PushToTalkPipeline.score(script: .groundOut63, appState: appState)
+        await speak(appState)
 
         guard case .manualEntry(let prefilled) = appState.presentedSheet else {
             return XCTFail("a real engine's out-of-grammar transcript must go to manual entry, got \(String(describing: appState.presentedSheet))")

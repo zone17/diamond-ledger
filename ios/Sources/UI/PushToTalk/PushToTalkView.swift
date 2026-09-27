@@ -20,9 +20,14 @@
 ///   (DL-176 KTD6 / A5).
 ///   The whole flow lives in `PushToTalkPipeline` so tests drive it without SwiftUI.
 ///
-/// Honest status of voice: live microphone capture (T046) is NOT wired yet. The pipeline still
-/// synthesizes an EMPTY `AudioBuffer`; the Stub ignores it, a real engine rejects it with
-/// `TranscriberError.audioTooShort`, which is surfaced as a visible error — never silence.
+/// Microphone capture (DL-176 U4):
+///   Touch-down re-reads voice readiness and starts a fresh `AudioCaptureSource` from
+///   `AppState.captureFactory`; touch-up stops it and hands the 16 kHz buffer to the engine. The
+///   state leaves `.idle` synchronously on touch-down, so a second press never starts a second
+///   capture. Every way out of `.listening` returns to `.idle` with a visible reason: not ready,
+///   start failure, a cap (treated as a release), an interruption, or the app leaving the
+///   foreground. One touch is one press — drags after a cap or interruption never restart
+///   capture until the finger lifts. The facilitator panel bypasses capture and readiness.
 ///
 /// Audio lifecycle (FR-022 / COPPA / process-don't-store):
 ///   The protocol ensures raw PCM is consumed and released immediately after the
@@ -48,6 +53,11 @@ struct PushToTalkView: View {
     // press in the simulator. Real engines ignore it.
     @State private var wozScript: WoZScript = .groundOut63
 
+    // True while a finger is on the button. `@GestureState` resets even when the gesture is
+    // cancelled (the button disabling mid-hold, the app backgrounding), so a touch-up is never lost.
+    @GestureState private var isTouching = false
+    @Environment(\.scenePhase) private var scenePhase
+
 #if DEBUG
     // DL-176 KTD6 / A5: the Wizard-of-Oz facilitator panel exists in DEBUG builds only — a
     // release build cannot fabricate a play from a canned transcript.
@@ -72,6 +82,9 @@ struct PushToTalkView: View {
 #endif
         }
         .padding(.horizontal, 24)
+        .onChange(of: scenePhase) { _, phase in
+            PushToTalkPipeline.scenePhaseChanged(phase, appState: appState)
+        }
     }
 
     // MARK: - Status label
@@ -129,17 +142,15 @@ struct PushToTalkView: View {
         }
         .gesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { _ in
-                    if appState.pttState == .idle {
-                        startListening()
-                    }
-                }
-                .onEnded { _ in
-                    if appState.pttState == .listening {
-                        stopListening()
-                    }
-                }
+                .updating($isTouching) { _, touching, _ in touching = true }
         )
+        .onChange(of: isTouching) { _, touching in
+            if touching {
+                PushToTalkPipeline.touchDown(script: wozScript, appState: appState)
+            } else {
+                PushToTalkPipeline.touchUp(appState: appState)
+            }
+        }
         .disabled(appState.pttState == .processing || appState.pttState == .result)
         .accessibilityLabel(isListening ? "Stop recording" : "Start recording")
         .accessibilityHint("Hold to record a play")
@@ -156,87 +167,232 @@ struct PushToTalkView: View {
 
     // MARK: - Actions
 
-    private func startListening() {
-        guard appState.activeGame != nil else {
-            appState.presentedSheet = .newGame
-            return
-        }
-        // Guard: cannot start PTT with a pending unconfirmed/unjudged entry.
-        if let game = appState.activeGame, game.pendingResult != nil {
-            appState.presentedError = AppState.AppError(
-                message: "Confirm or resolve the current play before recording a new one."
-            )
-            return
-        }
-        appState.pttState = .listening
-    }
-
-    private func stopListening() {
-        // Release → processing → the live pipeline (engine resolved per capture, R21).
-        appState.pttState = .processing
-        let appState = self.appState
-        let script = wozScript
-        Task {
-            await PushToTalkPipeline.score(script: script, appState: appState)
-        }
-    }
-
 #if DEBUG
     /// DEBUG-only facilitator path: plays the chosen canned script through the Stub.
     private func triggerFacilitatorPlay(script: WoZScript) {
         let appState = self.appState
         Task {
-            await PushToTalkPipeline.score(script: script, facilitatorScripted: true, appState: appState)
+            await PushToTalkPipeline.scoreFacilitatorScript(script, appState: appState)
         }
     }
 #endif
 }
 
+// MARK: - PTTPress (one press, touch-down to transcript)
+
+/// One press of the mic button (DL-176 U4). Identity (`===` against `AppState.currentPress`) is
+/// how every async step checks that its press is still the live one: a press replaced, cancelled
+/// or already handed off is left alone.
+@MainActor
+final class PTTPress {
+    /// The WoZ script the Stub plays for this press (real engines ignore it).
+    let script: WoZScript
+    /// Readiness check + `start()`. The release path awaits it, so `stop()` never overtakes
+    /// `start()` and runs exactly once.
+    var startTask: Task<Void, Never>?
+    /// Set once readiness passed and the factory built this press's capture.
+    var capture: (any AudioCaptureSource)?
+    /// Set by the first release (touch-up or cap); later releases are no-ops.
+    var released = false
+
+    init(script: WoZScript) {
+        self.script = script
+    }
+}
+
 // MARK: - PushToTalkPipeline (one utterance, end to end — DL-157 R21/R22)
 
-/// The push-to-talk scoring flow, factored out of the view so `T157PushToTalkWiringTests` can
-/// drive it with a recording fake `Transcriber` and assert the call order without SwiftUI:
+/// The push-to-talk flow, factored out of the view so tests drive it without SwiftUI:
 ///
-///     resolve engine → setContextualStrings(activeRoster) → transcribe → parse(roster:) → core
+///     touchDown → readiness → capture.start()
+///     touchUp (or cap) → capture.stop() → resolve engine → setContextualStrings(activeRoster)
+///         → transcribe → parse(roster:) → core
 ///
-/// Everything here mutates `AppState` on the main actor exactly as the view did before.
+/// Everything here mutates `AppState` on the main actor. The functions that start async work
+/// return its `Task` so tests can await it with a bound; the view ignores them.
 @MainActor
 enum PushToTalkPipeline {
 
-    /// Scores one utterance, resolving the engine first.
-    ///
-    /// - Parameters:
-    ///   - script: the WoZ script the Stub engine plays (real engines ignore it).
-    ///   - facilitatorScripted: `true` when the hidden WoZ panel chose the script — the canned
-    ///     `StubTranscriber` is used directly so the facilitator demo works on a device where the
-    ///     selector would otherwise pick Apple. `false` for a real press-and-release, which goes
-    ///     through `appState.transcriberFactory` (the selector in production).
-    ///
-    /// The `facilitatorScripted` branch — the only Stub construction on the press path — exists in
-    /// DEBUG builds only (DL-176 KTD6); release builds have just `score(script:appState:)`.
-#if DEBUG
-    static func score(script: WoZScript, facilitatorScripted: Bool = false, appState: AppState) async {
-        let transcriber: any Transcriber = facilitatorScripted
-            ? StubTranscriber(script: script)
-            : await appState.transcriberFactory(script)
-        await score(with: transcriber, script: script, appState: appState)
+    // MARK: Touch
+
+    /// A finger landed on (or dragged within) the mic button. Only the first call of a touch
+    /// presses; the rest are ignored until `touchUp`, so a capture ended by a cap or interruption
+    /// never restarts while the finger is still down (plan U4).
+    @discardableResult
+    static func touchDown(script: WoZScript, appState: AppState) -> Task<Void, Never>? {
+        guard !appState.pttTouchActive else { return nil }
+        appState.pttTouchActive = true
+        return press(script: script, appState: appState)
     }
-#else
-    static func score(script: WoZScript, appState: AppState) async {
-        await score(with: await appState.transcriberFactory(script), script: script, appState: appState)
+
+    /// The finger lifted (or the gesture was cancelled): release the press, if one is live.
+    @discardableResult
+    static func touchUp(appState: AppState) -> Task<Void, Never>? {
+        appState.pttTouchActive = false
+        guard let press = appState.currentPress else { return nil }
+        return release(press, appState: appState)
+    }
+
+    /// Scene phase: leaving the foreground ends a held capture and discards it (R3); becoming
+    /// active re-reads readiness so access granted in Settings counts at once (R4).
+    @discardableResult
+    static func scenePhaseChanged(_ phase: ScenePhase, appState: AppState) -> Task<Void, Never>? {
+        switch phase {
+        case .background:
+            guard let press = appState.currentPress, !press.released else { return nil }
+            return cancel(press, message: AppState.interruptionMessage(for: .background), appState: appState)
+        case .active:
+            return Task { _ = await appState.refreshVoiceReadiness() }
+        default:
+            return nil
+        }
+    }
+
+    // MARK: Press
+
+    /// Starts one press: leaves `.idle` synchronously (so a second press is ignored), then checks
+    /// readiness and starts a fresh capture. Returns the start task, or `nil` if nothing started.
+    @discardableResult
+    static func press(script: WoZScript, appState: AppState) -> Task<Void, Never>? {
+        guard appState.pttState == .idle else { return nil }
+        guard appState.activeGame != nil else {
+            appState.presentedSheet = .newGame
+            return nil
+        }
+        // Guard: cannot start PTT with a pending unconfirmed/unjudged entry.
+        if appState.activeGame?.pendingResult != nil {
+            appState.presentedError = AppState.AppError(
+                message: "Confirm or resolve the current play before recording a new one."
+            )
+            return nil
+        }
+        // A stale press (its state reset elsewhere) must not keep a microphone open.
+        if let stale = appState.currentPress {
+            appState.currentPress = nil
+            discardCapture(of: stale)
+        }
+        appState.pttState = .listening
+        let press = PTTPress(script: script)
+        appState.currentPress = press
+        let task = Task { await begin(press, appState: appState) }
+        press.startTask = task
+        return task
+    }
+
+    /// Readiness, then capture start, then the event watch for the life of the capture.
+    private static func begin(_ press: PTTPress, appState: AppState) async {
+        // R4/R5: re-read live permission and model status on every press; never capture when a
+        // capture cannot succeed.
+        let readiness = await appState.refreshVoiceReadiness()
+        guard appState.currentPress === press else { return }
+        guard readiness == .ready else {
+            abandon(press, message: AppState.readinessMessage(for: readiness) ?? "", appState: appState)
+            return
+        }
+
+        let capture = appState.captureFactory()
+        press.capture = capture
+        do {
+            try await capture.start()
+        } catch {
+            abandon(press, message: startFailureMessage(for: error), appState: appState)
+            return
+        }
+        // Cancelled while starting (the app backgrounded): whoever cancelled stops the capture.
+        guard appState.currentPress === press else { return }
+
+        let events = capture.events
+        Task {
+            for await event in events {
+                switch event {
+                case .capReached:
+                    // R2: the cap is a release, even with the finger still down.
+                    release(press, appState: appState)
+                case .interrupted(let reason):
+                    // R3: audio already discarded by the source; idle with the reason.
+                    abandon(press, message: AppState.interruptionMessage(for: reason), appState: appState)
+                }
+            }
+        }
+    }
+
+    // MARK: Release
+
+    /// Ends the capture and scores its audio. The first release of a press wins; `stop()` waits
+    /// for `start()` so a release during start still stops exactly once.
+    @discardableResult
+    private static func release(_ press: PTTPress, appState: AppState) -> Task<Void, Never>? {
+        guard appState.currentPress === press, !press.released else { return nil }
+        press.released = true
+        appState.pttState = .processing
+        return Task {
+            await press.startTask?.value
+            // A start that failed or was cancelled has already been reported.
+            guard appState.currentPress === press, let capture = press.capture else { return }
+            // stop() and transcribe share this task: the ~Copyable buffer never crosses a Task.
+            guard let buffer = await capture.stop() else {
+                abandon(press, message: AppState.captureInterruptedMessage, appState: appState)
+                return
+            }
+            guard appState.currentPress === press else { return }
+            appState.currentPress = nil
+            let transcriber = await appState.transcriberFactory(press.script)
+            await score(with: transcriber, buffer: buffer, script: press.script, appState: appState)
+        }
+    }
+
+    // MARK: Exits without a transcript
+
+    /// Returns a live press to idle with a visible reason. Nothing is transcribed.
+    private static func abandon(_ press: PTTPress, message: String, appState: AppState) {
+        guard appState.currentPress === press else { return }
+        appState.currentPress = nil
+        appState.pttState = .idle
+        appState.presentedError = AppState.AppError(message: message)
+    }
+
+    /// `abandon`, and also stop the capture and drop its audio (the source is still running).
+    private static func cancel(_ press: PTTPress, message: String, appState: AppState) -> Task<Void, Never> {
+        abandon(press, message: message, appState: appState)
+        return discardCapture(of: press)
+    }
+
+    /// Stops `press`'s capture once its start settles and drops the buffer unread (FR-022).
+    @discardableResult
+    private static func discardCapture(of press: PTTPress) -> Task<Void, Never> {
+        Task {
+            await press.startTask?.value
+            if let capture = press.capture {
+                _ = await capture.stop()
+            }
+        }
+    }
+
+    /// Why a capture did not start. A denied microphone reads as the readiness message.
+    static func startFailureMessage(for error: Error) -> String {
+        if case TranscriberError.permissionDenied = error {
+            return AppState.readinessMessage(for: .micDenied) ?? ""
+        }
+        return "The microphone couldn't start — no audio input is available right now. "
+            + "You can keep scoring with manual entry."
+    }
+
+    // MARK: Scoring
+
+#if DEBUG
+    /// DEBUG-only facilitator path (DL-176 KTD6): the canned `StubTranscriber` plays `script`
+    /// with a synthesized buffer, bypassing capture and readiness, so the Wizard-of-Oz demo works
+    /// on a device where the selector would pick Apple. The only Stub construction on the PTT
+    /// path; compiled out of release builds.
+    static func scoreFacilitatorScript(_ script: WoZScript, appState: AppState) async {
+        let buffer = DiamondSpeech.AudioBuffer(rawBytes: Data(), durationSeconds: 1.0, capturedAt: Date())
+        await score(with: StubTranscriber(script: script), buffer: buffer, script: script, appState: appState)
     }
 #endif
 
-    /// Scores one utterance with an already-resolved engine.
-    static func score(with transcriber: any Transcriber, script: WoZScript, appState: AppState) async {
-        // Capture (T046) is still absent: the buffer is synthesized and EMPTY. The Stub ignores
-        // it; a real engine throws `audioTooShort`, surfaced below as a visible error (FR-008:
-        // never a silent drop). FR-022 is honoured trivially — there are no bytes to retain.
-        let buffer = AudioBuffer(
-            rawBytes: Data(),
-            durationSeconds: 1.0,
-            capturedAt: Date()
-        )
+    /// Scores one captured utterance with an already-resolved engine.
+    static func score(with transcriber: any Transcriber, buffer: consuming DiamondSpeech.AudioBuffer,
+                      script: WoZScript, appState: AppState) async {
         // Snapshot once so the engine and the parser see the same roster (R21 + R22).
         let roster = appState.activeRoster
 
@@ -244,6 +400,8 @@ enum PushToTalkPipeline {
             // R21: the active game's roster reaches the engine before EVERY transcribe.
             await transcriber.setContextualStrings(roster)
             let transcript = try await transcriber.transcribe(buffer: consume buffer)
+            // DL-176 U5: diagnostics hook — record capture duration and release-to-transcript
+            // latency here (numbers only; never audio or transcript text).
 
             // Grammar parse: Transcript → NormalizedPlay, with roster names masked (R22).
             let parser = GrammarParser()
@@ -296,9 +454,8 @@ enum PushToTalkPipeline {
     static func message(for error: Error) -> String {
         switch error {
         case TranscriberError.audioTooShort:
-            return "No audio was captured — the recording was empty or too short. Live microphone "
-                + "capture isn't wired up yet, so speech can't be recognized on this build; use the "
-                + "facilitator script (long-press the status label) or manual entry."
+            return "No audio was captured — the recording was empty or too short. Hold the button "
+                + "while you say the play, then let go; or use manual entry."
         case TranscriberError.permissionDenied:
             return "Speech recognition permission is denied. Allow it in Settings to score by voice."
         case TranscriberError.engineUnavailable(let engine):
