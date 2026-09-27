@@ -827,6 +827,48 @@ final class DL157NeverGuessAFielderTests: XCTestCase {
         return []
     }
 
+    // R1 (review #3) — "from <base>" after a runner/scoring word is where a runner CAME FROM,
+    // never a fielder; it must not extend a confident chain.
+    func test_R1_scoredFromThird_doesNotExtendTheChain() throws {
+        XCTAssertEqual(try parse("ground ball to short, threw him out at first, runner scored from third")["fielders"], "63")
+        XCTAssertEqual(try parse("double play, short to second to first, runner from third scored")["fielders"], "643")
+        XCTAssertEqual(try parse("ground ball to second, threw him out at first, run scores from third")["fielders"], "43")
+    }
+
+    // R2 (review #7) — "left center" / "right center" is a gap, not a fielder: the phrase-form
+    // fielder wins when stated; otherwise the play clarifies.
+    func test_R2_gapWords_neverBecomeAFielder() throws {
+        XCTAssertEqual(try parse("fly ball to left center, caught by the center fielder")["fielder"], "8")
+        XCTAssertEqual(try parse("fly ball to right center caught by the left fielder")["fielder"], "7")
+        _ = assertClarify("fly ball to left center", results: ["flyout"])
+        XCTAssertEqual(try parse("fly ball to left field, caught")["fielder"], "7")
+    }
+
+    // R3 (review #11) — hyphenated / punctuated roster names mask like their spoken tokens.
+    func test_R3_hyphenatedRosterName_masks() throws {
+        _ = assertClarify("ground ball to short smith, threw him out at first", roster: ["Short-Smith"], results: ["groundout"])
+        _ = assertClarify("ground ball to oneil, threw him out at first", roster: ["O'Neil"], results: ["groundout"])
+        XCTAssertEqual(try parse("single to oneil", roster: ["O'Neil"])["batter_result"], "single",
+                       "a single needs no fielder, so a masked name is harmless there")
+        XCTAssertEqual(try parse("ground ball to short, threw him out at first", roster: ["Smith-Jones"])["fielders"], "63")
+    }
+
+    // R4 (review #14) — a lone token of a multi-word roster name that is an article, a
+    // preposition, an initial, or a grammar word is never masked.
+    func test_R4_rosterNameTokens_neverBlankTheGrammar() throws {
+        XCTAssertEqual(try parse("hit by a pitch", roster: ["R. A. Dickey"])["batter_result"], "hit_by_pitch")
+        XCTAssertEqual(try parse("homer", roster: ["Homer Bailey"])["batter_result"], "home_run")
+        XCTAssertEqual(try parse("ground ball to short, threw him out at first", roster: ["Bo Out"])["fielders"], "63")
+        _ = assertClarify("fly ball to bailey, caught", roster: ["Homer Bailey"], results: ["flyout"])
+    }
+
+    // R5 (review testing P2) — a fielder's choice is not an error and not a guess.
+    func test_R5_fieldersChoice_isOutOfGrammar() {
+        XCTAssertThrowsError(try parse("reached on fielder's choice")) { error in
+            guard case ParseError.outOfGrammar = error else { return XCTFail("expected outOfGrammar, got \(error)") }
+        }
+    }
+
     // F1 — groundout: the 6-3 default never fires. An incomplete chain is offered as heard.
     func test_F1_groundout_incompleteChain_clarifies_neverSixThree() {
         // Zero explicit positions ("four three" — numerals are not positions in v1).

@@ -339,6 +339,23 @@ final class T157PushToTalkWiringTests: XCTestCase {
         XCTAssertTrue(message.lowercased().contains("capture"), message)
     }
 
+    func test_pipeline_message_everyErrorBranch_isReadableAndDistinct() {
+        struct Anything: Error {}
+        let cases: [(Error, String)] = [
+            (TranscriberError.permissionDenied, "permission"),
+            (TranscriberError.engineUnavailable(.apple), "apple"),
+            (TranscriberError.transcriptionFailed("model missing"), "model missing"),
+            (Anything(), "anything"),
+        ]
+        var seen = Set<String>()
+        for (error, needle) in cases {
+            let message = PushToTalkPipeline.message(for: error)
+            XCTAssertFalse(message.isEmpty, "\(error)")
+            XCTAssertTrue(message.lowercased().contains(needle), "\(error): \(message)")
+            XCTAssertTrue(seen.insert(message).inserted, "duplicate message for \(error): \(message)")
+        }
+    }
+
     // MARK: Real engine + out-of-grammar → manual entry, never the WoZ canned facts
 
     func test_pipeline_realEngine_outOfGrammar_routesToManualEntry_notCannedFacts() async throws {

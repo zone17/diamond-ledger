@@ -275,8 +275,10 @@ public struct GrammarParser: Sendable {
     /// Token-level masking (the form `parse` uses). Same rules as the string form. A clause
     /// marker is never part of a name, so a multi-word name never spans a clause boundary.
     static func maskRosterNames(tokens input: [String], roster: [String]) -> (tokens: [String], maskedAny: Bool) {
+        // Names are tokenized with the SAME tokenizer as the transcript so a hyphenated or
+        // punctuated name ("Short-Smith", "O'Neil") aligns with the spoken tokens (review #11).
         let names: [[String]] = roster
-            .map { normalizeForMasking($0).split(separator: " ").map(String.init) }
+            .map { tokenize($0).filter { $0 != clauseMarker } }
             .filter { !$0.isEmpty }
             .sorted { $0.count > $1.count }
         guard !names.isEmpty else { return (input, false) }
@@ -295,9 +297,17 @@ public struct GrammarParser: Sendable {
         }
         // Individual tokens of multi-word names ("Dee Wright" → "dee", "wright"), minus any token
         // that is a position keyword or a number word (see the doc comment).
+        // ... and minus articles, fielding prepositions, single-character tokens (initials such
+        // as "R. A. Dickey") and production keywords, so a lineup entry can never blank out the
+        // grammar itself ("hit by a pitch" with "R. A. Dickey" on the roster; "homer" with
+        // "Homer Bailey") — review finding #14.
         let singles = Set(names.filter { $0.count > 1 }.flatMap { $0 })
             .subtracting(positionKeywordTokens)
             .subtracting(numberWords)
+            .subtracting(Utterance.articles)
+            .subtracting(Utterance.fieldingPrepositions)
+            .subtracting(grammarKeywordTokens)
+            .filter { $0.count > 1 }
         if !singles.isEmpty {
             for i in tokens.indices where singles.contains(tokens[i]) {
                 tokens[i] = namePlaceholder
@@ -315,6 +325,25 @@ public struct GrammarParser: Sendable {
     static let numberWords: Set<String> = [
         "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
         "1", "2", "3", "4", "5", "6", "7", "8", "9",
+    ]
+
+    /// Every word a production matches on (play words, verbs, anchors, destination markers).
+    /// A lone token of a multi-word roster name that is also a grammar word is never masked, so
+    /// a lineup entry can never blank out the grammar ("Homer Bailey" must not eat "homer").
+    static let grammarKeywordTokens: Set<String> = [
+        "ground", "grounder", "grounders", "grounds", "grounded", "groundout", "groundball", "ball",
+        "fly", "flyball", "flyout", "flied", "flies", "lined", "line", "drive", "pop", "popped", "popup",
+        "strikeout", "struck", "strike", "strikes", "looking", "called", "watching",
+        "swinging", "swings", "swung", "swing", "k", "kl",
+        "walk", "walked", "walks", "base", "balls", "bb", "iw", "intentional",
+        "single", "singled", "double", "doubled", "triple", "tripled",
+        "home", "run", "runs", "homerun", "homer", "homers", "homered", "hr",
+        "hit", "by", "pitch", "hbp", "plunked",
+        "sac", "sacrifice", "sack", "bunt", "bunts", "bunted",
+        "error", "misplayed", "booted", "bobbled", "muffed", "dropped",
+        "reached", "reaches", "reach", "safe", "safely", "on", "out", "outs", "play", "caught",
+        "choice", "unassisted", "throw", "threw", "thrown", "catch", "batter", "runner", "runners",
+        "scored", "scores", "advanced", "advances", "to", "at", "in", "from",
     ]
 
     // MARK: - Production match
@@ -456,7 +485,7 @@ public struct GrammarParser: Sendable {
             for (words, pos) in Self.positionPhrases where i + words.count <= tokens.count {
                 if Array(tokens[i..<(i + words.count)]) == words { return (pos, words.count) }
             }
-            if let pos = Self.barePositionWords[tokens[i]], isFieldingSlot(i) { return (pos, 1) }
+            if let pos = Self.barePositionWords[tokens[i]], isFieldingSlot(i), !isGapWord(i) { return (pos, 1) }
             return nil
         }
 
@@ -481,10 +510,29 @@ public struct GrammarParser: Sendable {
             while p >= 0, Self.articles.contains(tokens[p]) { p -= 1 }
             guard p >= 0 else { return false }
             if Self.destinationWords.contains(tokens[p]) { return true }
-            if ["at", "to", "on"].contains(tokens[p]), p - 1 >= 0, Self.destinationWords.contains(tokens[p - 1]) {
+            // "scored from third", "runner from third scored", "run scores from second": the base
+            // after "from" is where a RUNNER came from, never a fielder (review finding #3).
+            if ["at", "to", "on", "from"].contains(tokens[p]), p - 1 >= 0, Self.destinationWords.contains(tokens[p - 1]) {
                 return true
             }
             return false
+        }
+
+        /// "left center" / "right center" (or "center left/right") is a GAP between two outfield
+        /// positions, not either position; a fly ball "to left center" names no fielder
+        /// (review finding #7). True when the bare direction word at `i` is adjacent to another
+        /// bare direction word.
+        func isGapWord(_ i: Int) -> Bool {
+            guard Self.barePositionWords[tokens[i]] != nil, Self.outfieldPositions.contains(Self.barePositionWords[tokens[i]]!) else { return false }
+            let neighbors = [i - 1, i + 1].filter { $0 >= 0 && $0 < tokens.count }
+            return neighbors.contains { j in
+                if let pos = Self.barePositionWords[tokens[j]], Self.outfieldPositions.contains(pos), tokens[j] != tokens[i] {
+                    // "center field" / "left fielder" phrases are handled before bare words, so a
+                    // neighbor that starts a phrase is not a gap partner.
+                    return !(j + 1 < tokens.count && ["field", "fielder"].contains(tokens[j + 1]))
+                }
+                return false
+            }
         }
 
         // MARK: lost fielder (DL-157 / F6)

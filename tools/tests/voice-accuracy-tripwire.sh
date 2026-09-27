@@ -14,6 +14,10 @@
 #   4. biasing pair whose expect_decision is wrong → exit 1, banner names the pair id (R8).
 #   5. a correct corpus → exit 0, and every line carrying a "%" carries the fixture-robustness
 #      label (R4) — the control case, so a runner that fails EVERYTHING cannot pass this file.
+#   6. same judgment kind, different fielder, marked same_as_base → exit 1 (R2, review #1).
+#   7. every confidence-60 output swapped for the confidence-100 output → the comparator alone
+#      exits 1: a parseable row scored silently at 60 (FR-008, review #2).
+#   8. one byte differs between run 1 and run 2 → the comparator alone exits 1 (R6, review #4).
 #
 # The runner is pointed at scratch corpora via VOICE_ACCURACY_DIR / TRANSCRIPT_CASES; the real
 # corpus under evals/voice-accuracy/ is never read here.
@@ -113,6 +117,46 @@ out=$(run_runner "$DIR" "$DIR/cases.jsonl"); rc=$?
 t_rc "wrong pair expectation: runner exits 1" 1 "$rc"
 t "wrong pair expectation: banner names the pair" "pair-wrongly-expects-override" "$out"
 t "wrong pair expectation: reported as a pair mismatch" "pair mismatches: 1" "$out"
+rm -rf "$DIR"
+
+# ── 6. same judgment kind, different fielder → exit 1 (review finding #1) ────
+DIR=$(mktemp -d); mk_cases "$DIR/cases.jsonl"; mk_good_pair "$DIR/biasing-pairs.jsonl"
+cat > "$DIR/variants.jsonl" <<'JSONL'
+{"id":"v-wrong-fielder-on-judgment","base_id":"tr-judgment-error-ss","kind":"mishear","transcript":"reached on error by the third baseman","expect":"same_as_base"}
+JSONL
+out=$(run_runner "$DIR" "$DIR/cases.jsonl"); rc=$?
+t_rc "wrong fielder on judgment base: runner exits 1" 1 "$rc"
+t "wrong fielder on judgment base: banner names the row" "v-wrong-fielder-on-judgment" "$out"
+t "wrong fielder on judgment base: reported as confident-wrong" "confident-wrong rows: 1" "$out"
+rm -rf "$DIR"
+
+# ── 7 + 8. comparator-only fixtures: a silent score at confidence 60, and a run that differs ─
+# Stage + score a control corpus once, then tamper with the raw outputs and call the comparator
+# directly, so the two hard signals the runner itself cannot easily provoke are still proven.
+COMPARE="${REPO_ROOT}/evals/runners/voice-accuracy-compare.py"
+DIR=$(mktemp -d); mk_cases "$DIR/cases.jsonl"; mk_good_variant "$DIR/variants.jsonl"; mk_good_pair "$DIR/biasing-pairs.jsonl"
+SCRATCH_KEEP=$(mktemp -d)
+out=$(VOICE_ACCURACY_SCRATCH="$SCRATCH_KEEP" run_runner "$DIR" "$DIR/cases.jsonl"); rc=$?
+if [[ "$rc" == "0" && -d "$SCRATCH_KEEP/run1" && -d "$SCRATCH_KEEP/run2" ]]; then
+  # 7. every c60 output replaced by the c100 output → parseable rows now "score" at 60 → exit 1
+  T7=$(mktemp -d); cp -R "$SCRATCH_KEEP/run1" "$T7/run1"; cp -R "$SCRATCH_KEEP/run2" "$T7/run2"
+  for r in run1 run2; do for d in "$T7/$r"/batches/c60-*; do
+    src="${d/c60-/c100-}"; [[ -f "$src/out.jsonl" ]] && cp "$src/out.jsonl" "$d/out.jsonl"
+  done; done
+  out7=$(python3 "$COMPARE" compare --cases "$DIR/cases.jsonl" --variants "$DIR/variants.jsonl" --pairs "$DIR/biasing-pairs.jsonl" --run "$T7/run1" --rerun "$T7/run2" 2>&1); rc7=$?
+  t_rc "silent score at confidence 60: comparator exits 1" 1 "$rc7"
+  t "silent score at confidence 60: banner names the cause" "scored silently at confidence 60" "$out7"
+  rm -rf "$T7"
+  # 8. one byte differs between run1 and run2 → non-determinism → exit 1
+  T8=$(mktemp -d); cp -R "$SCRATCH_KEEP/run1" "$T8/run1"; cp -R "$SCRATCH_KEEP/run2" "$T8/run2"
+  f=$(ls "$T8"/run2/batches/c100-*/out.jsonl | head -n 1); printf '\n' >> "$f"
+  out8=$(python3 "$COMPARE" compare --cases "$DIR/cases.jsonl" --variants "$DIR/variants.jsonl" --pairs "$DIR/biasing-pairs.jsonl" --run "$T8/run1" --rerun "$T8/run2" 2>&1); rc8=$?
+  t_rc "non-deterministic runs: comparator exits 1" 1 "$rc8"
+  t "non-deterministic runs: banner names the cause" "non-deterministic output" "$out8"
+  rm -rf "$T8" "$SCRATCH_KEEP"
+else
+  FAIL=$((FAIL+2)); echo "  FAIL: could not obtain a kept scratch run for fixtures 7/8 (rc=$rc, scratch='$SCRATCH_KEEP')"
+fi
 rm -rf "$DIR"
 
 # ── 5. control: a correct corpus passes, and every '%' line is labeled ───────

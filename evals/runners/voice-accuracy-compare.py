@@ -90,6 +90,8 @@ def transcript_problem(text):
         return "transcript may not start with '#' (dl-score treats it as a comment)"
     if "\n" in text or "\r" in text:
         return "transcript may not contain a newline"
+    if text != text.strip():
+        return "transcript may not have leading/trailing whitespace (dl-score trims and echoes the trimmed line)"
     return None
 
 
@@ -232,7 +234,7 @@ def cmd_stage(args):
     with open(os.path.join(pd, "input.jsonl"), "w", encoding="utf-8") as fh:
         for p in pairs:
             fh.write(json.dumps(p, ensure_ascii=False) + "\n")
-    print(f"staged {len(cases)} cases, {len(variants)} variants, {len(pairs)} pairs "
+    print(f"{ADV} staged {len(cases)} cases, {len(variants)} variants, {len(pairs)} pairs "
           f"into {len(CONFIDENCES) * (1 + len({roster_key(v.get('roster')) for v in variants} - {None}))} dl-score batches")
     return 0
 
@@ -326,11 +328,14 @@ def canonical_problems(c, a):
 
 def is_safe_miss(a, base):
     """R3: the pipeline refused to score silently — a clarify (`ambiguous(`), out-of-grammar, or
-    the same judgment kind the base surfaces."""
+    the same judgment kind AND the same facts as the base. A judgment card carries its fielder
+    into the recommended call exactly as a confirm card does, so the same kind with different
+    facts is a confidently-wrong fielder, not a safe miss (review finding #1)."""
     err = a.get("error") or ""
     if a.get("classification") == "parse_error" and (err.startswith("ambiguous(") or err.startswith("out_of_grammar")):
         return True
-    if a.get("judgment_kind") is not None and a.get("judgment_kind") == base.get("judgment_kind"):
+    if (a.get("judgment_kind") is not None and a.get("judgment_kind") == base.get("judgment_kind")
+            and a.get("facts") == base.get("facts")):
         return True
     return False
 
@@ -348,6 +353,8 @@ def confident_wrong_reason(a, base):
             return "surfaces a judgment (%s) while the base is deterministic" % a.get("judgment_kind")
         if a.get("judgment_kind") != base.get("judgment_kind"):
             return "judgment kind %r differs from the base's %r" % (a.get("judgment_kind"), base.get("judgment_kind"))
+        if a.get("facts") != base.get("facts"):
+            return "same judgment kind (%s) but the facts differ from the base — a wrong fielder rides the card" % a.get("judgment_kind")
     return None
 
 
@@ -453,6 +460,11 @@ def cmd_compare(args):
     confident_wrong = []      # (variant, base_case, reason, actual, base_actual)
     canonical_regressions = []
     pair_mismatches = []
+    # FR-008 at the production default: at confidence 60 (< GrammarParser.lowConfidenceThreshold
+    # 70) NO parseable row may score silently. A row that does means the low-confidence route
+    # regressed — the exact silent-wrong-play class the gate exists to catch (review finding #2).
+    silent_at_60 = [(role, rid, a) for (cf, role, rid), a in results.items()
+                    if cf == 60 and a.get("ok") is True and a.get("needs") in ("none", "confirm")]
     by_kind = {}              # kind -> {"same":n,"safe":n,"confident_wrong":n,"other":n,"undetectable":n}
     safe_by_kind = {}         # kind -> {how: n}
     expectation_mismatches = []
@@ -583,6 +595,10 @@ def cmd_compare(args):
         reasons.append(f"{len(canonical_regressions)} canonical regression(s)")
     if pair_mismatches:
         reasons.append(f"{len(pair_mismatches)} pair mismatch(es)")
+    if silent_at_60:
+        for role, rid, a in silent_at_60:
+            print(f"{RED}  silent score at confidence 60{NC}: {role} {rid}: ok={a.get('ok')} needs={a.get('needs')} facts={a.get('facts')}")
+        reasons.append(f"{len(silent_at_60)} row(s) scored silently at confidence 60 (FR-008 low-confidence route regressed)")
     if diffs:
         reasons.append("non-deterministic output")
     if reasons:

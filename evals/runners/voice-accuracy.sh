@@ -103,8 +103,14 @@ BIAS_BIN="${BIN_DIR}/dl-bias"
 # Robustness (review): corpora and CLI output are passed to the comparator as FILE PATHS (argv),
 # never interpolated into Python source. A transcript containing a quote or backslash must FAIL
 # a row loudly, not corrupt the comparator. The scratch dir holds every staged file.
-SCRATCH="$(mktemp -d)"
-trap 'rm -rf "${SCRATCH}"' EXIT
+# VOICE_ACCURACY_SCRATCH (optional): a caller-owned directory to stage into and KEEP — the
+# tripwire uses it to tamper with the raw outputs and re-judge them (fixtures 7/8).
+if [[ -n "${VOICE_ACCURACY_SCRATCH:-}" ]]; then
+  SCRATCH="${VOICE_ACCURACY_SCRATCH}"; mkdir -p "${SCRATCH}"
+else
+  SCRATCH="$(mktemp -d)"
+  trap 'rm -rf "${SCRATCH}"' EXIT
+fi
 
 RC=0
 python3 "${COMPARE}" stage --cases "${CASES}" --variants "${VARIANTS}" --pairs "${PAIRS}" \

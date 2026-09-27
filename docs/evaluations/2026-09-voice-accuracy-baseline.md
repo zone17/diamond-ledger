@@ -6,15 +6,16 @@
 |---|---|
 | Commit measured | branch `feat/ios/DL-157-voice-accuracy-harness`, parser at U9 (post-416f3f2 working tree; frozen in the U9 commit) |
 | Runner | `evals/runners/voice-accuracy.sh` (`make voice-accuracy-gate`), two identical runs |
-| Corpus | 56 canonical rows, 228 variant rows (12 text-layer undetectable), 39 biasing pairs |
+| Corpus | 56 canonical rows, 228 variant rows (12 text-layer undetectable), 40 biasing pairs |
 | Gate verdict | PASS |
-| Tripwire | `tools/tests/voice-accuracy-tripwire.sh` 17/17 (gate demonstrably goes red on a known-bad corpus) |
+| Tripwire | `tools/tests/voice-accuracy-tripwire.sh` 24/24 (gate demonstrably goes red on a known-bad corpus, a wrong fielder on a judgment base, a silent score at confidence 60, and a non-deterministic run) |
 
 ## Hard signal (Article VII / FR-008)
 
 - confident-wrong rows: **0**
 - canonical regressions: **0**
 - biasing-pair mismatches: **0**
+- rows scoring silently at confidence 60: **0** (FR-008 low-confidence route intact)
 - advisory expectation mismatches: 4 (keyword-named roster players over-clarify; corpus README finding F13, open, safe direction)
 - determinism: identical raw `dl-score`/`dl-bias` output across two runs
 
@@ -44,7 +45,7 @@ Twenty-one variant labels were corrected during the fix: 15 `same_as_base` → `
 - Clarify rate at the production default confidence 60: **100.0%** (248/248). This is today's on-device reality: iOS 26 reports no scalar confidence, the adapter substitutes 60, the parser threshold is 70, so every parseable play goes through the Clarify sheet. Hands-free scoring is closed (Key Decision 4 / R20) and SC-005's one-tap bar cannot be met until that changes on device evidence after T046.
 - Numerals are deliberately not treated as positions (too overloaded in narration: counts, outs, runs), so every spoken-number variant surfaces rather than scores.
 - Text-layer undetectable rows (a mis-hearing that is itself a valid different play, e.g. "to second" for "to short"): 12, of which 10 score the other play confidently. No text-only harness can catch these; they are the case for the ASR leg (T076) and for the roster/lexicon biasing to keep those words right at the source.
-- Biasing pairs: 11 override, 28 keep_base, all as expected.
+- Biasing pairs: 12 override, 28 keep_base, all as expected.
 - Independent corpus review (Article XX, 2026-09-27): 224/228 variant and 39/39 pair expectations confirmed; 4 collision rows relabeled to play semantics.
 - Transcript WER: not measured (no ASR leg in this harness).
 
@@ -54,3 +55,7 @@ Twenty-one variant labels were corrected during the fix: 15 `same_as_base` → `
 - Whether on-device `SFSpeechRecognizer` reports a usable per-segment confidence (plan Assumption A7). The first device run must log the biased-leg confidence distribution here.
 - Field accuracy (SC-001/SC-002): human gold game.
 - Synthetic-speech leg (plan U8): not started; deferred to a follow-up.
+
+## Code-review fixes folded in before merge
+
+The multi-lens review (run 20260927-013633-0198784d) found and reproduced three gate holes, all closed here and each pinned by a tripwire fixture: a wrong fielder on a judgment base counted as a safe miss; the confidence-60 leg had no hard signal; the parser read "runner scored from third" as a fielder. Also fixed: "left center" gap words, hyphenated roster names, roster tokens that were grammar words, the unlabeled staged-corpus line, padded transcripts, and the dl-bias 0/1 boundary now pinned by two pairs.

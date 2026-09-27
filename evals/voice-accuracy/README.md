@@ -25,7 +25,7 @@ labels > the plan's Requirements > its Key Technical Decisions.
 | Base-staleness preflight | `git merge-base --is-ancestor origin/main HEAD` → ok (2026-09-27) |
 | Binaries used | `dl-score`, `dl-bias` from `ios/.build/arm64-apple-macosx/debug` (built from the commit above) |
 | Expectations authored from | play semantics first, then every row run through `dl-score --confidence 100` / `dl-bias` and compared (see checklist) |
-| **reviewed_by** | **PENDING** — expectations are NOT frozen until a reviewer other than the author has read the pipeline output row by row against this corpus and recorded their name and the commit here |
+| **reviewed_by** | independent corpus-review agent (Article XX), row-by-row read of all 228 variants and 39 pairs at HEAD a0f2220 → 4 collision rows relabeled (ea3c481); re-verified after the parser and comparator review fixes: gate PASS, 0 confident-wrong, 4 advisory F13 mismatches, 40/40 pairs (the 40th pins the 0/1 boundary) |
 
 ## The three tiers, and what each can and cannot prove
 
@@ -89,7 +89,7 @@ The comparator (U5) applies, from `dl-score`'s actual output fields:
   differ from the base's facts; or the variant surfaces `judgment` when the base is
   deterministic; or the judgment kind differs from the base's expected kind. Any canonical row
   regressing is also a hard fail.
-- **safe miss:** `parse_error` with `ambiguous(`/`out_of_grammar`, or same judgment kind as the
+- **safe miss:** `parse_error` with `ambiguous(`/`out_of_grammar`, or same judgment kind AND same facts as the
   base expects.
 
 A variant scoring differently from its base is the signal (KTD6).
@@ -104,7 +104,7 @@ Plain JSON Lines, keys:
 | `base` | Base-leg text (kept verbatim whenever it is kept) |
 | `base_confidence` | `null` unless the row tests R19 (a known base confidence); otherwise 0…1 |
 | `biased` | Biased-leg text, or `null` when that leg produced nothing |
-| `biased_confidence` | 0…1 (see finding B0: use `0.01`/`0.99`, never a literal `0`/`1`) |
+| `biased_confidence` | 0…1 (literal `0` and `1` are valid; two rows pin that boundary) |
 | `contextual_set` | Phrases the biased leg was told about: lexicon terms plus roster names in force |
 | `expect_decision` | `override` \| `keep_base` |
 | `expect_text` | The exact text `dl-bias` must return (the biased text verbatim on override, the base verbatim otherwise) |
@@ -185,7 +185,7 @@ U9 fixed all four (now `3` unassisted, out-of-grammar, clarify, clarify — pinn
 | roster_collision | 8 | 14 | 0 | 22 |
 | **total** | 126 | 90 | 12 | 228 |
 
-`biasing-pairs.jsonl`: 39 rows, 28 `keep_base`, 11 `override`.
+`biasing-pairs.jsonl`: 39 rows, 29 `keep_base`, 12 `override`.
 
 ### Expectation relabels by U9 (21 rows; no transcript changed, no row removed)
 
@@ -360,10 +360,10 @@ default chain / position remains in the parser. Keywords match whole words only.
 
 ### Biasing decision (`dl-bias` / `BiasingDecision`)
 
-- **B0. `dl-bias` rejects a literal `0` or `1` confidence** as "must be a number or null"
-  (Swift `NSNumber is Bool` bridging for 0/1 in `decodeRow`). `biased_confidence: 1.0`,
-  `1`, and `0.0` all error; `0.5` works. The corpus uses `0.01` for the guard-3 zero row. The
-  harness bug is in `ios/Sources/DLBias/main.swift`, not the policy.
+- **B0 (FIXED in 077c33e). `dl-bias` rejected a literal `0` or `1` confidence** as "must be a
+  number or null" (Swift `NSNumber`/`Bool` bridging in `decodeRow`). The decoder now checks the
+  CoreFoundation type instead of `is Bool`; rows `bp-guard3-zero` (0.0) and `bp-agree-literal-one`
+  (1.0) pin the boundary.
 - **B1. The policy overrides on insertion of contextual play/position phrases.** Under the
   guard order, an insertion only has to be contextual (guard 5) and has no replaced token
   (guard 6), so "ground ball to short, threw him out at first" → "…, double play" (distance
