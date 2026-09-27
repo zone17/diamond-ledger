@@ -45,6 +45,21 @@
 ///  12. tryTriple
 ///  13. tryHitByPitch
 ///  14. tryError
+///
+/// Roster-aware name masking (DL-157 / R22 / KTD7):
+///   `parse(_:roster:)` accepts an optional roster of player names. Before any production runs,
+///   every whole-word occurrence of a roster name (multi-word names matched as a phrase first) is
+///   replaced with `namePlaceholder` on the SAME normalized string the productions inspect, so a
+///   surname can no longer collide with a position keyword ("Wright" → "right" → RF; a player
+///   named "Short" / "Center"). Masking is EXACT-token replacement — never fuzzy — because fuzzy
+///   matching would re-introduce the loose-substring class of bug
+///   (docs/solutions/logic-errors/loose-substring-guard-silent-misclassification.md).
+///
+///   Invariant (Article VII / FR-008 — never a silent wrong play): when at least one name was
+///   masked AND the single matching production resolved its fielder via its hard-coded default,
+///   the parser throws `ParseError.ambiguous(candidates: [thatPlay])` so the play surfaces as a
+///   clarify. Defaults may fire silently only when no name was masked. With an empty roster the
+///   parser's behavior is byte-for-byte identical to the pre-DL-157 parser.
 
 import Foundation
 import SpeechTypes
@@ -59,15 +74,27 @@ public struct GrammarParser: Sendable {
 
     public init() {}
 
+    /// Placeholder substituted for every masked roster name. Deliberately contains NO grammar
+    /// keyword as a substring (checked by `DL157RosterMaskingTests.test_placeholder_neverMatchesAProduction`):
+    /// no production's `contains(...)` check, position keyword, or exact-equality token ("k",
+    /// "dp", "bb", "iw", "hr") can ever match it or be formed across its boundaries.
+    static let namePlaceholder = "__name__"
+
     /// Parse a `Transcript` into a `NormalizedPlay`.
     ///
-    /// - Parameter transcript: ASR output from `Transcriber`.
+    /// - Parameters:
+    ///   - transcript: ASR output from `Transcriber`.
+    ///   - roster: Optional player names (any case / punctuation). Each whole-word occurrence is
+    ///     masked before production matching (see file header). Empty = legacy behavior.
     /// - Returns: `NormalizedPlay` fact map ready for `CoreClient.recordPlay`.
     /// - Throws:
     ///     `ParseError.outOfGrammar(transcript:)` — no production matched; route to manual entry.
-    ///     `ParseError.ambiguous(candidates:)`     — multiple productions matched; route to clarifying Q.
+    ///     `ParseError.ambiguous(candidates:)`     — multiple productions matched, low confidence,
+    ///                                                OR a roster name was masked and the matched
+    ///                                                production fell back to a default fielder;
+    ///                                                route to clarifying Q.
     ///     `ParseError.emptyInput`                 — transcript text is empty.
-    public func parse(_ transcript: Transcript) throws -> NormalizedPlay {
+    public func parse(_ transcript: Transcript, roster: [String] = []) throws -> NormalizedPlay {
         let text = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw ParseError.emptyInput }
 
@@ -75,29 +102,39 @@ public struct GrammarParser: Sendable {
         // try to parse but treat any result as ambiguous (surface clarifying question).
         let isLowConfidence = transcript.confidence < Self.lowConfidenceThreshold
 
-        let normalized = text.lowercased()
+        // Roster masking (DL-157). Only the roster path applies the stronger normalization
+        // (strip punctuation, collapse whitespace) so that the no-roster path stays identical to
+        // the pre-DL-157 parser. Masking operates on the exact string the productions inspect.
+        let normalized: String
+        let maskedAny: Bool
+        if roster.isEmpty {
+            normalized = text.lowercased()
+            maskedAny = false
+        } else {
+            let masked = Self.maskRosterNames(in: Self.normalizeForMasking(text), roster: roster)
+            normalized = masked.masked
+            maskedAny = masked.maskedAny
+        }
         var candidates: [NormalizedPlay] = []
+        var anyUsedDefault = false
 
-        // Productions in precedence order (see file header). Each returns a NormalizedPlay on
+        // Productions in precedence order (see file header). Each returns a Match on
         // match or nil on non-match. The order matters:
         //   - tryMisplay BEFORE tryGroundout (a "booted grounder, safe at first" must NOT become
         //     a groundout; misplay verbs on a reached batter are more specific than "grounder").
         //   - tryDoublePlay BEFORE tryDouble ("double play" contains "double").
         //   - trySacFly BEFORE trySacBunt (both contain "sac"; "fly" distinguishes them).
-        if let play = tryMisplay(normalized)      { candidates.append(play) }
-        if let play = tryDoublePlay(normalized)   { candidates.append(play) }
-        if let play = tryGroundout(normalized)    { candidates.append(play) }
-        if let play = tryFlyout(normalized)       { candidates.append(play) }
-        if let play = trySacFly(normalized)       { candidates.append(play) }
-        if let play = trySacBunt(normalized)      { candidates.append(play) }
-        if let play = tryStrikeout(normalized)    { candidates.append(play) }
-        if let play = tryWalk(normalized)         { candidates.append(play) }
-        if let play = tryHomeRun(normalized)      { candidates.append(play) }
-        if let play = trySingle(normalized)       { candidates.append(play) }
-        if let play = tryDouble(normalized)       { candidates.append(play) }
-        if let play = tryTriple(normalized)       { candidates.append(play) }
-        if let play = tryHitByPitch(normalized)   { candidates.append(play) }
-        if let play = tryError(normalized)        { candidates.append(play) }
+        let productions: [(String) -> Match?] = [
+            tryMisplay, tryDoublePlay, tryGroundout, tryFlyout, trySacFly, trySacBunt,
+            tryStrikeout, tryWalk, tryHomeRun, trySingle, tryDouble, tryTriple,
+            tryHitByPitch, tryError,
+        ]
+        for production in productions {
+            if let match = production(normalized) {
+                candidates.append(match.play)
+                if match.usedDefault { anyUsedDefault = true }
+            }
+        }
 
         switch candidates.count {
         case 0:
@@ -110,6 +147,12 @@ public struct GrammarParser: Sendable {
             if isLowConfidence {
                 throw ParseError.ambiguous(candidates: candidates)
             }
+            // DL-157 invariant: a masked roster name plus a defaulted fielder means the fielder
+            // information was in the name we just masked — the default is a guess, not a fact.
+            // Surface as a single-candidate clarify; never return it silently.
+            if maskedAny && anyUsedDefault {
+                throw ParseError.ambiguous(candidates: candidates)
+            }
             return candidates[0]
 
         default:
@@ -118,10 +161,78 @@ public struct GrammarParser: Sendable {
         }
     }
 
+    // MARK: - Roster masking (DL-157 / R22 / KTD7)
+
+    /// Normalizes text for roster masking: lowercase, strip every character that is not a letter,
+    /// digit, or whitespace (so "O'Neil" / "O’Neil" / "oneil" all become "oneil"), then collapse
+    /// runs of whitespace to a single space. Applied identically to the transcript and to each
+    /// roster name so both sides compare token-for-token.
+    static func normalizeForMasking(_ text: String) -> String {
+        let lowered = text.lowercased()
+        var scrubbed = ""
+        scrubbed.reserveCapacity(lowered.count)
+        for ch in lowered {
+            if ch.isLetter || ch.isNumber || ch.isWhitespace { scrubbed.append(ch) }
+        }
+        return scrubbed.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+
+    /// Replaces every whole-word occurrence of each roster name in `normalized` (already passed
+    /// through `normalizeForMasking`) with `namePlaceholder`.
+    ///
+    /// Rules (KTD7 — exact token replacement, never fuzzy):
+    ///   - Comparison is token-by-token on the whitespace-split string, so "wright" never masks
+    ///     "wrights" and a name never matches inside another word.
+    ///   - Multi-word names ("center fielder jones") are matched as a contiguous phrase and
+    ///     replaced by ONE placeholder; longer names are tried first so a multi-word name is
+    ///     never partially eaten by a shorter one.
+    ///   - Every occurrence is masked ("wright to wright" → two placeholders).
+    ///   - A roster name identical to a grammar keyword ("Short", "Center") IS masked. The
+    ///     chosen rule: the roster is the more specific signal, so the token is treated as the
+    ///     player, the production loses its position word, and (if it would default) the play
+    ///     surfaces as a clarify — a safe miss rather than a silent guess.
+    ///
+    /// - Returns: the masked string and whether at least one replacement happened.
+    static func maskRosterNames(in normalized: String, roster: [String]) -> (masked: String, maskedAny: Bool) {
+        let names: [[Substring]] = roster
+            .map { normalizeForMasking($0).split(separator: " ") }
+            .filter { !$0.isEmpty }
+            .sorted { $0.count > $1.count }
+        guard !names.isEmpty else { return (normalized, false) }
+
+        var tokens: [Substring] = normalized.split(separator: " ")
+        var maskedAny = false
+        let placeholder = Substring(namePlaceholder)
+
+        for name in names {
+            var i = 0
+            while i + name.count <= tokens.count {
+                if Array(tokens[i..<(i + name.count)]) == name {
+                    tokens.replaceSubrange(i..<(i + name.count), with: [placeholder])
+                    maskedAny = true
+                }
+                i += 1
+            }
+        }
+        return (tokens.joined(separator: " "), maskedAny)
+    }
+
+    // MARK: - Production match
+
+    /// A production's result: the play plus whether its fielder came from a hard-coded default
+    /// rather than a position keyword found in the transcript (DL-157 clarify invariant).
+    struct Match {
+        let play: NormalizedPlay
+        let usedDefault: Bool
+    }
+
     // MARK: - Grammar productions
 
-    // Each production returns a `NormalizedPlay` dict on match, or `nil` on non-match.
+    // Each production returns a `Match` (play + usedDefault) on match, or `nil` on non-match.
     // Keys mirror the MockCore/real core FFI schema (core/src/model.rs).
+    // `usedDefault` is true only when the production filled its fielder/chain from a hard-coded
+    // default because no position keyword was found — the signal the roster-masking clarify
+    // invariant keys on.
 
     // MARK: Misplay → reached_on_error (Card B)
     //
@@ -163,7 +274,7 @@ public struct GrammarParser: Sendable {
     //
     // P2a fix: use parseInfieldPosition ?? parseOutfieldPosition so an outfield drop (e.g.
     // "dropped in left field, batter safe at first") records position 7 not 6 (SS default).
-    private func tryMisplay(_ s: String) -> NormalizedPlay? {
+    private func tryMisplay(_ s: String) -> Match? {
         // (a) Require a misplay verb.
         let hasMisplayVerb = s.contains("misplayed") || s.contains("booted")
                           || s.contains("bobbled")   || s.contains("muffed")
@@ -195,12 +306,14 @@ public struct GrammarParser: Sendable {
         guard batterReached else { return nil }
 
         // P2a: try infield position first, then outfield (a drop in left field → pos "7").
-        let pos = parseInfieldPosition(s) ?? parseOutfieldPosition(s) ?? "6"
-        return ["batter_result": "reached_on_error", "error_position": pos]
+        let explicit = parseInfieldPosition(s) ?? parseOutfieldPosition(s)
+        let pos = explicit ?? "6"
+        return Match(play: ["batter_result": "reached_on_error", "error_position": pos],
+                     usedDefault: explicit == nil)
     }
 
     // MARK: Groundout
-    private func tryGroundout(_ s: String) -> NormalizedPlay? {
+    private func tryGroundout(_ s: String) -> Match? {
         // "ground ball to short, threw him out at first" → batter_result=groundout, fielders="63"
         guard s.contains("ground") || s.contains("grounder") else { return nil }
         // Guard: a double play that includes "ground ball" is handled by tryDoublePlay.
@@ -212,117 +325,127 @@ public struct GrammarParser: Sendable {
                          || s.contains("on base")  || s.contains("reach")
         if batterReached { return nil }
 
-        let fielders = parseFielderSequence(s) ?? "63"  // default: SS to 1B
-        return ["batter_result": "groundout", "fielders": fielders, "outs_recorded": "1"]
+        let explicit = parseFielderSequence(s)
+        let fielders = explicit ?? "63"  // default: SS to 1B
+        return Match(play: ["batter_result": "groundout", "fielders": fielders, "outs_recorded": "1"],
+                     usedDefault: explicit == nil)
     }
 
     // MARK: Flyout
-    private func tryFlyout(_ s: String) -> NormalizedPlay? {
+    private func tryFlyout(_ s: String) -> Match? {
         guard s.contains("fly ball") || s.contains("flyout") || s.contains("line drive") ||
               (s.contains("caught") && !s.contains("strike") && !s.contains("steal")) ||
               s.contains("pop up") || s.contains("pop-up") || s.contains("popup") ||
               s.contains("line out") || s.contains("lineout") else { return nil }
         // Guard: "sac fly" or "sacrifice fly" matches "fly" but belongs to trySacFly.
         if s.contains("sac") && (s.contains("fly") || s.contains("sacrifice")) { return nil }
-        let pos = parseOutfieldPosition(s) ?? parseInfieldPosition(s) ?? "8"  // default: CF
-        return ["batter_result": "flyout", "fielder": pos, "outs_recorded": "1"]
+        let explicit = parseOutfieldPosition(s) ?? parseInfieldPosition(s)
+        let pos = explicit ?? "8"  // default: CF
+        return Match(play: ["batter_result": "flyout", "fielder": pos, "outs_recorded": "1"],
+                     usedDefault: explicit == nil)
     }
 
     // MARK: Strikeout
-    private func tryStrikeout(_ s: String) -> NormalizedPlay? {
+    private func tryStrikeout(_ s: String) -> Match? {
         guard s.contains("struck out") || s.contains("strikeout") ||
               s.contains("strike out") || s == "k" else { return nil }
         // Looking (Kl) vs swinging (K): look for "looking" or "called" keyword.
         let looking = s.contains("looking") || s.contains("called")
-        return ["batter_result": looking ? "strikeout_looking" : "strikeout", "outs_recorded": "1"]
+        return Match(play: ["batter_result": looking ? "strikeout_looking" : "strikeout", "outs_recorded": "1"],
+                     usedDefault: false)
     }
 
     // MARK: Walk
-    private func tryWalk(_ s: String) -> NormalizedPlay? {
+    private func tryWalk(_ s: String) -> Match? {
         guard s.contains("walk") || s.contains("base on balls") || s == "bb" ||
               s.contains("intentional walk") || s == "iw" else { return nil }
         let intentional = s.contains("intentional") || s == "iw"
-        return ["batter_result": intentional ? "intentional_walk" : "walk"]
+        return Match(play: ["batter_result": intentional ? "intentional_walk" : "walk"], usedDefault: false)
     }
 
     // MARK: Home run
-    private func tryHomeRun(_ s: String) -> NormalizedPlay? {
+    private func tryHomeRun(_ s: String) -> Match? {
         guard s.contains("home run") || s.contains("homer") || s == "hr" else { return nil }
-        return ["batter_result": "home_run", "runs_scored": "1"]
+        return Match(play: ["batter_result": "home_run", "runs_scored": "1"], usedDefault: false)
     }
 
     // MARK: Single
-    private func trySingle(_ s: String) -> NormalizedPlay? {
+    private func trySingle(_ s: String) -> Match? {
         guard s.contains("single") else { return nil }
         let pos = parseOutfieldPosition(s) ?? parseInfieldPosition(s)
         var play: NormalizedPlay = ["batter_result": "single"]
         if let pos { play["fielder"] = pos }
-        return play
+        return Match(play: play, usedDefault: false)
     }
 
     // MARK: Double
-    private func tryDouble(_ s: String) -> NormalizedPlay? {
+    private func tryDouble(_ s: String) -> Match? {
         // Guard: "double play" was handled by tryDoublePlay earlier.
         guard s.contains("double") && !s.contains("double play") && !s.contains("dp") else { return nil }
         let pos = parseOutfieldPosition(s) ?? parseInfieldPosition(s)
         var play: NormalizedPlay = ["batter_result": "double"]
         if let pos { play["fielder"] = pos }
-        return play
+        return Match(play: play, usedDefault: false)
     }
 
     // MARK: Triple
-    private func tryTriple(_ s: String) -> NormalizedPlay? {
+    private func tryTriple(_ s: String) -> Match? {
         guard s.contains("triple") else { return nil }
         let pos = parseOutfieldPosition(s) ?? parseInfieldPosition(s)
         var play: NormalizedPlay = ["batter_result": "triple"]
         if let pos { play["fielder"] = pos }
-        return play
+        return Match(play: play, usedDefault: false)
     }
 
     // MARK: Hit by pitch
-    private func tryHitByPitch(_ s: String) -> NormalizedPlay? {
+    private func tryHitByPitch(_ s: String) -> Match? {
         guard s.contains("hit by pitch") || s.contains("hbp") ||
               s.contains("plunked") || s.contains("hit by the pitch") else { return nil }
-        return ["batter_result": "hit_by_pitch"]
+        return Match(play: ["batter_result": "hit_by_pitch"], usedDefault: false)
     }
 
     // MARK: Sac fly
-    private func trySacFly(_ s: String) -> NormalizedPlay? {
+    private func trySacFly(_ s: String) -> Match? {
         // "sac fly", "sacrifice fly" — both "sac" and "fly" must be present.
         guard (s.contains("sac") || s.contains("sacrifice")) && s.contains("fly") else { return nil }
         // Guard: "sac bunt" does not contain "fly" but "bunt" — no conflict, but be safe.
         guard !s.contains("bunt") else { return nil }
-        let pos = parseOutfieldPosition(s) ?? "9"  // default: RF
+        let explicit = parseOutfieldPosition(s)
+        let pos = explicit ?? "9"  // default: RF
         var play: NormalizedPlay = ["batter_result": "sac_fly", "outs_recorded": "1"]
         play["fielder"] = pos
-        return play
+        return Match(play: play, usedDefault: explicit == nil)
     }
 
     // MARK: Sac bunt
-    private func trySacBunt(_ s: String) -> NormalizedPlay? {
+    private func trySacBunt(_ s: String) -> Match? {
         // Must contain "bunt" — a bare "sacrifice" must NOT match (else "sacrifice fly"
         // is ambiguous between sac_fly and sac_bunt). "sacrifice" already contains "sac".
         guard s.contains("bunt") && (s.contains("sac") || s.contains("sacrifice")) else { return nil }
         let fielders = parseFielderSequence(s)
         var play: NormalizedPlay = ["batter_result": "sac_bunt", "outs_recorded": "1"]
         if let fielders { play["fielders"] = fielders }
-        return play
+        return Match(play: play, usedDefault: false)
     }
 
     // MARK: Error (reached on error — generic path without a misplay verb)
-    private func tryError(_ s: String) -> NormalizedPlay? {
+    private func tryError(_ s: String) -> Match? {
         // "reached on error", "error by short" → E6
         guard s.contains("error") || (s.contains("reached on") && !s.contains("strike")) else { return nil }
-        let pos = parseInfieldPosition(s) ?? parseOutfieldPosition(s) ?? "6"  // default SS
-        return ["batter_result": "reached_on_error", "error_position": pos]
+        let explicit = parseInfieldPosition(s) ?? parseOutfieldPosition(s)
+        let pos = explicit ?? "6"  // default SS
+        return Match(play: ["batter_result": "reached_on_error", "error_position": pos],
+                     usedDefault: explicit == nil)
     }
 
     // MARK: Double play
-    private func tryDoublePlay(_ s: String) -> NormalizedPlay? {
+    private func tryDoublePlay(_ s: String) -> Match? {
         // "double play" or standalone "dp" (case-normalized to lowercase already).
         guard s.contains("double play") || s == "dp" || s.hasPrefix("dp ") || s.hasSuffix(" dp") else { return nil }
-        let fielders = parseFielderSequence(s) ?? "643"  // default: SS to 2B to 1B
-        return ["batter_result": "double_play", "fielders": fielders, "outs_recorded": "2"]
+        let explicit = parseFielderSequence(s)
+        let fielders = explicit ?? "643"  // default: SS to 2B to 1B
+        return Match(play: ["batter_result": "double_play", "fielders": fielders, "outs_recorded": "2"],
+                     usedDefault: explicit == nil)
     }
 
     // MARK: - Position keyword helpers

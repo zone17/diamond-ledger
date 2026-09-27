@@ -19,6 +19,10 @@
 ///   4. Ambiguity / out-of-grammar throw (never a silent guess, FR-008).
 ///   5. FactBridge misplay shape.  The `reached_on_error` fact dict builds a NormalizedPlay whose
 ///      `touchedOrMisplayedBy` is non-empty (the invariant the real core keys on for Card B).
+///   6. Roster-aware name masking (DL-157 / R22 / KTD7).  Exact-token masking of roster names
+///      before production matching; a masked name plus a defaulted fielder must surface as a
+///      single-candidate clarify (ParseError.ambiguous), never a silent guess. Empty roster ⇒
+///      behavior identical to the pre-DL-157 parser.
 
 import XCTest
 @testable import Parse
@@ -34,6 +38,35 @@ private func transcript(_ text: String, confidence: Int = 90) -> Transcript {
 
 private func parse(_ text: String, confidence: Int = 90) throws -> [String: String] {
     try GrammarParser().parse(transcript(text, confidence: confidence))
+}
+
+/// Roster-aware variant (DL-157): masks `roster` names before production matching.
+private func parse(_ text: String, roster: [String], confidence: Int = 90) throws -> [String: String] {
+    try GrammarParser().parse(transcript(text, confidence: confidence), roster: roster)
+}
+
+/// Asserts the parse throws `ParseError.ambiguous` with exactly ONE candidate whose
+/// `batter_result` is `expectedResult` — the DL-157 "safe miss" shape (clarify, not a guess).
+/// Returns the candidate for further assertions.
+@discardableResult
+private func assertSingleCandidateClarify(
+    _ text: String, roster: [String], expectedResult: String,
+    file: StaticString = #filePath, line: UInt = #line
+) -> [String: String]? {
+    do {
+        let facts = try parse(text, roster: roster)
+        XCTFail("DL-157: '\(text)' with roster \(roster) must surface a clarify, but silently returned \(facts)",
+                file: file, line: line)
+        return nil
+    } catch ParseError.ambiguous(let candidates) {
+        XCTAssertEqual(candidates.count, 1,
+                       "clarify must carry exactly one candidate, got \(candidates)", file: file, line: line)
+        XCTAssertEqual(candidates.first?["batter_result"], expectedResult, file: file, line: line)
+        return candidates.first
+    } catch {
+        XCTFail("DL-157: expected ParseError.ambiguous for '\(text)', got \(error)", file: file, line: line)
+        return nil
+    }
 }
 
 // MARK: - 1. Misplay routing → reached_on_error (Card B path)
@@ -564,5 +597,166 @@ final class DL151FactBridgeMisplayShapeTests: XCTestCase {
         } else {
             XCTFail("groundout must include a batter advance")
         }
+    }
+}
+
+// MARK: - 6. Roster-aware name masking (DL-157 / R22 / KTD7) — never a silent wrong play
+
+final class DL157RosterMaskingTests: XCTestCase {
+
+    // 6a. THE motivating case: a surname containing "right" must NOT become right field, and the
+    //     flyout's center-field default must NOT be returned silently either. The only acceptable
+    //     outcome is a single-candidate clarify carrying the flyout.
+    func test_wright_flyBall_surfacesClarify_neverRightField_neverSilentDefault() {
+        let candidate = assertSingleCandidateClarify("fly ball to wright, caught", roster: ["Wright"],
+                                                     expectedResult: "flyout")
+        XCTAssertNotEqual(candidate?["fielder"], "9",
+                          "masked 'wright' must never be read as right field (9)")
+    }
+
+    // 6b. A position word that survives masking still resolves the fielder — no clarify needed.
+    func test_wright_inCenter_parsesFlyoutToCenter() throws {
+        let f = try parse("fly ball to wright in center, caught", roster: ["Wright"])
+        XCTAssertEqual(f["batter_result"], "flyout")
+        XCTAssertEqual(f["fielder"], "8")
+        XCTAssertEqual(f["outs_recorded"], "1")
+    }
+
+    // 6c. Chosen rule: a roster name IDENTICAL to a grammar keyword ("Short") is still masked.
+    //     The roster is the more specific signal, so "short" is treated as the player, the
+    //     groundout production has no fielder chain, and the play surfaces as a clarify — a safe
+    //     miss rather than a guessed 6-3. (Documented on `GrammarParser.maskRosterNames`.)
+    func test_rosterNameIdenticalToKeyword_short_isMasked_surfacesClarify() {
+        assertSingleCandidateClarify("ground ball to short", roster: ["Short"],
+                                     expectedResult: "groundout")
+        // Even with a second explicit position, the masked "short" removed the first fielder,
+        // so the chain would be a default — still a clarify, never a silent "63".
+        assertSingleCandidateClarify("ground ball to short, threw him out at first", roster: ["Short"],
+                                     expectedResult: "groundout")
+    }
+
+    // 6d. Multi-word roster name is masked as ONE phrase; no position keyword leaks out of it.
+    func test_multiWordName_maskedAsPhrase_noPositionLeaks() {
+        let masked = GrammarParser.maskRosterNames(
+            in: GrammarParser.normalizeForMasking("fly ball to center fielder jones, caught"),
+            roster: ["Center Fielder Jones"])
+        XCTAssertTrue(masked.maskedAny)
+        XCTAssertEqual(masked.masked, "fly ball to \(GrammarParser.namePlaceholder) caught")
+        assertSingleCandidateClarify("fly ball to center fielder jones, caught",
+                                     roster: ["Center Fielder Jones"], expectedResult: "flyout")
+    }
+
+    // 6e. Empty roster ⇒ identical to today's behavior (representative DL-151 sample).
+    func test_emptyRoster_isIdenticalToLegacyBehavior() throws {
+        let cases: [(String, [String: String])] = [
+            ("ground ball to short, threw him out at first",
+             ["batter_result": "groundout", "fielders": "63", "outs_recorded": "1"]),
+            ("ground ball to second, threw him out at first",
+             ["batter_result": "groundout", "fielders": "43", "outs_recorded": "1"]),
+            ("fly ball to center caught for the out",
+             ["batter_result": "flyout", "fielder": "8", "outs_recorded": "1"]),
+            ("sacrifice fly to center",
+             ["batter_result": "sac_fly", "fielder": "8", "outs_recorded": "1"]),
+            ("reached on error by the shortstop",
+             ["batter_result": "reached_on_error", "error_position": "6"]),
+            ("double play short to second to first",
+             ["batter_result": "double_play", "fielders": "643", "outs_recorded": "2"]),
+            ("struck out looking", ["batter_result": "strikeout_looking", "outs_recorded": "1"]),
+            ("walk", ["batter_result": "walk"]),
+            ("home run", ["batter_result": "home_run", "runs_scored": "1"]),
+            ("single", ["batter_result": "single"]),
+            ("hit by pitch", ["batter_result": "hit_by_pitch"]),
+        ]
+        for (text, expected) in cases {
+            XCTAssertEqual(try parse(text), expected, "legacy: \(text)")
+            XCTAssertEqual(try parse(text, roster: []), expected, "empty roster: \(text)")
+        }
+        // Legacy defaults still fire silently with no roster (the pre-DL-157 contract).
+        XCTAssertEqual(try parse("fly ball to wright, caught", roster: [])["fielder"], "9",
+                       "no roster ⇒ no masking ⇒ 'wright' still reads as right field (unchanged)")
+        // Existing throw paths unchanged.
+        XCTAssertThrowsError(try parse("dropped third strike, batter reached first", roster: [])) { e in
+            guard case ParseError.outOfGrammar = e else { XCTFail("expected outOfGrammar, got \(e)"); return }
+        }
+        XCTAssertThrowsError(try parse("the quick brown fox jumps", roster: [])) { e in
+            guard case ParseError.outOfGrammar = e else { XCTFail("expected outOfGrammar, got \(e)"); return }
+        }
+    }
+
+    // 6e'. A roster whose names never occur in the transcript must not change the result either
+    //      (exercises the roster-path normalization on the same representative sample).
+    func test_nonOccurringRoster_isIdenticalToLegacyBehavior() throws {
+        let decoy = ["Zzyzx", "Quentin Blake"]
+        for text in ["ground ball to short, threw him out at first", "fly ball to center caught for the out",
+                     "sacrifice fly to center", "reached on error by the shortstop",
+                     "double play short to second to first", "strikeout looking", "triple to right"] {
+            XCTAssertEqual(try parse(text, roster: decoy), try parse(text), "decoy roster: \(text)")
+        }
+    }
+
+    // 6f. A name that appears twice is masked twice.
+    func test_nameAppearingTwice_isMaskedTwice() {
+        let masked = GrammarParser.maskRosterNames(
+            in: GrammarParser.normalizeForMasking("ground ball wright to wright"), roster: ["Wright"])
+        let ph = GrammarParser.namePlaceholder
+        XCTAssertEqual(masked.masked, "ground ball \(ph) to \(ph)")
+        XCTAssertTrue(masked.maskedAny)
+        assertSingleCandidateClarify("ground ball wright to wright", roster: ["Wright"],
+                                     expectedResult: "groundout")
+    }
+
+    // 6g. Punctuation / case in the roster name: "O'Neil" masks o'neil / oneil / O’Neil alike.
+    func test_rosterNameWithPunctuation_masksAllNormalizedForms() {
+        let ph = GrammarParser.namePlaceholder
+        for form in ["single to o'neil", "single to oneil", "single to O’Neil", "single to O'NEIL,"] {
+            let masked = GrammarParser.maskRosterNames(
+                in: GrammarParser.normalizeForMasking(form), roster: ["O'Neil"])
+            XCTAssertEqual(masked.masked, "single to \(ph)", "form: \(form)")
+            XCTAssertTrue(masked.maskedAny, "form: \(form)")
+        }
+        assertSingleCandidateClarify("fly ball to o'neil, caught", roster: ["O'Neil"],
+                                     expectedResult: "flyout")
+    }
+
+    // 6h. Exact-token only (KTD7): "wright" must NOT mask "wrights" or any longer word.
+    func test_masking_isWholeWordOnly_neverSubstring() {
+        let masked = GrammarParser.maskRosterNames(
+            in: GrammarParser.normalizeForMasking("fly ball to wrights"), roster: ["Wright"])
+        XCTAssertFalse(masked.maskedAny)
+        XCTAssertEqual(masked.masked, "fly ball to wrights")
+    }
+
+    // 6i. The placeholder itself can never satisfy a production (no keyword substring, no
+    //     exact-equality token). Parsing the bare placeholder must be out-of-grammar.
+    func test_placeholder_neverMatchesAProduction() {
+        XCTAssertThrowsError(try parse(GrammarParser.namePlaceholder, roster: ["anyone"])) { e in
+            guard case ParseError.outOfGrammar = e else {
+                XCTFail("placeholder must never match a production, got \(e)"); return
+            }
+        }
+    }
+
+    // 6j. Masking + defaults across the other defaulting productions: sac fly, error, misplay,
+    //     double play — all must clarify, none may return the default silently.
+    func test_maskedName_withDefaultedFielder_clarifies_acrossProductions() {
+        assertSingleCandidateClarify("sacrifice fly to wright", roster: ["Wright"], expectedResult: "sac_fly")
+        assertSingleCandidateClarify("reached on error by wright", roster: ["Wright"], expectedResult: "reached_on_error")
+        // NOTE: "batter reached base" (not "safe at first") — the misplay production reads any
+        // position word, so "first" in "safe at first" would become the error position (a
+        // pre-existing DL-151 behavior, independent of masking; see U3 report).
+        assertSingleCandidateClarify("booted by wright, batter reached base", roster: ["Wright"],
+                                     expectedResult: "reached_on_error")
+        assertSingleCandidateClarify("double play jones to smith to wright", roster: ["Jones", "Smith", "Wright"],
+                                     expectedResult: "double_play")
+    }
+
+    // 6k. Masked name but NO default involved ⇒ a normal successful parse (masking alone is
+    //     not a reason to clarify). "single to wright" carries no fielder default.
+    func test_maskedName_withoutDefault_parsesNormally() throws {
+        let f = try parse("single to wright", roster: ["Wright"])
+        XCTAssertEqual(f["batter_result"], "single")
+        XCTAssertNil(f["fielder"], "masked name yields no fielder — and no guessed one either")
+        let k = try parse("wright struck out", roster: ["Wright"])
+        XCTAssertEqual(k["batter_result"], "strikeout")
     }
 }
