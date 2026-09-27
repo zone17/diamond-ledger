@@ -185,7 +185,7 @@ U9 fixed all four (now `3` unassisted, out-of-grammar, clarify, clarify — pinn
 | roster_collision | 8 | 14 | 0 | 22 |
 | **total** | 126 | 90 | 12 | 228 |
 
-`biasing-pairs.jsonl`: 39 rows, 27 `keep_base`, 12 `override`.
+`biasing-pairs.jsonl`: 39 rows, 28 `keep_base`, 11 `override`.
 
 ### Expectation relabels by U9 (21 rows; no transcript changed, no row removed)
 
@@ -390,3 +390,17 @@ default chain / position remains in the parser. Keywords match whole words only.
 - Variants that merely drop an optional field (e.g. "double to lift" → a double with no fielder)
   were not authored: under the facts-identical rule they would read as confident-wrong although
   the play is correct and merely less specific. Flag for U5 if that class matters.
+
+### F13 (OPEN) — keyword-identical roster names over-clarify
+
+Found by the independent corpus review. When a roster entry is itself a position keyword or a
+position phrase ("First", "Third", "Pitcher", "Center Fielder Jones"), the masker blanks that
+word everywhere, including a destination ("threw him out at first") or a stated position
+("the third baseman", "center fielder Jones"), so the play clarifies although the utterance
+states it. Rows `va-collision-63-first-name`, `va-collision-e3b-third-name`,
+`va-collision-13-pitcher-name`, `va-collision-f8-center-fielder-jones` carry the semantic
+expectation `same_as_base` and show as advisory expectation mismatches until the masker learns
+to mask a keyword-named player only in a name slot. Safe direction (a tap, never a wrong play);
+no gate consequence.
+
+Id convention note: `roster_collision` rows use the `va-collision-` prefix.
