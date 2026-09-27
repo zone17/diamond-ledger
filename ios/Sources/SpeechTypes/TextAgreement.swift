@@ -124,6 +124,19 @@ public enum TokenEditDistance {
         return Double(levenshtein(base, biased)) / Double(longest)
     }
 
+    /// Normalized distance derived from an alignment already computed for the same pair — the
+    /// count of non-`.equal` ops equals `levenshtein(base, biased)`, so this avoids a second
+    /// DP table when the caller also needs the ops.
+    public static func normalized(alignment ops: [AlignmentOp], base: [String], biased: [String]) -> Double {
+        let longest = max(base.count, biased.count)
+        guard longest > 0 else { return 0 }
+        let edits = ops.reduce(0) { count, op in
+            if case .equal = op { return count }
+            return count + 1
+        }
+        return Double(edits) / Double(longest)
+    }
+
     /// Raw word-level Levenshtein distance (number of unit-cost edits).
     public static func levenshtein(_ base: [String], _ biased: [String]) -> Int {
         table(base, biased)[base.count][biased.count]

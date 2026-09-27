@@ -285,14 +285,7 @@ public final class AppState {
     /// de-duplicated case-insensitively (first spelling wins), order preserved. Pure; pinned by
     /// `T157PushToTalkWiringTests`.
     nonisolated static func normalizeRoster(_ names: [String]) -> [String] {
-        var seen = Set<String>()
-        var roster: [String] = []
-        for raw in names {
-            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty, seen.insert(name.lowercased()).inserted else { continue }
-            roster.append(name)
-        }
-        return roster
+        RosterContextBuilder.normalizedNames(names)
     }
 
     /// Called by NewGameView on "Start game". The optional lineups (nine name fields per team on

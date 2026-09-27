@@ -22,7 +22,6 @@ import XCTest
 @testable import UI
 @testable import DiamondSpeech
 import Auth
-import Parse
 
 // MARK: - Recording fake Transcriber
 

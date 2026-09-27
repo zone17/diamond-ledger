@@ -621,20 +621,9 @@ public enum RosterContextBuilder {
     ///     player names are never fully dropped in favor of lexicon overflow.
     public static func build(roster: [String]) -> [String] {
         // Normalize + dedup the two sources independently so we can budget them.
-        func normalize(_ source: [String], into seen: inout Set<String>) -> [String] {
-            var out: [String] = []
-            for raw in source {
-                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { continue }
-                guard seen.insert(trimmed.lowercased()).inserted else { continue }
-                out.append(trimmed)
-            }
-            return out
-        }
-
         var seen = Set<String>()
-        let lexicon = normalize(BaseballLexicon.terms, into: &seen)
-        let rosterPhrases = normalize(roster, into: &seen)
+        let lexicon = normalizedNames(BaseballLexicon.terms, seen: &seen)
+        let rosterPhrases = normalizedNames(roster, seen: &seen)
 
         // Budget: lexicon may take up to (maxPhrases - reservedRosterSlots) when a roster is present.
         let rosterBudget = min(rosterPhrases.count, maxPhrases)
@@ -645,6 +634,25 @@ public enum RosterContextBuilder {
         var out = Array(lexicon.prefix(lexiconCap))
         let remaining = max(0, maxPhrases - out.count)
         out.append(contentsOf: rosterPhrases.prefix(remaining))
+        return out
+    }
+
+    /// Trim, drop empties, case-insensitive de-duplication keeping the first spelling and order.
+    /// Shared by `build(roster:)` and `AppState.normalizeRoster` so the roster the UI holds and
+    /// the roster sent to the recognizer are normalized by one rule.
+    public static func normalizedNames(_ names: [String]) -> [String] {
+        var seen = Set<String>()
+        return normalizedNames(names, seen: &seen)
+    }
+
+    static func normalizedNames(_ names: [String], seen: inout Set<String>) -> [String] {
+        var out: [String] = []
+        for raw in names {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            guard seen.insert(trimmed.lowercased()).inserted else { continue }
+            out.append(trimmed)
+        }
         return out
     }
 }

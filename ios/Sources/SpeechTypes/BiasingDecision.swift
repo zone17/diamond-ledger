@@ -165,13 +165,17 @@ public enum BiasingDecision {
             return keepBase(.biasedConfidenceBelowThreshold)
         }
 
-        // 4. The two hypotheses must agree closely at the token level.
-        guard TokenEditDistance.normalized(baseTokens, biasedTokens) <= policy.agreementThreshold else {
+        // 4. The two hypotheses must agree closely at the token level. One alignment serves
+        //    guards 4–7: the number of non-`.equal` ops IS the Levenshtein distance (see
+        //    `TokenEditDistance.alignment`), so the DP table is built once, not twice.
+        let ops = TokenEditDistance.alignment(base: baseTokens, biased: biasedTokens)
+        guard TokenEditDistance.normalized(alignment: ops, base: baseTokens, biased: biasedTokens)
+                <= policy.agreementThreshold
+        else {
             return keepBase(.divergent)
         }
 
         // 5. Substitution only: an insertion or deletion is a changed play, not a corrected word.
-        let ops = TokenEditDistance.alignment(base: baseTokens, biased: biasedTokens)
         for op in ops {
             switch op {
             case .insert, .delete: return keepBase(.insertionOrDeletion)
@@ -197,12 +201,12 @@ public enum BiasingDecision {
             }
         }
 
-        // 7. A known, higher base confidence wins (R19).
+        // 8. A known, higher base confidence wins (R19).
         if let baseConfidence, baseConfidence > biased.confidence {
             return keepBase(.baseMoreConfident)
         }
 
-        // 8. Override — words corrected, confidence capped unless silent scoring is on (R20).
+        // 9. Override — words corrected, confidence capped unless silent scoring is on (R20).
         let confidence = policy.silentScoringEnabled
             ? biased.confidence
             : min(biased.confidence, policy.cappedConfidence)
