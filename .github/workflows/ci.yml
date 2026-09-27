@@ -653,40 +653,43 @@ jobs:
           fi
 
   ios-build:
-    name: iOS app — xcodebuild (T003 / Story B1)
+    name: "iOS app — build + XCTest (T003 / #182)"
+    # HARD gate (#182). Builds the app from the XcodeGen project and runs the full XCTest suite
+    # (the package's DiamondLedgerTests target) on the newest available iOS 26+ iPhone simulator,
+    # via tools/ci/ios-xctest.sh — the same script as `make ios-test`, so local and CI cannot
+    # drift. It was advisory (continue-on-error) and red on every branch because the UniFFI
+    # XCFramework was never built in CI; the script now builds it (delete-before-regenerate,
+    # ADR-0009) when the simulator slice is missing. Exit 2 when zero tests ran (never green).
+    needs: [core-build]
     runs-on: macos-latest
-    # Advisory: iOS-26 SDK is not available on GitHub-hosted macOS runners (as of 2026-06-01).
-    # The cross-compile legs in cross-compile-matrix already prove Rust compiles for iOS targets.
-    # xcodebuild requires the full Xcode 26.x + iOS 26 SDK, which must be self-hosted or
-    # provisioned when Apple ships the runner image. Remove continue-on-error here to promote
-    # this job to a hard gate once a suitable runner is confirmed.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      - name: xcodebuild (Swift 6, min iOS 26)
-        # Final intent: build the ios/ Swift 6 app (min iOS 26) + run XCTest suite.
-        # Requires the UniFFI XCFramework to be pre-built (or fetched from cache)
-        # and placed in ios/Sources/Core/ before xcodebuild runs.
-        #
-        # ADVISORY — to promote to a hard gate:
-        #   1. Provision a macOS runner with Xcode 26.x (iOS 26 SDK).
-        #   2. Add a 'Cache XCFramework (delete-before-regenerate)' step that restores the
-        #      XCFramework from a cache keyed on Cargo.lock + build-xcframework.sh checksum,
-        #      OR runs `make xcframework` to rebuild it fresh, always deleting the output dir
-        #      first (ADR-0009 cache-pitfall guard: non-uniffi dylib → zero bindgen output).
-        #   3. Remove continue-on-error: true from this job.
+
+      - name: Install pinned Rust toolchain
+        run: rustup show || rustup toolchain install stable --profile minimal
+
+      - name: Add Apple targets (iOS + macOS slices for the XCFramework)
         run: |
-          # NOTE: xcodebuild resolves -project/-scheme relative to the CWD, so this MUST run from
-          # ios/ (the .xcodeproj lives there). The earlier form ran from the repo root with no
-          # -project and failed with "directory does not contain an Xcode project" the moment a
-          # real .xcodeproj was committed — silently red but masked by continue-on-error. (DL-37)
-          if [ -d ios ] && ls ios/*.xcodeproj >/dev/null 2>&1; then
-            cd ios
-            xcodebuild -project DiamondLedger.xcodeproj -scheme DiamondLedger \
-              -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16' build
-          else
-            echo "ios/ Xcode project not yet present — skipping iOS build (placeholder)"
-          fi
+          set -euo pipefail
+          for t in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+                   aarch64-apple-darwin x86_64-apple-darwin; do
+            rustup target add "$t"
+          done
+
+      - name: Cache cargo + target
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-dlscore-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-dlscore-
+
+      - name: Build the app and run the XCTest suite (iOS 26 simulator)
+        run: bash tools/ci/ios-xctest.sh
 
   # ---------------------------------------------------------------------------
   # Transcript→score regression gate (DL-37 / ADR-0015) — HARD gate.

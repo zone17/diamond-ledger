@@ -6,6 +6,44 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0018 — The iOS build + XCTest suite is a hard CI gate (#182)
+
+**Date:** 2026-09-27 · **Status:** Accepted · **Supersedes:** the advisory `ios-build` job (ADR-0002 advisory-CI posture, for this job only)
+
+### Context
+The `ios-build` job ran under `continue-on-error` since the factory was stood up, on the premise that
+hosted macOS runners lacked the iOS 26 SDK. The runner image now ships Xcode 26.6, and the job was
+red on every branch for a different reason: the UniFFI XCFramework was never built in CI, so package
+resolution failed before compiling anything. Meanwhile the XCTest suite (273 tests after DL-157) ran
+only on a developer's Mac, so nothing in CI would catch an iOS regression — the gap the DL-157
+review flagged as the largest remaining verification hole.
+
+### Decision
+`tools/ci/ios-xctest.sh` builds the XCFramework when its simulator slice is missing
+(delete-before-regenerate, ADR-0009), builds the app from the XcodeGen project, and runs the
+package's `DiamondLedgerTests` target through a generated workspace and shared scheme on the newest
+available iOS 26+ iPhone simulator (never a hard-coded device name). Exit 0 only when every test
+passed; 1 on any build or test failure or a missing toolchain on macOS; 2 when zero tests ran;
+non-Darwin prints `SKIP`. The CI `ios-build` job runs that script with no `continue-on-error`;
+`make ios-test` runs the same script locally.
+
+### Why this is the right move
+One script for local and CI removes drift; the generated workspace avoids committing Xcode scheme
+files that encode absolute paths; picking the simulator at runtime survives runner-image rotation.
+Proven red: a deliberately failing test made the script exit 1 and name the test.
+
+### Alternatives Considered
+- **Add a test target to `project.yml` (XcodeGen).** Rejected for now: duplicates the package test
+  target's source membership in a second build description that can drift.
+- **Keep the job advisory.** Rejected: advisory CI masks failures (docs/solutions/workflow-issues/parallel-squad-integration.md).
+
+### Reversibility
+Re-adding `continue-on-error` restores the old posture in one line.
+
+### Impact
+Every PR now pays one macOS job for the XCFramework build plus the simulator run (cargo is cached).
+The job is not yet in the server-side required-checks list; adding it there is an owner decision.
+
 ## ADR-0017 — Voice-accuracy fixture-robustness gate, dl-score CLI additions, and the conservative biasing policy (DL-157)
 
 - **Status:** Accepted

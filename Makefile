@@ -9,7 +9,7 @@
 #   make cli     # build the dl CLI and print its usage
 
 .PHONY: demo test lint gates judgment-gate retrosheet-gate proof-box-gate parity-gate accuracy-gate \
-        cli ffi-check uniffi-bindings xcframework voice-accuracy-gate help
+        cli ffi-check uniffi-bindings xcframework voice-accuracy-gate ios-test help
 .DEFAULT_GOAL := help
 
 CARGO ?= cargo
@@ -35,6 +35,7 @@ help:
 	@echo "  make ffi-check    build dl-core with --features uniffi (FFI surface compiles)"
 	@echo "  make uniffi-bindings  generate Swift bindings from the host dylib (no Mac SDK)"
 	@echo "  make xcframework  build the iOS XCFramework + Swift bindings (needs Xcode)"
+	@echo "  make ios-test           Build the iOS app + run all XCTests on an iOS 26 simulator (Mac + Xcode 26; same as CI)"
 	@echo "  make voice-accuracy-gate  DL-157 mis-heard-transcript robustness gate via dl-score/dl-bias (Mac-only; not in gates)"
 
 # ---------------------------------------------------------------------------
@@ -146,3 +147,9 @@ xcframework:
 voice-accuracy-gate:
 	@echo ">> Voice-accuracy gate (DL-157 — dl-score/dl-bias, Mac-only)"
 	bash evals/runners/voice-accuracy.sh
+
+# iOS app build + full XCTest suite on the newest available iOS 26+ iPhone simulator (#182).
+# Same script as the CI `ios-build` job. Mac + Xcode 26 only, so it is standalone, not in `gates`.
+ios-test:
+	@echo ">> iOS build + XCTest (tools/ci/ios-xctest.sh)"
+	bash tools/ci/ios-xctest.sh

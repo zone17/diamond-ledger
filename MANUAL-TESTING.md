@@ -109,16 +109,16 @@ cd ios && xcodegen generate    # regenerate the app project after the binary tar
    generic "Something went wrong". A completed/empty half-inning exports normally.
 ```
 
-Headless build/test (what CI-equivalent verification looks like):
+Headless build/test — exactly what the CI `ios-build` hard gate runs (#182):
 ```bash
-export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-make xcframework   # build the real-core binary first (see above)
-cd ios && xcodegen generate && cd ..
-xcodebuild -project ios/DiamondLedger.xcodeproj -scheme DiamondLedger \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build   # the app (real core linked)
-xcodebuild -project ios/DiamondLedger.xcodeproj -scheme DiamondLedgerTests \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test    # 63 tests
+make ios-test   # = bash tools/ci/ios-xctest.sh
 ```
+It builds the core XCFramework if the simulator slice is missing, builds the app from the XcodeGen
+project, then runs the full XCTest suite (273 tests as of DL-157) on the newest available iOS 26+
+iPhone simulator. The XcodeGen project has **no test scheme** — the tests live in the SwiftPM
+package's `DiamondLedgerTests` target, and `xcodebuild` prefers the `.xcodeproj` when both exist —
+so the script generates a throwaway workspace plus a shared `DiamondLedgerTests` scheme pointing at
+`ios/`. (`-scheme DiamondLedgerTests` against the `.xcodeproj` does not exist; don't use it.)
 
 > **Status (DL-35 / H1):** the app **builds clean and launches in the iOS 26 simulator with the
 > REAL Rust core injected** (`DiamondCoreClient`), and the full XCTest suite passes (**63/63**,
