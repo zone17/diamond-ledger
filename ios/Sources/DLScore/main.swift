@@ -21,13 +21,25 @@
 // state-dependent Reisner cells) is a documented follow-up, gated on the human gold scorecard.
 //
 // Usage:
-//   dl-score [<file>]        # read transcript lines from <file>, or stdin if omitted
+//   dl-score [--confidence <0..100>] [--roster <name,name,...>] [<file>]
 //   echo "ground ball to short, threw him out at first" | dl-score
+//   dl-score --confidence 60 corpus.txt          # every line parsed as a LOW-confidence transcript
+//   dl-score --roster "Wright,O'Neil" corpus.txt # roster-aware name masking (DL-157)
+//
+// Flags (DL-157, plan KTD1) — both default to the pre-DL-157 behaviour, so a flagless run is
+// byte-identical to the old CLI (evals/runners/transcript-score.sh diffs on that):
+//   --confidence <int>   the integer confidence (0…100) stamped on every Transcript. Default 100.
+//                        Below GrammarParser.lowConfidenceThreshold (70) the parser routes every
+//                        line to the ambiguity path (FR-008) — the harness runs at 60 and 100.
+//   --roster <csv>       comma-separated player names passed to GrammarParser.parse(_:roster:).
+//                        Default none (legacy parse path).
+// An invalid or missing flag value is a usage error: message on stderr, exit 2. Any other
+// `-`-prefixed argument is ignored (as before). The first non-flag argument is the input file.
 //
 // Output: JSON Lines (one JSON object per input line) on stdout. Blank lines and lines whose
-// first non-space char is '#' are skipped (comments). Exit 0 always (it is a measurement tool,
-// not a gate — the runner decides pass/fail). A per-line scoring error is reported in the line's
-// JSON `error` field, never as a process failure.
+// first non-space char is '#' are skipped (comments). Exit 0 always for a well-formed invocation
+// (it is a measurement tool, not a gate — the runner decides pass/fail). A per-line scoring error
+// is reported in the line's JSON `error` field, never as a process failure.
 
 import Foundation
 import SpeechTypes
@@ -101,10 +113,54 @@ func emit(_ line: ScoredLine) {
     }
 }
 
-func readInputLines() -> [String] {
-    let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
+/// Parsed command line. `confidence` / `roster` default to the legacy values so the no-flag path
+/// is unchanged; `inputPath` is the first positional (non-flag) argument, or nil for stdin.
+struct Options {
+    var confidence: Int = 100
+    var roster: [String] = []
+    var inputPath: String? = nil
+}
+
+/// Scan argv for `--confidence <int>` and `--roster <csv>` (each consumes its value), take the
+/// first remaining non-flag argument as the input file, and ignore any other `-`-prefixed
+/// argument (the pre-DL-157 behaviour). Returns nil after printing a usage error to stderr.
+func parseOptions(_ argv: [String]) -> Options? {
+    var opts = Options()
+    var i = 0
+    func usageError(_ msg: String) -> Options? {
+        FileHandle.standardError.write(Data("dl-score: \(msg)\nusage: dl-score [--confidence <0..100>] [--roster <name,name,...>] [<file>]\n".utf8))
+        return nil
+    }
+    while i < argv.count {
+        let arg = argv[i]
+        switch arg {
+        case "--confidence":
+            guard i + 1 < argv.count else { return usageError("--confidence requires a value (0...100)") }
+            guard let value = Int(argv[i + 1]), (0...100).contains(value) else {
+                return usageError("--confidence must be an integer in 0...100; got '\(argv[i + 1])'")
+            }
+            opts.confidence = value
+            i += 2
+        case "--roster":
+            guard i + 1 < argv.count else { return usageError("--roster requires a comma-separated list of names") }
+            opts.roster = argv[i + 1]
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            i += 2
+        default:
+            if !arg.hasPrefix("-"), opts.inputPath == nil {
+                opts.inputPath = arg
+            }
+            i += 1
+        }
+    }
+    return opts
+}
+
+func readInputLines(from path: String?) -> [String] {
     let raw: String
-    if let path = args.first {
+    if let path {
         raw = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
     } else {
         var data = Data()
@@ -123,15 +179,17 @@ struct DLScore {
     static let ownerId = "dl-score-harness"
 
     static func main() async {
+        guard let opts = parseOptions(Array(CommandLine.arguments.dropFirst())) else { exit(2) }
         let parser = GrammarParser()
         let core = DiamondCoreClient()
         var corr = 0
 
-        for rawLine in readInputLines() {
+        for rawLine in readInputLines(from: opts.inputPath) {
             let transcript = rawLine.trimmingCharacters(in: .whitespaces)
             if transcript.isEmpty || transcript.hasPrefix("#") { continue }
             corr += 1
-            await scoreOne(transcript, parser: parser, core: core, corr: corr)
+            await scoreOne(transcript, parser: parser, core: core, corr: corr,
+                           confidence: opts.confidence, roster: opts.roster)
         }
     }
 
@@ -141,14 +199,18 @@ struct DLScore {
         _ transcript: String,
         parser: GrammarParser,
         core: DiamondCoreClient,
-        corr: Int
+        corr: Int,
+        confidence: Int,
+        roster: [String]
     ) async {
         // 1. Grammar parse (transcript → normalized facts). Out-of-grammar / ambiguous /
-        //    empty are SURFACED, never silently guessed (FR-008/FR-017).
+        //    empty are SURFACED, never silently guessed (FR-008/FR-017). The confidence and
+        //    roster come from the CLI flags (defaults: 100, none — the legacy path).
         let facts: NormalizedPlay
         do {
             facts = try parser.parse(
-                Transcript(text: transcript, confidence: 100, engine: .stub, finalizedAt: Date())
+                Transcript(text: transcript, confidence: confidence, engine: .stub, finalizedAt: Date()),
+                roster: roster
             )
         } catch let e as ParseError {
             let reason: String

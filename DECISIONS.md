@@ -6,6 +6,105 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0017 — Voice-accuracy fixture-robustness gate, dl-score CLI additions, and the conservative biasing policy (DL-157)
+
+- **Status:** Accepted
+- **Date:** 2026-09-27
+- **Owner:** Squad B (iOS Voice Client), DL-157
+- **Implements:** Never a silent wrong play (Art. VII / FR-008); labeled measurement
+  (evals/INTERFACE.md §2.4); headless testability of every decision (Art. II / FR-018, R16);
+  ADR-for-every-new-gate (Art. XXXIV).
+- **Tickets:** DL-157; issue #157 (roster biasing); toward #65 (accuracy)
+- **Plan:** `docs/plans/2026-09-26-0919-feat-voice-accuracy-harness-plan.md` (R1, R5, R8, R15, R16; Key Decision 3)
+
+### Context
+
+Issue #157 asks for a second, contextually-biased ASR leg (SFSpeechRecognizer with roster names,
+positions and play words as `contextualStrings`) that may *correct* the base SpeechAnalyzer
+transcript. Its literal acceptance criterion — "require a known base confidence before
+overriding" — is **unreachable** on iOS 26: `AppleTranscriber.confidence(from:)` always returns
+`nil` because `SpeechTranscriber` reports no scalar confidence, so a rule gated on base
+confidence would either never fire or be silently faked. Meanwhile the only headless accuracy
+gate (`transcript-score.sh`, ADR-0015) measures the transcript→score leg at a hard-coded
+confidence of 100 with no roster, so neither the FR-008 low-confidence path nor the DL-157
+roster-masking path (U3) had any off-device evidence, and "does the deterministic pipeline ever
+score a plausibly mis-heard transcript as a wrong play *silently*" had no single answer.
+
+### Decision
+
+1. **New hard gate tier — `evals/runners/voice-accuracy.sh`** (evals/INTERFACE.md §3.1 row).
+   It drives the production pipeline through `dl-score` at confidence **60 and 100** (R5) over
+   the canonical corpus plus an adversarial mis-hearing corpus, and drives `dl-bias` over a
+   biasing-pair corpus (R8), measuring three layers (R1). Exit semantics: **0** pass; **1** a
+   confident-wrong scoring (a mis-heard transcript scored `ok:true` with high confidence and the
+   wrong play), a canonical regression, or a determinism divergence between runs; **2** vacuous
+   (zero rows, or a missing binary on Darwin); **non-Darwin** prints `SKIP` and exits 0. Two new
+   §2.4 labels are mandatory on every report the gate prints: `FIXTURE ROBUSTNESS (advisory —
+   not field accuracy)` for the text-fixture layers and `SYNTHETIC SPEECH (advisory — not field
+   accuracy)` for any TTS-fed layer. Neither is field accuracy; only a gold game is (§2.4).
+2. **`dl-score` gains `--confidence <0..100>` (default 100) and `--roster <csv>` (default none).**
+   Defaults are unchanged, so a flagless run is byte-identical to the pre-DL-157 CLI (verified by
+   diffing the 17 canonical cases against the previous binary; `transcript-score.sh` still diffs on
+   that output). An invalid or missing flag value is a usage error (stderr, exit 2). No output
+   fields were added. `dl-bias` is a **new measurement executable** (`ios/Sources/DLBias`,
+   product `dl-bias`, deps SpeechTypes + Parse): one JSON Line per (base, biased) pair —
+   `decision`, `text`, `confidence`, `uncapped_confidence`, `reason`, `distance` — computed by the
+   *same* `BiasingDecision.decide` the production `BiasingStrategy` calls; exit 0 always, the
+   runner owns pass/fail.
+3. **The conservative biasing policy** (`SpeechTypes/BiasingDecision.swift`; owner-directed
+   2026-09-27, plan Key Decision 3). Because base confidence is nil forever on iOS 26, the rule is
+   built on the biased leg's *measured* confidence plus text agreement. The biased hypothesis may
+   replace the base **only when all of**: biased confidence ≥ the parser threshold (70); token-level
+   edit distance ≤ 0.30; every changed token is in the contextual set; every replaced base token
+   is *out of* the set. Any failed guard keeps the base with its own (nil) confidence — P0b
+   preserved, nothing fabricated. A **silent-scoring switch, default off**, caps an override's
+   confidence below 70: *"the biased engine may correct words, never confidence."* The switch
+   flips only on on-device measurement after T046, and only by the product owner, recorded here.
+
+### Why this is the right move
+
+It gives the FR-008 question one labeled, headless answer with a real exit code, and it makes
+#157's biasing shippable under an honest criterion instead of an unreachable one. Every guard is
+a pure function of two strings, two numbers and a set (R16), so the whole policy is testable on
+macOS today and the corpus grows without touching a device. The default-off cap means the worst
+case of a wrong override is a *better Clarify candidate*, never a silently scored play.
+
+### Alternatives Considered
+
+1. **Implement #157 literally (gate on base confidence).** Rejected: the gate would never open on
+   iOS 26, or would need a faked base confidence — a proxy signal the project forbids.
+2. **Let the biased leg's confidence flow straight into scoring.** Rejected for v1: it lets a
+   contextual engine that has been *told* the roster confirm its own suggestion into a hands-free
+   play with no field evidence. Retained as the silent-scoring switch, off until measured.
+3. **Extend `transcript-score.sh` instead of a new runner.** Rejected: that gate is a frozen
+   byte-diff baseline; mixing confidence sweeps and biasing pairs into it would blur its contract.
+
+### Reversibility
+
+High. The flags are additive with legacy defaults; `dl-bias` and the runner are new, isolated
+artifacts; the policy is one pure type with the switch as a constructor argument.
+
+### Impact
+
+- **Agent-native:** an agent can now probe the low-confidence and roster paths and the biasing
+  decision headlessly, with the same primitives the app uses.
+- **Testing:** third hard gate on `macos-latest`; new labels prevent a fixture number being read
+  as field accuracy. Not covered: real ASR audio (device-bound) — see labels.
+- **Security:** none new; both CLIs read stdin/a file and emit JSON.
+- **Follow-ups:** flip the silent-scoring switch only after on-device measurement post-T046;
+  grow the adversarial and biasing corpora as mis-hearings are observed in the field.
+
+### Amendment note (ADR-0010, DL-80)
+
+ADR-0010's Consequences predate PR #156: `AppleTranscriber` now uses the iOS-26 `SpeechAnalyzer`
+API, and the `contextualStrings` pass it discusses is the *SFSpeechRecognizer* hybrid leg,
+deferred to #157 and governed by this ADR's policy. Separately, the 0.80→0.60 default-confidence
+change for an unmeasured transcript (DL-80) was, until now, recorded only in
+`docs/solutions/logic-errors/loose-substring-guard-silent-misclassification.md`; this ADR is its
+first entry in the decision log. Neither earlier record is rewritten (append-only).
+
+---
+
 ## ADR-0016 — v1 owner identity is on-device Sign in with Apple; no-backend email/password deferred (T081)
 
 - **Status:** Accepted
