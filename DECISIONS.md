@@ -37,7 +37,7 @@ score a plausibly mis-heard transcript as a wrong play *silently*" had no single
    the canonical corpus plus an adversarial mis-hearing corpus, and drives `dl-bias` over a
    biasing-pair corpus (R8), measuring three layers (R1). Exit semantics: **0** pass; **1** a
    confident-wrong scoring (a mis-heard transcript scored `ok:true` with high confidence and the
-   wrong play), a canonical regression, or a determinism divergence between runs; **2** vacuous
+   wrong play), a canonical regression, a biasing-pair decision/text mismatch, or a determinism divergence between runs; **2** vacuous
    (zero rows, or a missing binary on Darwin); **non-Darwin** prints `SKIP` and exits 0. Two new
    §2.4 labels are mandatory on every report the gate prints: `FIXTURE ROBUSTNESS (advisory —
    not field accuracy)` for the text-fixture layers and `SYNTHETIC SPEECH (advisory — not field

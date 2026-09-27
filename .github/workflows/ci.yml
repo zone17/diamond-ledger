@@ -734,3 +734,52 @@ jobs:
         # The runner builds the XCFramework (incl. the macOS slice) + dl-score, then diffs the
         # scored corpus against evals/transcript-regression/cases.jsonl. Hard-fails on any drift.
         run: bash evals/runners/transcript-score.sh
+
+  voice-accuracy:
+    name: Voice-accuracy gate (DL-157 / dl-score + dl-bias)
+    # Hard gate (evals/INTERFACE.md §3.1 / §3.6, ADR-0017). Mirrors the transcript-score job step
+    # for step: same checkout, toolchain, Apple targets and cache. No continue-on-error — a
+    # confident-wrong row, canonical regression, pair mismatch or non-deterministic output is red.
+    needs: [core-build]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install pinned Rust toolchain
+        run: rustup show || rustup toolchain install stable --profile minimal
+
+      - name: Add Apple targets (iOS + macOS slices for the XCFramework)
+        run: |
+          set -euo pipefail
+          for t in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+                   aarch64-apple-darwin x86_64-apple-darwin; do
+            rustup target add "$t"
+          done
+
+      - name: Cache cargo + target
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-dlscore-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-dlscore-
+
+      - name: Tripwire — the gate must go red on a known-bad corpus
+        # A gate never exercised by a failing case is unproven. The tripwire points the runner at
+        # scratch corpora that MUST exit 1 (confident-wrong variant, judgment on a deterministic
+        # base, wrong pair expectation), MUST exit 2 (empty corpus), and a control corpus that
+        # MUST exit 0 with every '%' line labeled. The real corpus is never read here.
+        run: bash tools/tests/voice-accuracy-tripwire.sh
+
+      - name: Run voice-accuracy gate
+        # Builds the XCFramework (macOS slice) + dl-score + dl-bias, scores the canonical corpus
+        # and evals/voice-accuracy/variants.jsonl at confidence 100 and 60, judges
+        # evals/voice-accuracy/biasing-pairs.jsonl with dl-bias, and repeats the whole run for a
+        # byte-diff. Exit 0 pass; 1 confident-wrong / regression / pair mismatch / non-determinism;
+        # 2 no work (never green). Every accuracy-shaped line carries
+        # "FIXTURE ROBUSTNESS (advisory — not field accuracy)" — this is not ASR accuracy.
+        run: bash evals/runners/voice-accuracy.sh

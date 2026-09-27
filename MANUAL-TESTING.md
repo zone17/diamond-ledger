@@ -167,9 +167,17 @@ xcodebuild -project ios/DiamondLedger.xcodeproj -scheme DiamondLedgerTests \
 >   - **Real on-device ASR accuracy (mic → transcript)** — `AppleTranscriber` is now wired to the
 >     real `SpeechAnalyzer(modules: [SpeechTranscriber])` pipeline with a **real `AssetInventory`
 >     model preload** (`preloadAssets()` checks `SpeechTranscriber.supportedLocales` /
->     `installedLocales` and downloads the on-device model over Wi-Fi when absent, FR-021) and an
+>     `installedLocales` and downloads the on-device model over Wi-Fi when absent, FR-021). The
 >     `SFSpeechRecognizer.contextualStrings` biasing pass for the baseball lexicon + roster (iOS 26's
->     `SpeechTranscriber` has no native biasing API — Apple's documented hybrid). **What's compile-
+>     `SpeechTranscriber` has no native biasing API — Apple's documented hybrid) is **enabled behind the
+>     four-guard conservative policy** (`BiasingDecision`, ADR-0017: biased confidence ≥ the parser
+>     threshold, token edit distance ≤ 0.30, every changed token in the contextual set, every replaced
+>     base token out of it) with the **silent-scoring switch OFF** — a correction may fix words but can
+>     never score hands-free. The roster reaches the engine via `setContextualStrings` on the
+>     push-to-talk path. **It is NOT exercised on device yet:** push-to-talk has **no microphone
+>     capture** (T046 — the PTT audio-buffer lifecycle is still a TODO), so no real audio reaches
+>     `SpeechAnalyzer` or the biasing pass on a phone; the policy's only evidence today is headless
+>     (`dl-bias` + `evals/runners/voice-accuracy.sh`, unit tests). **What's compile-
 >     and unit-verified on the Mac/sim:** the real SpeechAnalyzer/SpeechTranscriber/AssetInventory
 >     API compiles against the iOS 26 SDK (zero warnings/errors), engine selection, contextual-
 >     strings assembly, the FR-008 biasing-confidence boundary, PCM construction + the
@@ -177,8 +185,8 @@ xcodebuild -project ios/DiamondLedger.xcodeproj -scheme DiamondLedgerTests \
 >     tests). **What still needs a human + device:** *recognition accuracy itself* (does "ground ball
 >     to short" transcribe correctly?) — `SpeechAnalyzer` **cannot truly run in the simulator** (no
 >     model/mic), so in the sim `EngineSelector` correctly degrades to the WoZ `StubTranscriber`. The
->     real Apple path activates only on a **physical iPhone + iOS 26 + mic**. **This is the DL-80
->     on-device human-verification step.**
+>     real Apple path activates only on a **physical iPhone + iOS 26 + mic**, and only once T046 lands
+>     microphone capture on the PTT path. **This is the DL-80 on-device human-verification step.**
 >   - **sherpa-onnx framework** — `SherpaTranscriber` compiles and the stub path works in tests,
 >     but the real decode requires the sherpa-onnx XCFramework + Parakeet ONNX model bundle (see the
 >     handoff checklist in `ios/Sources/Speech/SherpaTranscriber.swift`).
