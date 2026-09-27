@@ -1,7 +1,7 @@
 ---
 title: A loose multi-signal guard in a safety-critical classifier produces silent wrong judgments
 date: 2026-06-02
-last_updated: 2026-06-02
+last_updated: 2026-09-27
 category: logic-errors
 module: ios/Sources/Parse/GrammarParser
 problem_type: logic_error
@@ -98,6 +98,33 @@ toward confident-and-silent.** A default confidence at/above a clarify threshold
 match, or an unconditional "enhancement" override all violate it the same way. Pin the safe default
 with a structural test (e.g. `assert defaultConfidence < clarifyThreshold`) so a future tweak can't
 silently drift it back across the line.
+
+## Superseded fix: the default fielder itself was the bug (added 2026-09-27, DL-157)
+
+The fix above (PR #153) still ended in a default: `parseInfieldPosition(s) ?? parseOutfieldPosition(s) ?? "6"`.
+That moved the silent guess from "always shortstop" to "shortstop when no position word matched".
+The DL-157 voice-accuracy corpus, authored from play semantics, found the same class across every
+production that defaulted a fielder (groundout 6-3, flyout 8, sac fly 9, misplay 6, double play
+6-4-3): 25 mis-heard variants scored confidently wrong on its first run. The parser was rewritten
+(PR #181) under one rule that replaces all of them:
+
+- **Never guess a fielder.** A production that would need a default surfaces a single-candidate
+  clarify carrying only the chain it actually heard. The scorer confirms or fills in the fielder.
+- **A keyword's role depends on what governs it.** Bare position words (first, short, left…) count
+  as fielders only in a fielding slot: after a fielding preposition or heading an "X to Y" chain
+  (`isFieldingSlot`, `ios/Sources/Parse/GrammarParser.swift`). A lookback past the preposition to a
+  destination word ("safe at first", "reached first", "runner scored from third") excludes the base
+  where someone ended up (`isDestination`). This generalizes the anchor lists above, which were the
+  fragile part.
+- **Whole tokens, never substrings.** "alright" no longer matches "right"; "left center" is a gap
+  between two positions, not either one (`isGapWord`).
+- **Roster names are masked before matching**, and a masked name in a fielding slot forces clarify,
+  so "fly ball to Wright" can never become right field (`maskRosterNames`).
+
+The detection rule this adds to Prevention: **grep the parser for `??` followed by a position
+literal.** Any hit is a silent guess. The eval-gate side of the same finding (expectations authored
+from semantics, one tripwire per hard-fail branch) is in
+[eval-gate-construction-pitfalls](../best-practices/eval-gate-construction-pitfalls.md).
 
 ## Related Issues
 - DL-151 (PR #153) — the grammar hardening + this fix. Caught by the `/ce:review` gate's adversarial
