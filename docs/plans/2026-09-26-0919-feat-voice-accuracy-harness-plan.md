@@ -79,7 +79,7 @@ The harness therefore has to be honest about layers: what it can prove now is fi
 
 - **Hard-fail on the cardinal invariant, not on an accuracy percentage.** A threshold would be a proxy the gate could pass while the real defect exists. Governs R2, R3, R11.
 - **Label every accuracy number by what it proves.** Fixture robustness is not field accuracy; the label is the contract, not the number. Governs R4, R13.
-- **Redesign #157's override rule around the biased leg's measured confidence plus agreement, instead of an unreachable base confidence.** The literal acceptance criterion would ship dead code. Governs R17, R18. *(Proposed, not user-confirmed; see Assumptions.)*
+- **Redesign #157's override rule around the biased leg's measured confidence plus agreement, instead of an unreachable base confidence.** The literal acceptance criterion would ship dead code; the principle is "the biased engine may correct words, never confidence". Governs R17, R18. (session-settled: user-directed — chosen over shipping #157's literal acceptance criterion: base confidence is nil forever on iOS 26, so the literal rule ships an inert pass; the R20 cap keeps silent scoring closed either way.)
 - **Do not open hands-free scoring in this iteration.** Biasing corrects text behind a policy switch that stays off until device-measured evidence exists. Consequence: every voice play stays Clarify-pick plus Card A confirm (one phrase, two taps), so SC-005's one-tap bar and the ADR-0006 usability tripwire measured at T074 cannot pass while this holds. Flip condition: on-device measurement after T046, decided by the product owner and recorded in ADR-0017. Governs R20.
 - **Roster lives UI-side for now.** The core's `LineupSlot` requires a fielding position the New Game screen does not collect, so threading the lineup through the core is deferred. Governs R21.
 
@@ -174,7 +174,6 @@ sequenceDiagram
 
 These are agent bets made without a scoping confirmation; each is cheap to reverse before U1 starts.
 
-- A1. The user accepts re-specifying #157's override rule (R17) instead of its literal acceptance criterion, and accepts changing the pinned `testChoose_baseHasNoConfidence_keepsBase_notBiased` test to pin the new invariant ("nil base and any failed guard keeps base with nil confidence").
 - A2. Hands-free scoring stays closed this iteration (R20). If the user wants biasing to open the silent path now, R20's default flips and the harness's would-be rate becomes the actual rate; the plan otherwise stands.
 - A3. Roster stays UI-side (Key Decision) rather than threading through the core in this plan.
 - A4. Token-level edit distance with the issue's 0.30 starting threshold is acceptable; the threshold is a constant the harness can sweep later.
@@ -399,7 +398,7 @@ U1 → U2 → U3 → U4 → U5 → U6 land as PR 1. U7 depends on U1 and U3 and 
 - `ios/Sources/UI/NewGame/NewGameView.swift` (modify): pass the collected names into `createGame` instead of dropping them.
 - `ios/Sources/UI/PushToTalk/PushToTalkView.swift` (modify): resolve through `TranscriberEngineSelector.resolve()`, call `setContextualStrings(activeRoster)` before `transcribe`, pass the roster to the parser.
 - `ios/Sources/Speech/AppleTranscriber.swift` (modify): `BiasingStrategy` delegates to the U1 decision; `runTranscription` calls `applyBiasing` only when the policy allows and passes the contextual set actually sent to the recognizer.
-- `ios/Tests/AppleTranscriberTests.swift` (modify): re-pin the P0b test to the new invariant; add wiring tests on a fake transcriber that records `setContextualStrings` calls.
+- `ios/Tests/AppleTranscriberTests.swift` (modify): re-pin `testChoose_baseHasNoConfidence_keepsBase_notBiased` to the settled invariant "nil base and any failed guard keeps base with nil confidence" (Key Decision 3); add wiring tests on a fake transcriber that records `setContextualStrings` calls.
 - `ios/Tests/T081ConsentEnforcementTests.swift` (no change; listed to confirm the sign-out path still purges state).
 
 **Approach:**
