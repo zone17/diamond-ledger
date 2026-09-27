@@ -166,9 +166,11 @@ judgment), four misplay-verb judgment rows (booted / misplayed / dropped in left
 by the third baseman), and three guards (misplay verb with batter out → out-of-grammar, two
 plays in one utterance → `ambiguous(`, narrative → out-of-grammar).
 
-Rows deliberately NOT added because today's output is wrong (see findings F8–F10):
-"ground ball, first baseman made the play unassisted", "dropped fly ball in center, runner scored
-safely", "bobbled the grounder, safe at first", "dropped it, batter reaches first".
+Rows deliberately NOT added at authoring time because the output then was wrong (findings
+F7–F9): "ground ball, first baseman made the play unassisted", "dropped fly ball in center,
+runner scored safely", "bobbled the grounder, safe at first", "dropped it, batter reaches first".
+U9 fixed all four (now `3` unassisted, out-of-grammar, clarify, clarify — pinned by
+`DL157NeverGuessAFielderTests`); they can be appended to the canonical set by the reviewer.
 
 ## Row counts
 
@@ -176,14 +178,45 @@ safely", "bobbled the grounder, safe at first", "dropped it, batter reaches firs
 
 | kind | same_as_base | safe_surface | text_layer_undetectable | total |
 |------|---:|---:|---:|---:|
-| mishear | 29 | 32 | 12 | 73 |
-| numeral | 7 | 25 | 0 | 32 |
-| filler | 52 | 1 | 0 | 53 |
-| roster | 39 | 9 | 0 | 48 |
+| mishear | 25 | 36 | 12 | 73 |
+| numeral | 0 | 32 | 0 | 32 |
+| filler | 53 | 0 | 0 | 53 |
+| roster | 40 | 8 | 0 | 48 |
 | roster_collision | 8 | 14 | 0 | 22 |
-| **total** | 135 | 81 | 12 | 228 |
+| **total** | 126 | 90 | 12 | 228 |
 
 `biasing-pairs.jsonl`: 39 rows, 27 `keep_base`, 12 `override`.
+
+### Expectation relabels by U9 (21 rows; no transcript changed, no row removed)
+
+U9 changed the parser so that no production resolves a fielder / chain / strikeout variant from
+a default (KTD-U9, see *Pipeline findings*). Twenty-one `expect` labels were then wrong for one
+of two provable reasons — never to make the gate pass (the hard gate was already green before
+the relabel; the relabel took the advisory expectation-mismatch count from 21 to 0):
+
+- **15 rows `same_as_base` → `safe_surface`: the transcript does not state the fielder / variant,
+  so `same_as_base` could only ever be met by a guess** (the "pass by coincidence" rows the
+  findings already flagged under authoring rule 5). Under Article VII the correct outcome is a
+  clarify. `va-mishear-63-sean`, `va-mishear-63-shore`, `va-mishear-63-firth` (only "at first"
+  survives → chain `3` heard, 6-3 not stated); `va-mishear-f9-wright` ("wright" is not "right"
+  under whole-word matching — the DL-157 motivating bug); `va-mishear-ks-singing`,
+  `va-mishear-kl-cooking`, `va-mishear-kl-booking` (an unknown word in the strikeout modifier
+  slot — the text says neither swinging nor looking; recovering "looking" from "cooking" is
+  fuzzy matching, which KTD7 forbids in the parser and which belongs to the biasing layer);
+  `va-mishear-ess-sean` (no fielder stated); `va-numeral-63-ground-six-three`,
+  `va-numeral-63-groundout-digits`, `va-numeral-f8-eight`, `va-numeral-dp643-six-four-three`,
+  `va-numeral-dp643-digits`, `va-numeral-ess-error-six`, `va-numeral-ess-error-on-6` (numerals
+  are not positions in v1 — a number word in play narration is a count / out / run / inning as
+  often as a fielder, so reading it as a fielder would be a guess; every numeral row now
+  surfaces, which is the label their non-coincidence siblings already carried).
+- **6 rows `safe_surface` → `same_as_base`: the grammar now scores the correct play, so the
+  weaker label under-stated what the pipeline must do.** `va-mishear-f8-flied-out` ("flied
+  out"), `va-mishear-f7-flyball-left` ("flyball"), `va-roster-f8-martinez-flies` ("flies out"),
+  `va-mishear-ks-hyphen` ("strike-out" tokenizes to "strike out") — F10 synonyms, each an
+  unambiguous spelling of a play the grammar already accepts; `va-mishear-sf-centre` ("centre" is
+  the same word as "center"; the sibling rows `va-mishear-f8-centre` / `va-mishear-hr-centre`
+  already expected `same_as_base`); `va-filler-e3b-first-of-all` ("first of all" is filler, the
+  play is E5 as stated; every other filler row expects `same_as_base`).
 
 ## What today's pipeline does with this corpus (commit a0f2220)
 
@@ -198,74 +231,132 @@ Measured with the scratch mirror of the U5 rules; U5's comparator is the authori
 | roster_collision | 8 | 13 | 0 | **1** |
 | **total** | 129 | 62 | 12 | **25** |
 
-The 25 confident-wrong rows are the rows whose `expect` the pipeline does not meet today. They
-are the findings below, not authoring errors: each was checked against play semantics and the
-expectation is what is correct. **The gate is expected to be red on this corpus until the
-findings are fixed or explicitly waived by the reviewer.**
+The 25 confident-wrong rows were the rows whose `expect` the pipeline did not meet at a0f2220.
+They were the findings below, not authoring errors: each was checked against play semantics and
+the expectation is what is correct. The gate was red on this corpus until U9 fixed them.
 
-`dl-bias`: 37 of 39 pairs match; the 2 mismatches are finding B1 (both `bp-adversarial-insert-*`
-rows override where a correct policy keeps the base).
+`dl-bias` at a0f2220: 37 of 39 pairs matched; the 2 mismatches were finding B1 (both
+`bp-adversarial-insert-*` rows overrode where a correct policy keeps the base).
+
+## What the pipeline does with this corpus after U9 (`bash evals/runners/voice-accuracy.sh`)
+
+Measured by the real gate (U5's comparator), two identical runs, after the U9 parser change and
+the 21-row relabel above:
+
+| kind | same as base | safe miss (clarify / out-of-grammar) | text-layer undetectable | **confident-wrong** |
+|------|---:|---:|---:|---:|
+| mishear | 25 | 36 (18 / 18) | 12 | **0** |
+| numeral | 0 | 32 (18 / 14) | 0 | **0** |
+| filler | 53 | 0 | 0 | **0** |
+| roster | 40 | 8 (8 / 0) | 0 | **0** |
+| roster_collision | 8 | 14 (14 / 0) | 0 | **0** |
+| **total** | 126 | 90 | 12 | **0** |
+
+Hard signal: **0 confident-wrong rows, 0 canonical regressions (56/56 `transcript-score.sh`,
+no canonical row changed), 0 pair mismatches, deterministic across two runs — PASS.**
+Advisory: expectation mismatches 0; clarify rate @100 = 59/248 = 23.8% of parseable rows
+(was 7.4% at a0f2220 — the difference is exactly the former silent defaults now surfacing).
+The 12 `text_layer_undetectable` rows still score the wrong play with confidence, as designed
+(a substituted position word is a valid play; only the ASR leg can catch it).
 
 ## Pipeline findings
 
-Everything observed today that is wrong or that hides a defect. Row ids are the evidence.
+Everything observed at a0f2220 that was wrong or that hid a defect. Row ids are the evidence.
+Each finding carries its U9 status: **FIXED** (with the rule now in `GrammarParser.swift`,
+pinned by `DL157NeverGuessAFielderTests` in `ios/Tests/DL151GrammarHardeningTests.swift`) or
+**OPEN** (with why).
+
+The U9 rule (KTD-U9): a production resolves a fielder, a fielder chain, or a strikeout variant
+ONLY from what the utterance explicitly says; when it cannot, it still matches (the play TYPE is
+known) but `parse` throws `ParseError.ambiguous(candidates: [thatPlay])` — a single-candidate
+clarify — so the Clarify sheet offers the play and the scorer supplies the fielder. No hard-coded
+default chain / position remains in the parser. Keywords match whole words only.
 
 ### Text→score leg (`GrammarParser` / core)
 
-- **F1. Groundout default `63` fires when only one position word survives.** A 4-3 or 5-3
-  whose "second"/"third" or "first" is mis-heard is scored as a confident 6-3.
+- **F1. Groundout default `63` fires when only one position word survives.** **FIXED.** A
+  groundout is complete only with two explicit positions (or one plus "unassisted"); otherwise
+  it is a clarify whose candidate carries the partial chain actually heard (`3` for "… at
+  first"), never an invented one. At a0f2220 a 4-3 or 5-3 whose "second"/"third" or "first"
+  was mis-heard was scored as a confident 6-3.
   Rows: `va-mishear-43-sickened`, `va-mishear-43-thirst`, `va-mishear-53-thud`,
   `va-mishear-53-fist`, `va-numeral-43-ground-four-three`, `va-numeral-43-groundout-digits`,
-  `va-numeral-43-ground-4-to-3`, `va-numeral-53-ground-five-three`. The same default makes
+  `va-numeral-43-ground-4-to-3`, `va-numeral-53-ground-five-three`. The same default made
   `va-mishear-63-sean/shore/firth`, `va-numeral-63-ground-six-three`,
-  `va-numeral-63-groundout-digits` pass *by coincidence* (the base is 6-3).
-- **F2. Flyout default `8` fires when the outfield word is mis-heard.** F7/F9 become F8.
+  `va-numeral-63-groundout-digits` pass *by coincidence* (the base is 6-3); those five are
+  relabelled `safe_surface` (see *Expectation relabels by U9*).
+- **F2. Flyout default `8` fires when the outfield word is mis-heard.** **FIXED** — no
+  explicit position → clarify with no fielder. F7/F9 became F8.
   Rows: `va-mishear-f7-loft`, `va-mishear-f7-lift`, `va-mishear-f9-write`, `va-mishear-f9-rite`,
   `va-numeral-f7-seven`, `va-numeral-f7-fly-ball-7`. `va-mishear-f8-centre` and
-  `va-numeral-f8-eight` pass by coincidence.
-- **F3. Sac-fly default `9`.** "sacrifice fly to centre" / "to enter" become SF9.
-  Rows: `va-mishear-sf-centre`, `va-mishear-sf-enter`.
-- **F4. Strikeout defaults to swinging.** "strikeout cooking/booking" (a mis-heard "looking")
-  is scored as a swinging K. Rows: `va-mishear-kl-cooking`, `va-mishear-kl-booking`.
-  Lower severity (the Reisner catalyst is `K` either way) but the fact differs.
-- **F5. Substring keyword matching absorbs filler words.** "right," / "alright," prepends
-  fielder 9 (`963`); "first of all," reverses the chain (`36`). Rows: `va-filler-63-right`,
-  `va-filler-63-alright`, `va-filler-63-first-of-all`, `va-filler-43-right`. Note "alright"
-  matches because `positionKeywords` are substring-matched, not whole-word.
-- **F6. Roster masking with a partial chain scores a wrong explicit chain (DL-157 gap).** The
-  clarify invariant fires only when a production *defaulted*. When a masked name removes one
-  fielder but two position words remain, the production builds a wrong explicit chain and
-  returns it silently: "double play short to second to first" with roster `["Short"]` → a
-  deterministic 4-3 double play (the 6-4-3 contested-credit judgment disappears);
-  "double play Wright to second to first" → `43`; "ground ball, Wright to second to first" → a
-  4-3 groundout. Rows: `va-collision-dp643-short-name`, `va-roster-dp643-wright-partial-chain`,
-  `va-roster-63-wright-partial-chain`. Suggested rule: masked-name AND any fielder-chain
-  production → clarify, regardless of default.
+  `va-numeral-f8-eight` passed by coincidence (the first now scores F8 because "centre" is a
+  synonym; the second is relabelled `safe_surface`).
+- **F3. Sac-fly default `9`.** **FIXED** — same rule; "centre" / "centre field" added as the
+  British spelling of the same word (not a mis-hearing), so `va-mishear-sf-centre` is SF8.
+  "to enter" is a clarify. Rows: `va-mishear-sf-centre`, `va-mishear-sf-enter`.
+- **F4. Strikeout defaults to swinging.** **FIXED (narrowest rule).** "looking"/"called"/
+  "watching" → Kl; "swinging"/"swings"/"swung" → K; a BARE strikeout — nothing after the
+  phrase, a new clause ("struck out, runner safe at third"), a masked name, or a function /
+  filler word — keeps the ONE documented default (K), because the canonical rows `struck out`
+  and DL-154 pin a bare strikeout as swinging. Any OTHER content word in the modifier slot
+  ("strikeout cooking / booking / singing") is a mis-heard modifier → clarify offering BOTH
+  variants as candidates. The two rows are relabelled `safe_surface`: the text does not say
+  "looking", and recovering it is fuzzy matching (KTD7 forbids it in the parser; it is the
+  biasing layer's job). Rows: `va-mishear-kl-cooking`, `va-mishear-kl-booking`.
+- **F5. Substring keyword matching absorbs filler words.** **FIXED** — the transcript is
+  tokenized and every keyword / phrase matches whole tokens only ("alright" ≠ "right",
+  "wright" ≠ "right", "terror" ≠ "error"); a BARE direction / ordinal word ("right", "left",
+  "center", "first", "second", "third", "short") is a fielder only in a fielding slot (after
+  "to / at / by / in / from / into / toward(s)", articles skipped, or as the head of an "X to Y"
+  chain); phrase forms ("right field", "third baseman", "shortstop", "pitcher") always count; a
+  base named as a destination ("safe at first", "reached first", "advanced to third", "runner on
+  third") is never a fielder. Rows: `va-filler-63-right`, `va-filler-63-alright`,
+  `va-filler-63-first-of-all`, `va-filler-43-right` (all 6-3 / 4-3 now).
+- **F6. Roster masking with a partial chain scores a wrong explicit chain (DL-157 gap).**
+  **FIXED** — a masked name that sits in a FIELDING SLOT ("to Wright", "by Jones", "Wright to
+  second to first") is a lost fielder: every fielder-requiring production (groundout, flyout,
+  sac fly, error / misplay, double play) surfaces a clarify even when the remaining explicit
+  positions would form a complete chain. A masked name qualified by its position ("Wright at
+  short", "Jones in center") or outside a fielding slot ("Wright threw him out at first",
+  "Garcia grounds to short", "single to Wright") never forces a clarify on its own — this is
+  narrower than the suggested "masked-name AND any chain production" rule, which would have
+  turned the six `va-roster-*-threw / -at-short / -grounds` rows (all `same_as_base`) into
+  clarifies. Rows: `va-collision-dp643-short-name`, `va-roster-dp643-wright-partial-chain`,
+  `va-roster-63-wright-partial-chain`.
 - **F7. `error_position` is taken from the batter's destination when the fielder word is
-  lost.** "error on the turd baseman, batter reached first" → E3 (from "reached first"), as
-  does "error on Garcia, batter reached first" (roster), "first of all, error on the third
-  baseman …", and roster `["Third"]`. Surfaces as Card B of the right kind (safe miss under the
-  comparator), but the card shows the wrong fielder. Rows: `va-mishear-e3b-turd`,
-  `va-roster-e3b-garcia-no-position`, `va-filler-e3b-first-of-all`,
-  `va-collision-e3b-third-name`, `va-numeral-e3b-error-five`, `va-numeral-e3b-error-on-5`.
-  Same root cause in the canonical candidates "bobbled the grounder, safe at first" and
-  "dropped it, batter reaches first" (both E3 today) — not added to the canonical set.
-- **F8. Unassisted groundout scored as 6-3.** "ground ball, first baseman made the play
-  unassisted" → `63`. Not added to the canonical set. (The DL-151 test accepts this as v1
-  behaviour; from play semantics it is a silent wrong play.)
-- **F9. "dropped fly ball in center, runner scored safely" scores a confident F8.** The
-  `tryMisplay` fly-ball guard's comment says the case is left out-of-grammar for manual entry,
-  but the transcript falls through to `tryFlyout` and records the batter out. Not added to the
-  canonical set.
-- **F10. Grammar gaps that surface safely (recorded, not failures):** "flied out to center",
-  "flyball to left field", "fly out to 8", "Martinez flies out to center", "strike-out swinging",
-  "F7"/"F8"/"E6"/"E5" notation, bare numerals. All out-of-grammar today. `BaseballLexicon` primes
-  the biased engine with "fly out"/"flyout" but the grammar only accepts "fly ball"/"flyout".
-- **F11. Double-play numerals pass by coincidence:** "six four three double play" and "6-4-3
-  double play" match the base only because the DP default is `643`; the 4-6-3 siblings
-  (`va-numeral-dp463-*`) surface as the same judgment kind with the wrong chain on the card.
+  lost.** **FIXED** — the error / misplay position is the earliest explicit fielder mention;
+  destinations are excluded (F5 rule); no mention → clarify with no `error_position`. The four
+  "not added" canonical candidates now clarify (see *Canonical set expansion*); the DL-151
+  tests 1c / 1d / 1e that blessed the E3 / E6 guess now assert the clarify shape. Rows:
+  `va-mishear-e3b-turd`, `va-roster-e3b-garcia-no-position`, `va-filler-e3b-first-of-all`
+  (now E5, relabelled `same_as_base`), `va-collision-e3b-third-name`,
+  `va-numeral-e3b-error-five`, `va-numeral-e3b-error-on-5`.
+- **F8. Unassisted groundout scored as 6-3.** **FIXED** — one explicit position plus
+  "unassisted" is a complete chain (`3`); the core accepts it and renders catalyst `3`. The
+  DL-151 test now asserts `3`.
+- **F9. "dropped fly ball in center, runner scored safely" scores a confident F8.** **FIXED** —
+  `tryFlyout` declines when a misplay verb is present; the utterance is out-of-grammar (manual
+  entry), which is what the `tryMisplay` guard comment always claimed.
+- **F10. Grammar gaps that surface safely.** **PARTLY FIXED.** Added where the meaning is
+  unambiguous: "fly out", "flied out", "flies out", "flyball", "lined out", "pop out",
+  "ground out"/"grounds"/"grounded"/"groundball", "homers"/"homered"/"homerun", "walks",
+  "singled"/"singles", "doubled"/"doubles", "tripled"/"triples", "strike-out" (hyphens split
+  into words), "sack fly/bunt", "short stop", "centre". **OPEN by design:** "F7"/"E6" notation
+  and bare / embedded numerals ("fly out to 8", "6-3 groundout", "error five") stay out of
+  grammar or clarify — a number word is too overloaded in play narration (counts, outs, runs,
+  innings) to be read as a fielder without guessing.
+- **F11. Double-play numerals pass by coincidence.** **FIXED** — no default `643`; fewer than
+  two explicit positions → clarify with no chain. `va-numeral-dp643-*` relabelled
+  `safe_surface`; the 4-6-3 siblings clarify instead of showing a wrong chain on the card.
 - **F12. Bare "sacrifice bunt" renders `SH1-3`** with no fielders in the facts (core default
-  rendering). The canonical row `tr-sacbunt` therefore carries no `expect_reisner_catalyst`.
+  rendering). **OPEN** — this default lives in `FactBridge` / the core (`ios/Sources/Core`,
+  outside U9's parser-only lane), not in the grammar; the parser emits no fielders for a bare
+  sac bunt, so the fix is a core / bridge change. The canonical row `tr-sacbunt` still carries
+  no `expect_reisner_catalyst`. Note the same bridge defaults exist for a confirmed clarify
+  candidate without a fielder (groundout → 6-3, flyout → 8, sac fly → 9, error → 6, DP →
+  6-4-3): after the scorer confirms a fielder-less candidate on the Clarify sheet, the bridge
+  fills the conventional chain. That is a human-confirmed play, not a silent one, but the
+  sheet should let the scorer set the fielder — UI follow-up, not parser.
 
 ### Biasing decision (`dl-bias` / `BiasingDecision`)
 
