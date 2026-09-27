@@ -130,11 +130,11 @@ consumed gesture: further drag changes in the same touch never start a new captu
 Scoping confirmation was skipped (`confirm:auto`); these are unconfirmed bets.
 
 - A1. Requesting permissions at New Game is acceptable UX; the alternative is a first-launch onboarding step.
-- A5. Removing the facilitator panel from release builds is acceptable; owner demos use DEBUG/TestFlight-debug builds until the labeled demo mode (deferred) exists.
-- A6. When active games are later restored from disk, restore must run readiness too; today a relaunch drops the game, so a new game always re-runs it.
 - A2. A 15-second cap is long enough for any single play call.
 - A3. `.playAndRecord` + `.spokenAudio` is an acceptable starting mode; accuracy tuning is deferred.
 - A4. The DEBUG diagnostics export is acceptable as the evaluation-record source; release builds only log.
+- A5. Removing the facilitator panel from release builds is acceptable; owner demos use DEBUG/TestFlight-debug builds until the labeled demo mode (deferred) exists.
+- A6. When active games are later restored from disk, restore must run readiness too; today a relaunch drops the game, so a new game always re-runs it.
 
 ### Sequencing
 
