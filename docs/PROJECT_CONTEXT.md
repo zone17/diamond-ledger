@@ -65,6 +65,7 @@ Retrosheet valued beyond SABR) is **confidence-L, untested**.
 | **0007** | **v1 tech architecture: Rust core + UniFFI parity · two-engine ASR · pinned `cwevent` v0.10.0 · event-sourced SQLite/CloudKit · first slice US1+US2+US3** |
 | **0008** | Cargo **workspace root at repo root** (members must live below root) · toolchain pin bumped 1.83→1.96 (proptest MSRV) |
 | **0009** | **UniFFI wired (H1/T037)**: feature-gated derives + `custom_newtype!` + `CoreFfiError` enum + in-crate bindgen + `make xcframework` (delete-before-regenerate cache guard) · CLI event-log persistence (#128) · #127 trigger-priority reconcile (0 kind-disagreements, SC-003 intact) |
+| **0017** | **Voice-accuracy fixture-robustness gate** (hard-fails only on confident-wrong / canonical regression / pair mismatch / silent score at confidence 60 / non-determinism) · `dl-score --confidence/--roster` · `dl-bias` · conservative biasing: the biased engine may correct words, never confidence (substitution-only, cap below the parser threshold, silent scoring off) |
 
 ## 5. Critical invariants (spec 001 — the probe broke these once; keep them)
 
@@ -97,6 +98,7 @@ the underlying detail docs.
 | `/watch-ci` gate choreography (+ `skipped`≠`failure`) | `workflow-issues/watch-ci-gate-choreography.md` |
 | Private-repo branch-protection fallback · unauthored template root commit | `conventions/` |
 | SwiftUI swipe-dismissible `.sheet` → reconcile owner state in `onDismiss` (gesture-dismiss skips button handlers) | `ui-bugs/swiftui-sheet-ondismiss-state-reconciliation.md` |
+| **Eval-gate construction pitfalls** (P1-1) — output as data; SKIP≠PASS; one tripwire per hard-fail branch and per "safe" bucket; a hard signal on every measured leg; expectations from semantics, never captured output | `best-practices/eval-gate-construction-pitfalls.md` |
 | **A privacy gate is keyed to the identity it protects, and deletes what preceded it** (P1-5) — a device-global consent answer leaks across owners on a shared device; data collected before the gate must be purged when the gate says no | `logic-errors/privacy-gate-scoped-to-device-not-identity.md` |
 
 ## 7. Anti-patterns (do not reintroduce)
@@ -104,6 +106,10 @@ the underlying detail docs.
 - **Classifying/gating on a caller-supplied label/type** instead of the underlying facts (exploitable).
 - **Un-instrumented measurement gates** — a "0 / 100%" criterion that no code can make fail passes
   vacuously. Wire an adversarial corpus that trips it.
+- **Eval expectations captured from the pipeline's own output** — freezes today's bug as the baseline.
+  Author from domain semantics; an independent reviewer reads rows before freeze (DL-157, P1-1).
+- **A "safe"/advisory bucket that doesn't compare the facts it carries** — a wrong fielder riding a
+  judgment card passed as "safe" until the review reproduced it (DL-157).
 - **Spec Kit `NNN-` branch names** (fail the Article XVIII CI regex) — use `feat/<squad>/<TICKET>-<slug>`.
 - **A `build/` source dir** (silently `.gitignore`d) — name it `app/` or force-add.
 - **Committing/pushing to `main`** (hook-blocked) — always branch + PR; `/watch-ci` after.
