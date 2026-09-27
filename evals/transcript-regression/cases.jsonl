@@ -15,3 +15,42 @@
 {"id":"tr-judgment-error-3b","transcript":"error on the third baseman, batter reached first","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_judgment_kind":"hitVsError","expect_reisner_catalyst":"5"}
 {"id":"tr-guard-dropped-third-strike","transcript":"dropped third strike, batter reached first","expect_ok":false,"expect_classification":"parse_error","expect_judgment_required":false,"expect_error":"out_of_grammar"}
 {"id":"tr-guard-gibberish","transcript":"the quick brown fox jumps","expect_ok":false,"expect_classification":"parse_error","expect_judgment_required":false,"expect_error":"out_of_grammar"}
+{"id":"tr-intentional-walk","transcript":"intentional walk","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"IBB"}
+{"id":"tr-walk-base-on-balls","transcript":"base on balls","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"BB"}
+{"id":"tr-groundout-53","transcript":"ground ball to third, threw him out at first","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"5-3"}
+{"id":"tr-groundout-13","transcript":"ground ball to the pitcher, threw him out at first","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"1-3"}
+{"id":"tr-groundout-36","transcript":"ground ball, first to short","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"3-6"}
+{"id":"tr-groundout-43-over","transcript":"ground ball to second, over to first","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"4-3"}
+{"id":"tr-flyout-7","transcript":"fly ball to left field","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"7"}
+{"id":"tr-flyout-9","transcript":"fly ball to right field","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"9"}
+{"id":"tr-lineout-8","transcript":"line drive to center, caught","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"8"}
+{"id":"tr-popout-2","transcript":"pop up to the catcher","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"2"}
+{"id":"tr-flyout-caught-by-8","transcript":"caught by center fielder","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"8"}
+{"id":"tr-strikeout-struck-out","transcript":"struck out","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"K"}
+{"id":"tr-strikeout-struck-out-looking","transcript":"struck out looking","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"K"}
+{"id":"tr-strikeout-called-third-strike","transcript":"struck out on a called third strike","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"K"}
+{"id":"tr-strikeout-runner-safe-third","transcript":"struck out, runner safe at third","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"K"}
+{"id":"tr-homerun-homer-left","transcript":"homer to left field","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"HR"}
+{"id":"tr-single-left","transcript":"single to left","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"1B-7"}
+{"id":"tr-single-right-field","transcript":"single to right field","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"1B-9"}
+{"id":"tr-single-hit-a","transcript":"hit a single","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"1B"}
+{"id":"tr-double-right","transcript":"hit double to right","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"2B"}
+{"id":"tr-double-center-field","transcript":"double to center field","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"2B"}
+{"id":"tr-double-standup","transcript":"stand-up double","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"2B"}
+{"id":"tr-triple-center","transcript":"triple to center","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"3B"}
+{"id":"tr-hbp-plunked","transcript":"plunked","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"HBP"}
+{"id":"tr-sacfly-9","transcript":"sacrifice fly to right","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"SF9"}
+{"id":"tr-sacfly-7","transcript":"sac fly to left field","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"SF7"}
+{"id":"tr-sacbunt","transcript":"sacrifice bunt","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false}
+{"id":"tr-sacbunt-pitcher","transcript":"sac bunt to the pitcher","expect_ok":true,"expect_classification":"deterministic","expect_judgment_required":false,"expect_reisner_catalyst":"SH1-3"}
+{"id":"tr-judgment-error-by-short","transcript":"reached on error by short","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_judgment_kind":"hitVsError","expect_reisner_catalyst":"6"}
+{"id":"tr-judgment-dp-643","transcript":"double play short to second to first","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_judgment_kind":"contestedCredit","expect_reisner_catalyst":"6-4-3"}
+{"id":"tr-judgment-dp-463","transcript":"double play second to short to first","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_judgment_kind":"contestedCredit","expect_reisner_catalyst":"4-6-3"}
+{"id":"tr-judgment-dp-543","transcript":"ground ball, double play third to second to first","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_judgment_kind":"contestedCredit","expect_reisner_catalyst":"5-4-3"}
+{"id":"tr-judgment-misplay-booted-short","transcript":"booted by short, batter safe at first","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_judgment_kind":"hitVsError","expect_reisner_catalyst":"6"}
+{"id":"tr-judgment-misplay-grounder-short","transcript":"misplayed grounder to short, reached first","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_judgment_kind":"hitVsError","expect_reisner_catalyst":"6"}
+{"id":"tr-judgment-misplay-left-field","transcript":"dropped in left field, batter safe at first","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_judgment_kind":"hitVsError","expect_reisner_catalyst":"7"}
+{"id":"tr-judgment-misplay-third-baseman","transcript":"muffed by the third baseman, batter safe at first","expect_ok":true,"expect_classification":"judgment","expect_judgment_required":true,"expect_judgment_kind":"hitVsError","expect_reisner_catalyst":"5"}
+{"id":"tr-guard-dropped-throw-batter-out","transcript":"dropped the throw, out at first","expect_ok":false,"expect_classification":"parse_error","expect_judgment_required":false,"expect_error":"out_of_grammar"}
+{"id":"tr-guard-two-plays-ambiguous","transcript":"walk to first then hit a single","expect_ok":false,"expect_classification":"parse_error","expect_judgment_required":false,"expect_error":"ambiguous("}
+{"id":"tr-guard-oog-narrative","transcript":"the runner was safe on a spectacular diving catch followed by a pickle","expect_ok":false,"expect_classification":"parse_error","expect_judgment_required":false,"expect_error":"out_of_grammar"}

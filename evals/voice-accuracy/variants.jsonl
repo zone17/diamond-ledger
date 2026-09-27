@@ -1,0 +1,228 @@
+{"id": "va-mishear-63-sean", "base_id": "tr-groundout-63", "kind": "mishear", "transcript": "ground ball to sean, threw him out at first", "expect": "same_as_base"}
+{"id": "va-mishear-63-shore", "base_id": "tr-groundout-63", "kind": "mishear", "transcript": "ground ball to shore, threw him out at first", "expect": "same_as_base"}
+{"id": "va-mishear-63-firth", "base_id": "tr-groundout-63", "kind": "mishear", "transcript": "ground ball to short, threw him out at firth", "expect": "same_as_base"}
+{"id": "va-mishear-63-round", "base_id": "tr-groundout-63", "kind": "mishear", "transcript": "round ball to short, threw him out at first", "expect": "safe_surface"}
+{"id": "va-mishear-63-grand", "base_id": "tr-groundout-63", "kind": "mishear", "transcript": "grand ball to short, threw him out at first", "expect": "safe_surface"}
+{"id": "va-mishear-63-through", "base_id": "tr-groundout-63", "kind": "mishear", "transcript": "ground ball to short, through him out at first", "expect": "same_as_base"}
+{"id": "va-mishear-63-to-second", "base_id": "tr-groundout-63", "kind": "mishear", "transcript": "ground ball to second, threw him out at first", "expect": "text_layer_undetectable"}
+{"id": "va-mishear-63-to-third", "base_id": "tr-groundout-63", "kind": "mishear", "transcript": "ground ball to third, threw him out at first", "expect": "text_layer_undetectable"}
+{"id": "va-mishear-43-sickened", "base_id": "tr-groundout-43", "kind": "mishear", "transcript": "ground ball to sickened, threw him out at first", "expect": "safe_surface"}
+{"id": "va-mishear-43-thirst", "base_id": "tr-groundout-43", "kind": "mishear", "transcript": "ground ball to second, threw him out at thirst", "expect": "safe_surface"}
+{"id": "va-mishear-43-grounder", "base_id": "tr-groundout-43", "kind": "mishear", "transcript": "grounder to second, threw him out at first", "expect": "same_as_base"}
+{"id": "va-mishear-43-to-short", "base_id": "tr-groundout-43", "kind": "mishear", "transcript": "ground ball to short, threw him out at first", "expect": "text_layer_undetectable"}
+{"id": "va-mishear-53-thud", "base_id": "tr-groundout-53", "kind": "mishear", "transcript": "ground ball to thud, threw him out at first", "expect": "safe_surface"}
+{"id": "va-mishear-53-baseman", "base_id": "tr-groundout-53", "kind": "mishear", "transcript": "ground ball to the third baseman, threw him out at first", "expect": "same_as_base"}
+{"id": "va-mishear-53-fist", "base_id": "tr-groundout-53", "kind": "mishear", "transcript": "ground ball to third, threw him out at fist", "expect": "safe_surface"}
+{"id": "va-mishear-f8-flied", "base_id": "tr-flyout-8", "kind": "mishear", "transcript": "flied ball to center caught for the out", "expect": "same_as_base"}
+{"id": "va-mishear-f8-centre", "base_id": "tr-flyout-8", "kind": "mishear", "transcript": "fly ball to centre caught for the out", "expect": "same_as_base"}
+{"id": "va-mishear-f8-cot", "base_id": "tr-flyout-8", "kind": "mishear", "transcript": "fly ball to center cot for the out", "expect": "same_as_base"}
+{"id": "va-mishear-f8-flied-out", "base_id": "tr-flyout-8", "kind": "mishear", "transcript": "flied out to center", "expect": "safe_surface"}
+{"id": "va-mishear-f8-to-left", "base_id": "tr-flyout-8", "kind": "mishear", "transcript": "fly ball to left caught for the out", "expect": "text_layer_undetectable"}
+{"id": "va-mishear-f8-to-right", "base_id": "tr-flyout-8", "kind": "mishear", "transcript": "fly ball to right caught for the out", "expect": "text_layer_undetectable"}
+{"id": "va-mishear-f7-loft", "base_id": "tr-flyout-7", "kind": "mishear", "transcript": "fly ball to loft field", "expect": "safe_surface"}
+{"id": "va-mishear-f7-lift", "base_id": "tr-flyout-7", "kind": "mishear", "transcript": "fly ball to lift field", "expect": "safe_surface"}
+{"id": "va-mishear-f7-flyball-left", "base_id": "tr-flyout-7", "kind": "mishear", "transcript": "flyball to left field", "expect": "safe_surface"}
+{"id": "va-mishear-f9-write", "base_id": "tr-flyout-9", "kind": "mishear", "transcript": "fly ball to write field", "expect": "safe_surface"}
+{"id": "va-mishear-f9-wright", "base_id": "tr-flyout-9", "kind": "mishear", "transcript": "fly ball to wright field", "expect": "same_as_base"}
+{"id": "va-mishear-f9-rite", "base_id": "tr-flyout-9", "kind": "mishear", "transcript": "fly ball to rite field", "expect": "safe_surface"}
+{"id": "va-mishear-ks-strike-out", "base_id": "tr-strikeout-swinging", "kind": "mishear", "transcript": "strike out swinging", "expect": "same_as_base"}
+{"id": "va-mishear-ks-singing", "base_id": "tr-strikeout-swinging", "kind": "mishear", "transcript": "strikeout singing", "expect": "same_as_base"}
+{"id": "va-mishear-ks-hyphen", "base_id": "tr-strikeout-swinging", "kind": "mishear", "transcript": "strike-out swinging", "expect": "safe_surface"}
+{"id": "va-mishear-ks-psych", "base_id": "tr-strikeout-swinging", "kind": "mishear", "transcript": "psych out swinging", "expect": "safe_surface"}
+{"id": "va-mishear-ks-looking", "base_id": "tr-strikeout-swinging", "kind": "mishear", "transcript": "strikeout looking", "expect": "text_layer_undetectable"}
+{"id": "va-mishear-kl-cooking", "base_id": "tr-strikeout-looking", "kind": "mishear", "transcript": "strikeout cooking", "expect": "same_as_base"}
+{"id": "va-mishear-kl-booking", "base_id": "tr-strikeout-looking", "kind": "mishear", "transcript": "strikeout booking", "expect": "same_as_base"}
+{"id": "va-mishear-kl-called", "base_id": "tr-strikeout-looking", "kind": "mishear", "transcript": "strikeout called", "expect": "same_as_base"}
+{"id": "va-mishear-kl-struck", "base_id": "tr-strikeout-looking", "kind": "mishear", "transcript": "struck out looking", "expect": "same_as_base"}
+{"id": "va-mishear-walk-walked", "base_id": "tr-walk", "kind": "mishear", "transcript": "walked", "expect": "same_as_base"}
+{"id": "va-mishear-walk-wok", "base_id": "tr-walk", "kind": "mishear", "transcript": "wok", "expect": "safe_surface"}
+{"id": "va-mishear-walk-balk", "base_id": "tr-walk", "kind": "mishear", "transcript": "balk", "expect": "safe_surface"}
+{"id": "va-mishear-walk-walt", "base_id": "tr-walk", "kind": "mishear", "transcript": "walt", "expect": "safe_surface"}
+{"id": "va-mishear-hr-centre", "base_id": "tr-homerun-center", "kind": "mishear", "transcript": "home run to centre", "expect": "same_as_base"}
+{"id": "va-mishear-hr-homerun", "base_id": "tr-homerun-center", "kind": "mishear", "transcript": "homerun to center", "expect": "same_as_base"}
+{"id": "va-mishear-hr-home-ron", "base_id": "tr-homerun-center", "kind": "mishear", "transcript": "home ron to center", "expect": "safe_surface"}
+{"id": "va-mishear-hr-hum-run", "base_id": "tr-homerun-center", "kind": "mishear", "transcript": "hum run to center", "expect": "safe_surface"}
+{"id": "va-mishear-2b-trouble", "base_id": "tr-double", "kind": "mishear", "transcript": "trouble to left", "expect": "safe_surface"}
+{"id": "va-mishear-2b-doubled", "base_id": "tr-double", "kind": "mishear", "transcript": "doubled to left", "expect": "same_as_base"}
+{"id": "va-mishear-2b-bubble", "base_id": "tr-double", "kind": "mishear", "transcript": "bubble to left", "expect": "safe_surface"}
+{"id": "va-mishear-2b-single", "base_id": "tr-double", "kind": "mishear", "transcript": "single to left", "expect": "text_layer_undetectable"}
+{"id": "va-mishear-3b-tripple", "base_id": "tr-triple", "kind": "mishear", "transcript": "tripple to right", "expect": "safe_surface"}
+{"id": "va-mishear-3b-tripled", "base_id": "tr-triple", "kind": "mishear", "transcript": "tripled to right", "expect": "same_as_base"}
+{"id": "va-mishear-3b-trickle", "base_id": "tr-triple", "kind": "mishear", "transcript": "trickle to right", "expect": "safe_surface"}
+{"id": "va-mishear-3b-double", "base_id": "tr-triple", "kind": "mishear", "transcript": "double to right", "expect": "text_layer_undetectable"}
+{"id": "va-mishear-1b-singled", "base_id": "tr-single", "kind": "mishear", "transcript": "singled", "expect": "same_as_base"}
+{"id": "va-mishear-1b-signal", "base_id": "tr-single", "kind": "mishear", "transcript": "signal", "expect": "safe_surface"}
+{"id": "va-mishear-1b-shingle", "base_id": "tr-single", "kind": "mishear", "transcript": "shingle", "expect": "safe_surface"}
+{"id": "va-mishear-1b-double", "base_id": "tr-single", "kind": "mishear", "transcript": "double", "expect": "text_layer_undetectable"}
+{"id": "va-mishear-hbp-the-pitch", "base_id": "tr-hbp", "kind": "mishear", "transcript": "hit by the pitch", "expect": "same_as_base"}
+{"id": "va-mishear-hbp-pinch", "base_id": "tr-hbp", "kind": "mishear", "transcript": "hit by pinch", "expect": "safe_surface"}
+{"id": "va-mishear-hbp-my", "base_id": "tr-hbp", "kind": "mishear", "transcript": "hit my pitch", "expect": "safe_surface"}
+{"id": "va-mishear-sf-centre", "base_id": "tr-sacfly", "kind": "mishear", "transcript": "sacrifice fly to centre", "expect": "safe_surface"}
+{"id": "va-mishear-sf-enter", "base_id": "tr-sacfly", "kind": "mishear", "transcript": "sacrifice fly to enter", "expect": "safe_surface"}
+{"id": "va-mishear-sf-flight", "base_id": "tr-sacfly", "kind": "mishear", "transcript": "sacrifice flight to center", "expect": "safe_surface"}
+{"id": "va-mishear-sf-sack", "base_id": "tr-sacfly", "kind": "mishear", "transcript": "sack fly to center", "expect": "same_as_base"}
+{"id": "va-mishear-sf-to-left", "base_id": "tr-sacfly", "kind": "mishear", "transcript": "sacrifice fly to left", "expect": "text_layer_undetectable"}
+{"id": "va-mishear-ess-short-stop", "base_id": "tr-judgment-error-ss", "kind": "mishear", "transcript": "reached on error by the short stop", "expect": "same_as_base"}
+{"id": "va-mishear-ess-air", "base_id": "tr-judgment-error-ss", "kind": "mishear", "transcript": "reached on air by the shortstop", "expect": "same_as_base"}
+{"id": "va-mishear-ess-sean", "base_id": "tr-judgment-error-ss", "kind": "mishear", "transcript": "reached on error by the sean", "expect": "same_as_base"}
+{"id": "va-mishear-ess-terror", "base_id": "tr-judgment-error-ss", "kind": "mishear", "transcript": "reached on terror by the shortstop", "expect": "same_as_base"}
+{"id": "va-mishear-ess-second", "base_id": "tr-judgment-error-ss", "kind": "mishear", "transcript": "reached on error by the second baseman", "expect": "text_layer_undetectable"}
+{"id": "va-mishear-e3b-turd", "base_id": "tr-judgment-error-3b", "kind": "mishear", "transcript": "error on the turd baseman, batter reached first", "expect": "safe_surface"}
+{"id": "va-mishear-e3b-arrow", "base_id": "tr-judgment-error-3b", "kind": "mishear", "transcript": "arrow on the third baseman, batter reached first", "expect": "safe_surface"}
+{"id": "va-mishear-e3b-better", "base_id": "tr-judgment-error-3b", "kind": "mishear", "transcript": "error on the third baseman, better reached first", "expect": "same_as_base"}
+{"id": "va-mishear-e3b-first-baseman", "base_id": "tr-judgment-error-3b", "kind": "mishear", "transcript": "error on the first baseman, batter reached first", "expect": "text_layer_undetectable"}
+{"id": "va-numeral-63-six-three", "base_id": "tr-groundout-63", "kind": "numeral", "transcript": "six three", "expect": "safe_surface"}
+{"id": "va-numeral-63-digits", "base_id": "tr-groundout-63", "kind": "numeral", "transcript": "6 3", "expect": "safe_surface"}
+{"id": "va-numeral-63-six-to-three", "base_id": "tr-groundout-63", "kind": "numeral", "transcript": "six to three", "expect": "safe_surface"}
+{"id": "va-numeral-63-sixty-three", "base_id": "tr-groundout-63", "kind": "numeral", "transcript": "sixty-three", "expect": "safe_surface"}
+{"id": "va-numeral-63-ground-six-three", "base_id": "tr-groundout-63", "kind": "numeral", "transcript": "ground ball six three", "expect": "same_as_base"}
+{"id": "va-numeral-63-groundout-digits", "base_id": "tr-groundout-63", "kind": "numeral", "transcript": "6-3 groundout", "expect": "same_as_base"}
+{"id": "va-numeral-43-four-three", "base_id": "tr-groundout-43", "kind": "numeral", "transcript": "four three", "expect": "safe_surface"}
+{"id": "va-numeral-43-digits", "base_id": "tr-groundout-43", "kind": "numeral", "transcript": "4 3", "expect": "safe_surface"}
+{"id": "va-numeral-43-ground-four-three", "base_id": "tr-groundout-43", "kind": "numeral", "transcript": "ground ball four three", "expect": "safe_surface"}
+{"id": "va-numeral-43-groundout-digits", "base_id": "tr-groundout-43", "kind": "numeral", "transcript": "4-3 groundout", "expect": "safe_surface"}
+{"id": "va-numeral-43-ground-4-to-3", "base_id": "tr-groundout-43", "kind": "numeral", "transcript": "ground ball, 4 to 3", "expect": "safe_surface"}
+{"id": "va-numeral-53-five-three", "base_id": "tr-groundout-53", "kind": "numeral", "transcript": "five three", "expect": "safe_surface"}
+{"id": "va-numeral-53-ground-five-three", "base_id": "tr-groundout-53", "kind": "numeral", "transcript": "ground ball five three", "expect": "safe_surface"}
+{"id": "va-numeral-53-digits", "base_id": "tr-groundout-53", "kind": "numeral", "transcript": "5-3", "expect": "safe_surface"}
+{"id": "va-numeral-f8-eight", "base_id": "tr-flyout-8", "kind": "numeral", "transcript": "fly ball, eight", "expect": "same_as_base"}
+{"id": "va-numeral-f8-f8", "base_id": "tr-flyout-8", "kind": "numeral", "transcript": "F8", "expect": "safe_surface"}
+{"id": "va-numeral-f8-fly-out-to-8", "base_id": "tr-flyout-8", "kind": "numeral", "transcript": "fly out to 8", "expect": "safe_surface"}
+{"id": "va-numeral-f7-seven", "base_id": "tr-flyout-7", "kind": "numeral", "transcript": "fly ball, seven", "expect": "safe_surface"}
+{"id": "va-numeral-f7-f7", "base_id": "tr-flyout-7", "kind": "numeral", "transcript": "F7", "expect": "safe_surface"}
+{"id": "va-numeral-f7-fly-ball-7", "base_id": "tr-flyout-7", "kind": "numeral", "transcript": "fly ball to 7", "expect": "safe_surface"}
+{"id": "va-numeral-dp643-six-four-three", "base_id": "tr-judgment-dp-643", "kind": "numeral", "transcript": "six four three double play", "expect": "same_as_base"}
+{"id": "va-numeral-dp643-digits", "base_id": "tr-judgment-dp-643", "kind": "numeral", "transcript": "6-4-3 double play", "expect": "same_as_base"}
+{"id": "va-numeral-dp643-bare", "base_id": "tr-judgment-dp-643", "kind": "numeral", "transcript": "six four three", "expect": "safe_surface"}
+{"id": "va-numeral-dp463-four-six-three", "base_id": "tr-judgment-dp-463", "kind": "numeral", "transcript": "four six three double play", "expect": "safe_surface"}
+{"id": "va-numeral-dp463-digits", "base_id": "tr-judgment-dp-463", "kind": "numeral", "transcript": "4-6-3 double play", "expect": "safe_surface"}
+{"id": "va-numeral-dp463-bare", "base_id": "tr-judgment-dp-463", "kind": "numeral", "transcript": "four six three", "expect": "safe_surface"}
+{"id": "va-numeral-ess-e6", "base_id": "tr-judgment-error-ss", "kind": "numeral", "transcript": "E6", "expect": "safe_surface"}
+{"id": "va-numeral-ess-error-six", "base_id": "tr-judgment-error-ss", "kind": "numeral", "transcript": "error six", "expect": "same_as_base"}
+{"id": "va-numeral-ess-error-on-6", "base_id": "tr-judgment-error-ss", "kind": "numeral", "transcript": "error on 6", "expect": "same_as_base"}
+{"id": "va-numeral-e3b-e5", "base_id": "tr-judgment-error-3b", "kind": "numeral", "transcript": "E5, batter reached first", "expect": "safe_surface"}
+{"id": "va-numeral-e3b-error-five", "base_id": "tr-judgment-error-3b", "kind": "numeral", "transcript": "error five, batter reached first", "expect": "safe_surface"}
+{"id": "va-numeral-e3b-error-on-5", "base_id": "tr-judgment-error-3b", "kind": "numeral", "transcript": "error on 5", "expect": "safe_surface"}
+{"id": "va-filler-63-uh", "base_id": "tr-groundout-63", "kind": "filler", "transcript": "uh ground ball to short, threw him out at first", "expect": "same_as_base"}
+{"id": "va-filler-63-um-okay", "base_id": "tr-groundout-63", "kind": "filler", "transcript": "um, okay, ground ball to short, threw him out at first", "expect": "same_as_base"}
+{"id": "va-filler-63-so-yeah", "base_id": "tr-groundout-63", "kind": "filler", "transcript": "so ground ball to short, threw him out at first, yeah", "expect": "same_as_base"}
+{"id": "va-filler-63-mid-uh", "base_id": "tr-groundout-63", "kind": "filler", "transcript": "ground ball to short, uh, threw him out at first", "expect": "same_as_base"}
+{"id": "va-filler-63-right", "base_id": "tr-groundout-63", "kind": "filler", "transcript": "right, ground ball to short, threw him out at first", "expect": "same_as_base"}
+{"id": "va-filler-63-alright", "base_id": "tr-groundout-63", "kind": "filler", "transcript": "alright, ground ball to short, threw him out at first", "expect": "same_as_base"}
+{"id": "va-filler-63-first-of-all", "base_id": "tr-groundout-63", "kind": "filler", "transcript": "first of all, ground ball to short, threw him out at first", "expect": "same_as_base"}
+{"id": "va-filler-43-uh", "base_id": "tr-groundout-43", "kind": "filler", "transcript": "uh ground ball to second, threw him out at first", "expect": "same_as_base"}
+{"id": "va-filler-43-um-okay", "base_id": "tr-groundout-43", "kind": "filler", "transcript": "um okay ground ball to second, threw him out at first", "expect": "same_as_base"}
+{"id": "va-filler-43-yeah", "base_id": "tr-groundout-43", "kind": "filler", "transcript": "ground ball to second, threw him out at first, yeah", "expect": "same_as_base"}
+{"id": "va-filler-43-right", "base_id": "tr-groundout-43", "kind": "filler", "transcript": "right, ground ball to second, threw him out at first", "expect": "same_as_base"}
+{"id": "va-filler-f8-uh", "base_id": "tr-flyout-8", "kind": "filler", "transcript": "uh fly ball to center caught for the out", "expect": "same_as_base"}
+{"id": "va-filler-f8-um", "base_id": "tr-flyout-8", "kind": "filler", "transcript": "fly ball to center, um, caught for the out", "expect": "same_as_base"}
+{"id": "va-filler-f8-so-yeah", "base_id": "tr-flyout-8", "kind": "filler", "transcript": "so, fly ball to center caught for the out, yeah", "expect": "same_as_base"}
+{"id": "va-filler-f8-alright", "base_id": "tr-flyout-8", "kind": "filler", "transcript": "alright fly ball to center caught for the out", "expect": "same_as_base"}
+{"id": "va-filler-f7-alright", "base_id": "tr-flyout-7", "kind": "filler", "transcript": "alright, fly ball to left field", "expect": "same_as_base"}
+{"id": "va-filler-f7-right-so", "base_id": "tr-flyout-7", "kind": "filler", "transcript": "right so, fly ball to left field", "expect": "same_as_base"}
+{"id": "va-filler-f7-uh", "base_id": "tr-flyout-7", "kind": "filler", "transcript": "uh, fly ball to left field, yeah", "expect": "same_as_base"}
+{"id": "va-filler-ks-uh", "base_id": "tr-strikeout-swinging", "kind": "filler", "transcript": "uh strikeout swinging", "expect": "same_as_base"}
+{"id": "va-filler-ks-yeah", "base_id": "tr-strikeout-swinging", "kind": "filler", "transcript": "strikeout swinging, yeah", "expect": "same_as_base"}
+{"id": "va-filler-ks-um-okay", "base_id": "tr-strikeout-swinging", "kind": "filler", "transcript": "um okay strikeout swinging", "expect": "same_as_base"}
+{"id": "va-filler-kl-uh", "base_id": "tr-strikeout-looking", "kind": "filler", "transcript": "uh strikeout looking", "expect": "same_as_base"}
+{"id": "va-filler-kl-yeah", "base_id": "tr-strikeout-looking", "kind": "filler", "transcript": "strikeout looking, yeah", "expect": "same_as_base"}
+{"id": "va-filler-kl-so", "base_id": "tr-strikeout-looking", "kind": "filler", "transcript": "so, strikeout looking", "expect": "same_as_base"}
+{"id": "va-filler-walk-uh", "base_id": "tr-walk", "kind": "filler", "transcript": "uh, walk", "expect": "same_as_base"}
+{"id": "va-filler-walk-yeah", "base_id": "tr-walk", "kind": "filler", "transcript": "walk, yeah", "expect": "same_as_base"}
+{"id": "va-filler-walk-um-okay", "base_id": "tr-walk", "kind": "filler", "transcript": "um okay, walk", "expect": "same_as_base"}
+{"id": "va-filler-hr-uh", "base_id": "tr-homerun-center", "kind": "filler", "transcript": "uh home run to center", "expect": "same_as_base"}
+{"id": "va-filler-hr-yeah", "base_id": "tr-homerun-center", "kind": "filler", "transcript": "home run to center, yeah", "expect": "same_as_base"}
+{"id": "va-filler-hr-um-okay", "base_id": "tr-homerun-center", "kind": "filler", "transcript": "um okay home run to center", "expect": "same_as_base"}
+{"id": "va-filler-2b-uh", "base_id": "tr-double", "kind": "filler", "transcript": "uh double to left", "expect": "same_as_base"}
+{"id": "va-filler-2b-yeah", "base_id": "tr-double", "kind": "filler", "transcript": "double to left, yeah", "expect": "same_as_base"}
+{"id": "va-filler-2b-so", "base_id": "tr-double", "kind": "filler", "transcript": "so, double to left", "expect": "same_as_base"}
+{"id": "va-filler-3b-uh", "base_id": "tr-triple", "kind": "filler", "transcript": "uh triple to right", "expect": "same_as_base"}
+{"id": "va-filler-3b-yeah", "base_id": "tr-triple", "kind": "filler", "transcript": "triple to right, yeah", "expect": "same_as_base"}
+{"id": "va-filler-3b-um-okay", "base_id": "tr-triple", "kind": "filler", "transcript": "um, okay, triple to right", "expect": "same_as_base"}
+{"id": "va-filler-1b-uh", "base_id": "tr-single", "kind": "filler", "transcript": "uh single", "expect": "same_as_base"}
+{"id": "va-filler-1b-yeah", "base_id": "tr-single", "kind": "filler", "transcript": "single, yeah", "expect": "same_as_base"}
+{"id": "va-filler-1b-um-okay", "base_id": "tr-single", "kind": "filler", "transcript": "um, okay, single", "expect": "same_as_base"}
+{"id": "va-filler-hbp-uh", "base_id": "tr-hbp", "kind": "filler", "transcript": "uh hit by pitch", "expect": "same_as_base"}
+{"id": "va-filler-hbp-yeah", "base_id": "tr-hbp", "kind": "filler", "transcript": "hit by pitch, yeah", "expect": "same_as_base"}
+{"id": "va-filler-hbp-um-okay", "base_id": "tr-hbp", "kind": "filler", "transcript": "um okay hit by pitch", "expect": "same_as_base"}
+{"id": "va-filler-sf-uh", "base_id": "tr-sacfly", "kind": "filler", "transcript": "uh sacrifice fly to center", "expect": "same_as_base"}
+{"id": "va-filler-sf-yeah", "base_id": "tr-sacfly", "kind": "filler", "transcript": "sacrifice fly to center, yeah", "expect": "same_as_base"}
+{"id": "va-filler-sf-um-okay", "base_id": "tr-sacfly", "kind": "filler", "transcript": "um okay sacrifice fly to center", "expect": "same_as_base"}
+{"id": "va-filler-sf-right", "base_id": "tr-sacfly", "kind": "filler", "transcript": "right, sacrifice fly to center", "expect": "same_as_base"}
+{"id": "va-filler-ess-uh", "base_id": "tr-judgment-error-ss", "kind": "filler", "transcript": "uh reached on error by the shortstop", "expect": "same_as_base"}
+{"id": "va-filler-ess-yeah", "base_id": "tr-judgment-error-ss", "kind": "filler", "transcript": "reached on error by the shortstop, yeah", "expect": "same_as_base"}
+{"id": "va-filler-ess-um-okay", "base_id": "tr-judgment-error-ss", "kind": "filler", "transcript": "um, okay, reached on error by the shortstop", "expect": "same_as_base"}
+{"id": "va-filler-e3b-uh", "base_id": "tr-judgment-error-3b", "kind": "filler", "transcript": "uh error on the third baseman, batter reached first", "expect": "same_as_base"}
+{"id": "va-filler-e3b-so-yeah", "base_id": "tr-judgment-error-3b", "kind": "filler", "transcript": "so error on the third baseman, batter reached first, yeah", "expect": "same_as_base"}
+{"id": "va-filler-e3b-um-okay", "base_id": "tr-judgment-error-3b", "kind": "filler", "transcript": "um, okay, error on the third baseman, batter reached first", "expect": "same_as_base"}
+{"id": "va-filler-e3b-first-of-all", "base_id": "tr-judgment-error-3b", "kind": "filler", "transcript": "first of all, error on the third baseman, batter reached first", "expect": "safe_surface"}
+{"id": "va-roster-63-wright-threw", "base_id": "tr-groundout-63", "kind": "roster", "transcript": "ground ball to short, Wright threw him out at first", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-roster-63-jones-threw", "base_id": "tr-groundout-63", "kind": "roster", "transcript": "ground ball to short, Jones threw him out at first", "expect": "same_as_base", "roster": ["Jones"]}
+{"id": "va-roster-63-garcia-grounds", "base_id": "tr-groundout-63", "kind": "roster", "transcript": "Garcia grounds to short, threw him out at first", "expect": "same_as_base", "roster": ["Garcia"]}
+{"id": "va-roster-63-wright-at-short", "base_id": "tr-groundout-63", "kind": "roster", "transcript": "ground ball to Wright at short, threw him out at first", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-roster-63-jones-no-position", "base_id": "tr-groundout-63", "kind": "roster", "transcript": "ground ball to Jones, threw him out at first", "expect": "safe_surface", "roster": ["Jones"]}
+{"id": "va-roster-43-jones-threw", "base_id": "tr-groundout-43", "kind": "roster", "transcript": "ground ball to second, Jones threw him out at first", "expect": "same_as_base", "roster": ["Jones"]}
+{"id": "va-roster-43-garcia-at-second", "base_id": "tr-groundout-43", "kind": "roster", "transcript": "ground ball to Garcia at second, threw him out at first", "expect": "same_as_base", "roster": ["Garcia"]}
+{"id": "va-roster-43-garcia-no-position", "base_id": "tr-groundout-43", "kind": "roster", "transcript": "ground ball to Garcia, threw him out at first", "expect": "safe_surface", "roster": ["Garcia"]}
+{"id": "va-roster-f8-wright-in-center", "base_id": "tr-flyout-8", "kind": "roster", "transcript": "fly ball to Wright in center, caught for the out", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-roster-f8-jones-caught", "base_id": "tr-flyout-8", "kind": "roster", "transcript": "fly ball to center, Jones caught it for the out", "expect": "same_as_base", "roster": ["Jones"]}
+{"id": "va-roster-f8-jones-no-position", "base_id": "tr-flyout-8", "kind": "roster", "transcript": "fly ball to Jones, caught for the out", "expect": "safe_surface", "roster": ["Jones"]}
+{"id": "va-roster-f8-martinez-flies", "base_id": "tr-flyout-8", "kind": "roster", "transcript": "Martinez flies out to center", "expect": "safe_surface", "roster": ["Martinez"]}
+{"id": "va-roster-ks-wright", "base_id": "tr-strikeout-swinging", "kind": "roster", "transcript": "Wright strikeout swinging", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-roster-ks-jones-trailing", "base_id": "tr-strikeout-swinging", "kind": "roster", "transcript": "strikeout swinging, Jones", "expect": "same_as_base", "roster": ["Jones"]}
+{"id": "va-roster-ks-garcia-struck", "base_id": "tr-strikeout-swinging", "kind": "roster", "transcript": "Garcia struck out swinging", "expect": "same_as_base", "roster": ["Garcia"]}
+{"id": "va-roster-kl-jones", "base_id": "tr-strikeout-looking", "kind": "roster", "transcript": "Jones strikeout looking", "expect": "same_as_base", "roster": ["Jones"]}
+{"id": "va-roster-kl-garcia-struck", "base_id": "tr-strikeout-looking", "kind": "roster", "transcript": "Garcia struck out looking", "expect": "same_as_base", "roster": ["Garcia"]}
+{"id": "va-roster-kl-wright-trailing", "base_id": "tr-strikeout-looking", "kind": "roster", "transcript": "strikeout looking, Wright", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-roster-walk-jones-walks", "base_id": "tr-walk", "kind": "roster", "transcript": "Jones walks", "expect": "same_as_base", "roster": ["Jones"]}
+{"id": "va-roster-walk-to-wright", "base_id": "tr-walk", "kind": "roster", "transcript": "walk to Wright", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-roster-walk-garcia", "base_id": "tr-walk", "kind": "roster", "transcript": "Garcia, walk", "expect": "same_as_base", "roster": ["Garcia"]}
+{"id": "va-roster-hr-wright", "base_id": "tr-homerun-center", "kind": "roster", "transcript": "Wright, home run to center", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-roster-hr-by-jones", "base_id": "tr-homerun-center", "kind": "roster", "transcript": "home run to center by Jones", "expect": "same_as_base", "roster": ["Jones"]}
+{"id": "va-roster-hr-garcia-homers", "base_id": "tr-homerun-center", "kind": "roster", "transcript": "Garcia homers to center", "expect": "same_as_base", "roster": ["Garcia"]}
+{"id": "va-roster-2b-jones", "base_id": "tr-double", "kind": "roster", "transcript": "Jones, double to left", "expect": "same_as_base", "roster": ["Jones"]}
+{"id": "va-roster-2b-by-wright", "base_id": "tr-double", "kind": "roster", "transcript": "double to left by Wright", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-roster-2b-garcia-doubles", "base_id": "tr-double", "kind": "roster", "transcript": "Garcia doubles to left", "expect": "same_as_base", "roster": ["Garcia"]}
+{"id": "va-roster-3b-jones", "base_id": "tr-triple", "kind": "roster", "transcript": "Jones, triple to right", "expect": "same_as_base", "roster": ["Jones"]}
+{"id": "va-roster-3b-garcia-triples", "base_id": "tr-triple", "kind": "roster", "transcript": "Garcia triples to right", "expect": "same_as_base", "roster": ["Garcia"]}
+{"id": "va-roster-3b-by-wright", "base_id": "tr-triple", "kind": "roster", "transcript": "triple to right by Wright", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-roster-1b-jones-trailing", "base_id": "tr-single", "kind": "roster", "transcript": "single, Jones", "expect": "same_as_base", "roster": ["Jones"]}
+{"id": "va-roster-1b-wright-singles", "base_id": "tr-single", "kind": "roster", "transcript": "Wright singles", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-roster-1b-garcia-with", "base_id": "tr-single", "kind": "roster", "transcript": "Garcia with a single", "expect": "same_as_base", "roster": ["Garcia"]}
+{"id": "va-roster-hbp-jones", "base_id": "tr-hbp", "kind": "roster", "transcript": "Jones hit by pitch", "expect": "same_as_base", "roster": ["Jones"]}
+{"id": "va-roster-hbp-wright-trailing", "base_id": "tr-hbp", "kind": "roster", "transcript": "hit by pitch, Wright", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-roster-hbp-garcia-plunked", "base_id": "tr-hbp", "kind": "roster", "transcript": "Garcia plunked", "expect": "same_as_base", "roster": ["Garcia"]}
+{"id": "va-roster-sf-jones-scores", "base_id": "tr-sacfly", "kind": "roster", "transcript": "sacrifice fly to center, Jones scores", "expect": "same_as_base", "roster": ["Jones"]}
+{"id": "va-roster-sf-wright-leading", "base_id": "tr-sacfly", "kind": "roster", "transcript": "Wright, sacrifice fly to center", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-roster-sf-to-jones-in-center", "base_id": "tr-sacfly", "kind": "roster", "transcript": "sacrifice fly to Jones in center", "expect": "same_as_base", "roster": ["Jones"]}
+{"id": "va-roster-sf-to-jones-no-position", "base_id": "tr-sacfly", "kind": "roster", "transcript": "sacrifice fly to Jones", "expect": "safe_surface", "roster": ["Jones"]}
+{"id": "va-roster-ess-wright-at-shortstop", "base_id": "tr-judgment-error-ss", "kind": "roster", "transcript": "reached on error by Wright at shortstop", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-roster-ess-jones-no-position", "base_id": "tr-judgment-error-ss", "kind": "roster", "transcript": "reached on error by Jones", "expect": "safe_surface", "roster": ["Jones"]}
+{"id": "va-roster-ess-shortstop-garcia", "base_id": "tr-judgment-error-ss", "kind": "roster", "transcript": "reached on error by the shortstop Garcia", "expect": "same_as_base", "roster": ["Garcia"]}
+{"id": "va-roster-e3b-third-baseman-garcia", "base_id": "tr-judgment-error-3b", "kind": "roster", "transcript": "error on the third baseman Garcia, batter reached first", "expect": "same_as_base", "roster": ["Garcia"]}
+{"id": "va-roster-e3b-garcia-no-position", "base_id": "tr-judgment-error-3b", "kind": "roster", "transcript": "error on Garcia, batter reached first", "expect": "safe_surface", "roster": ["Garcia"]}
+{"id": "va-roster-e3b-jones-at-third", "base_id": "tr-judgment-error-3b", "kind": "roster", "transcript": "error on Jones at third, batter reached first", "expect": "same_as_base", "roster": ["Jones"]}
+{"id": "va-collision-f8-wright-no-position", "base_id": "tr-flyout-8", "kind": "roster_collision", "transcript": "fly ball to Wright, caught for the out", "expect": "safe_surface", "roster": ["Wright"]}
+{"id": "va-collision-f8-wright-in-center", "base_id": "tr-flyout-8", "kind": "roster_collision", "transcript": "fly ball to Wright in center caught for the out", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-collision-f8-center-name", "base_id": "tr-flyout-8", "kind": "roster_collision", "transcript": "fly ball to center caught for the out", "expect": "safe_surface", "roster": ["Center"]}
+{"id": "va-collision-f8-center-fielder-jones", "base_id": "tr-flyout-8", "kind": "roster_collision", "transcript": "fly ball to center fielder Jones, caught for the out", "expect": "safe_surface", "roster": ["Center Fielder Jones"]}
+{"id": "va-collision-f8-lefty-no-position", "base_id": "tr-flyout-8", "kind": "roster_collision", "transcript": "fly ball to Lefty, caught for the out", "expect": "safe_surface", "roster": ["Lefty"]}
+{"id": "va-collision-f7-lefty-in-left", "base_id": "tr-flyout-7", "kind": "roster_collision", "transcript": "fly ball to Lefty in left field", "expect": "same_as_base", "roster": ["Lefty"]}
+{"id": "va-collision-63-wright-no-position", "base_id": "tr-groundout-63", "kind": "roster_collision", "transcript": "ground ball to Wright, threw him out at first", "expect": "safe_surface", "roster": ["Wright"]}
+{"id": "va-collision-63-short-name", "base_id": "tr-groundout-63", "kind": "roster_collision", "transcript": "ground ball to short, threw him out at first", "expect": "safe_surface", "roster": ["Short"]}
+{"id": "va-collision-63-short-and-wright", "base_id": "tr-groundout-63", "kind": "roster_collision", "transcript": "ground ball to Short, Wright threw him out at first", "expect": "safe_surface", "roster": ["Short", "Wright"]}
+{"id": "va-collision-63-first-name", "base_id": "tr-groundout-63", "kind": "roster_collision", "transcript": "ground ball to short, threw him out at first", "expect": "safe_surface", "roster": ["First"]}
+{"id": "va-collision-63-short-decoy-roster", "base_id": "tr-groundout-63", "kind": "roster_collision", "transcript": "ground ball to short, threw him out at first", "expect": "same_as_base", "roster": ["Shorter", "Wright"]}
+{"id": "va-collision-53-third-name", "base_id": "tr-groundout-53", "kind": "roster_collision", "transcript": "ground ball to third, threw him out at first", "expect": "safe_surface", "roster": ["Third"]}
+{"id": "va-collision-13-pitcher-name", "base_id": "tr-groundout-13", "kind": "roster_collision", "transcript": "ground ball to the pitcher, threw him out at first", "expect": "safe_surface", "roster": ["Pitcher"]}
+{"id": "va-collision-1b-wright", "base_id": "tr-single", "kind": "roster_collision", "transcript": "single to Wright", "expect": "same_as_base", "roster": ["Wright"]}
+{"id": "va-collision-1b-lefty", "base_id": "tr-single", "kind": "roster_collision", "transcript": "single to Lefty", "expect": "same_as_base", "roster": ["Lefty"]}
+{"id": "va-collision-hr-center-name", "base_id": "tr-homerun-center", "kind": "roster_collision", "transcript": "home run to center", "expect": "same_as_base", "roster": ["Center"]}
+{"id": "va-collision-sf-center-name", "base_id": "tr-sacfly", "kind": "roster_collision", "transcript": "sacrifice fly to center", "expect": "safe_surface", "roster": ["Center"]}
+{"id": "va-collision-kl-third-name", "base_id": "tr-strikeout-looking", "kind": "roster_collision", "transcript": "strikeout looking", "expect": "same_as_base", "roster": ["Third"]}
+{"id": "va-collision-ess-short-name", "base_id": "tr-judgment-error-ss", "kind": "roster_collision", "transcript": "reached on error by the shortstop", "expect": "same_as_base", "roster": ["Short"]}
+{"id": "va-collision-ess-short-token", "base_id": "tr-judgment-error-by-short", "kind": "roster_collision", "transcript": "reached on error by short", "expect": "safe_surface", "roster": ["Short"]}
+{"id": "va-collision-e3b-third-name", "base_id": "tr-judgment-error-3b", "kind": "roster_collision", "transcript": "error on the third baseman, batter reached first", "expect": "safe_surface", "roster": ["Third"]}
+{"id": "va-collision-dp643-short-name", "base_id": "tr-judgment-dp-643", "kind": "roster_collision", "transcript": "double play short to second to first", "expect": "safe_surface", "roster": ["Short"]}
+{"id": "va-roster-dp643-wright-partial-chain", "base_id": "tr-judgment-dp-643", "kind": "roster", "transcript": "double play Wright to second to first", "expect": "safe_surface", "roster": ["Wright"]}
+{"id": "va-roster-63-wright-partial-chain", "base_id": "tr-groundout-63", "kind": "roster", "transcript": "ground ball, Wright to second to first", "expect": "safe_surface", "roster": ["Wright"]}
