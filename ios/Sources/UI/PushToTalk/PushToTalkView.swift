@@ -16,6 +16,8 @@
 ///   roster (`GrammarParser.parse(_:roster:)`, R22). The hidden facilitator panel (1.5 s
 ///   long-press on the status label) still drives the canned `StubTranscriber` directly, so the
 ///   Wizard-of-Oz demo keeps working on a device where the selector would pick a real engine.
+///   The panel, its reveal gesture, and that Stub branch are compiled into DEBUG builds only
+///   (DL-176 KTD6 / A5).
 ///   The whole flow lives in `PushToTalkPipeline` so tests drive it without SwiftUI.
 ///
 /// Honest status of voice: live microphone capture (T046) is NOT wired yet. The pipeline still
@@ -41,25 +43,33 @@ import Core
 struct PushToTalkView: View {
     @Environment(AppState.self) private var appState
 
-    // The WoZ script selector (facilitator-only, behind a long-press gesture). It also selects
-    // which canned transcript the Stub engine plays for a normal press in the simulator.
-    @State private var showWoZPanel: Bool = false
+    // The WoZ script selected for the Stub engine. In DEBUG builds the facilitator panel (behind a
+    // long-press) changes it; it also selects which canned transcript the Stub plays for a normal
+    // press in the simulator. Real engines ignore it.
     @State private var wozScript: WoZScript = .groundOut63
+
+#if DEBUG
+    // DL-176 KTD6 / A5: the Wizard-of-Oz facilitator panel exists in DEBUG builds only — a
+    // release build cannot fabricate a play from a canned transcript.
+    @State private var showWoZPanel: Bool = false
+#endif
 
     var body: some View {
         VStack(spacing: 16) {
             statusLabel
             pttButton
+#if DEBUG
             // WoZ reveal gesture (long-press on status label for demo facilitation)
                 .confirmationDialog("WoZ Script", isPresented: $showWoZPanel, titleVisibility: .visible) {
                     ForEach(WoZScript.allCases, id: \.self) { script in
                         Button(script.displayName) {
                             wozScript = script
-                            triggerPlay(script: script, facilitatorScripted: true)
+                            triggerFacilitatorPlay(script: script)
                         }
                     }
                     Button("Cancel", role: .cancel) {}
                 }
+#endif
         }
         .padding(.horizontal, 24)
     }
@@ -85,10 +95,12 @@ struct PushToTalkView: View {
         }
         .font(.subheadline)
         .animation(.easeInOut, value: appState.pttState)
+#if DEBUG
         .onLongPressGesture(minimumDuration: 1.5) {
-            // Reveal WoZ facilitator panel on 1.5s long-press of status label (hidden feature).
+            // Reveal WoZ facilitator panel on 1.5s long-press of status label (DEBUG only).
             showWoZPanel = true
         }
+#endif
     }
 
     // MARK: - PTT button
@@ -162,16 +174,22 @@ struct PushToTalkView: View {
     private func stopListening() {
         // Release → processing → the live pipeline (engine resolved per capture, R21).
         appState.pttState = .processing
-        triggerPlay(script: wozScript, facilitatorScripted: false)
-    }
-
-    private func triggerPlay(script: WoZScript, facilitatorScripted: Bool) {
         let appState = self.appState
+        let script = wozScript
         Task {
-            await PushToTalkPipeline.score(
-                script: script, facilitatorScripted: facilitatorScripted, appState: appState)
+            await PushToTalkPipeline.score(script: script, appState: appState)
         }
     }
+
+#if DEBUG
+    /// DEBUG-only facilitator path: plays the chosen canned script through the Stub.
+    private func triggerFacilitatorPlay(script: WoZScript) {
+        let appState = self.appState
+        Task {
+            await PushToTalkPipeline.score(script: script, facilitatorScripted: true, appState: appState)
+        }
+    }
+#endif
 }
 
 // MARK: - PushToTalkPipeline (one utterance, end to end — DL-157 R21/R22)
@@ -193,12 +211,21 @@ enum PushToTalkPipeline {
     ///     `StubTranscriber` is used directly so the facilitator demo works on a device where the
     ///     selector would otherwise pick Apple. `false` for a real press-and-release, which goes
     ///     through `appState.transcriberFactory` (the selector in production).
+    ///
+    /// The `facilitatorScripted` branch — the only Stub construction on the press path — exists in
+    /// DEBUG builds only (DL-176 KTD6); release builds have just `score(script:appState:)`.
+#if DEBUG
     static func score(script: WoZScript, facilitatorScripted: Bool = false, appState: AppState) async {
         let transcriber: any Transcriber = facilitatorScripted
             ? StubTranscriber(script: script)
             : await appState.transcriberFactory(script)
         await score(with: transcriber, script: script, appState: appState)
     }
+#else
+    static func score(script: WoZScript, appState: AppState) async {
+        await score(with: await appState.transcriberFactory(script), script: script, appState: appState)
+    }
+#endif
 
     /// Scores one utterance with an already-resolved engine.
     static func score(with transcriber: any Transcriber, script: WoZScript, appState: AppState) async {

@@ -430,7 +430,9 @@ final class EngineSelectorTests: XCTestCase {
     func testResolvedEngineKind_inSimulator_isStub() async {
         // In the simulator, `forceStub` defaults true → selection must report the WoZ stub, never
         // claim real Apple ASR (ADR-0010 honesty invariant). SpeechAnalyzer can't run in the sim.
-        let kind = await TranscriberEngineSelector.resolvedEngineKind()
+        // The speech-authorization provider is a fake: tests never call the real permission API.
+        let kind = await TranscriberEngineSelector.resolvedEngineKind(
+            speechAuthorization: FakeVoicePermission(.granted))
         #if targetEnvironment(simulator)
         XCTAssertEqual(kind, .stub, "simulator must degrade to the WoZ stub, not real Apple ASR")
         #else
@@ -439,7 +441,8 @@ final class EngineSelectorTests: XCTestCase {
     }
 
     func testResolve_inSimulator_returnsStubTranscriber() async {
-        let transcriber = await TranscriberEngineSelector.resolve()
+        let transcriber = await TranscriberEngineSelector.resolve(
+            speechAuthorization: FakeVoicePermission(.granted))
         #if targetEnvironment(simulator)
         XCTAssertEqual(transcriber.engine, .stub)
         #endif
@@ -453,8 +456,30 @@ final class EngineSelectorTests: XCTestCase {
         let previous = TranscriberEngineSelector.forceStub
         defer { TranscriberEngineSelector.forceStub = previous }
         TranscriberEngineSelector.forceStub = true
-        let kind = await TranscriberEngineSelector.resolvedEngineKind()
+        let kind = await TranscriberEngineSelector.resolvedEngineKind(
+            speechAuthorization: FakeVoicePermission(.denied))
         XCTAssertEqual(kind, .stub)
+    }
+
+    /// DL-176 KTD6: the simulator default (forceStub on) still resolves the Stub even when speech
+    /// is denied — existing WoZ behaviour preserved; only the device branch changed.
+    func testSimulatorDefault_speechDenied_stillResolvesStub() async {
+        #if targetEnvironment(simulator)
+        let transcriber = await TranscriberEngineSelector.resolve(
+            speechAuthorization: FakeVoicePermission(.denied))
+        XCTAssertTrue(transcriber is StubTranscriber)
+        #endif
+    }
+
+    /// DL-176 KTD6: off the DEBUG seam, no real engine resolves to the Unavailable engine, never
+    /// the Stub (it reports `.apple` only as the engine it stands in for — it never transcribes).
+    func testDeviceBranch_resolvedEngineKind_speechDenied_isNotStub() async {
+        let previous = TranscriberEngineSelector.forceStub
+        defer { TranscriberEngineSelector.forceStub = previous }
+        TranscriberEngineSelector.forceStub = false
+        let kind = await TranscriberEngineSelector.resolvedEngineKind(
+            speechAuthorization: FakeVoicePermission(.denied))
+        XCTAssertNotEqual(kind, .stub)
     }
     #endif
 }

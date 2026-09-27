@@ -295,7 +295,9 @@ final class T157PushToTalkWiringTests: XCTestCase {
         XCTAssertNotNil(appState.activeGame?.pendingResult)
     }
 
+    #if DEBUG
     /// The facilitator panel path uses the Stub directly regardless of the resolved engine.
+    /// DEBUG-only: the panel and its Stub branch are compiled out of release builds (DL-176 KTD6).
     func test_pipeline_facilitatorScripted_usesStub_evenWhenFactoryIsARealEngine() async throws {
         let fake = RecordingTranscriber(text: "the quick brown fox")   // would NOT parse
         let appState = makeAppState(transcriber: fake)
@@ -310,6 +312,7 @@ final class T157PushToTalkWiringTests: XCTestCase {
             return XCTFail("facilitator groundOut63 must reach Card A, got \(String(describing: appState.presentedSheet))")
         }
     }
+    #endif
 
     // MARK: Apple engine with the empty synthesized buffer → visible error, not silence
 

@@ -127,6 +127,20 @@ public final class AppState {
     /// before every transcribe. Follows the `init(core:consentDefaults:authStore:)` injection style.
     let transcriberFactory: @Sendable (WoZScript) async -> any Transcriber
 
+    /// Permission + on-device model readiness (DL-176 R4/R5, KTD5). Production uses the live
+    /// providers; tests inject fakes so no real permission API is ever called.
+    let speechReadiness: SpeechReadiness
+
+    /// The last readiness verdict — set at New Game and on every `refreshVoiceReadiness()` (each
+    /// press and each scene activation). `nil` until first evaluated.
+    private(set) var voiceReadiness: SpeechReadinessState?
+
+    /// What to tell the scorer about the current readiness, or `nil` when voice is ready (or has
+    /// not been evaluated yet).
+    var voiceReadinessMessage: String? {
+        voiceReadiness.flatMap(Self.readinessMessage(for:))
+    }
+
     // MARK: Navigation
 
     /// The currently presented sheet (card A/B, new-game, clarify, etc.)
@@ -166,11 +180,15 @@ public final class AppState {
     ///   - consentDefaults: age-gate backing store; tests inject a throwaway suite.
     ///   - authStore: session persistence; tests inject one backed by `InMemorySessionStore`.
     ///   - transcriberFactory: ASR engine resolution per capture; `nil` = `TranscriberEngineSelector`.
+    ///   - speechReadiness: permission/model readiness; `nil` = `SpeechReadiness.live()`. The live
+    ///     providers are only touched by `startNewGame` / `refreshVoiceReadiness`, never at init.
     public init(core: any CoreClient,
                 consentDefaults: UserDefaults = .standard,
                 authStore: AuthStore? = nil,
-                transcriberFactory: (@Sendable (WoZScript) async -> any Transcriber)? = nil) {
+                transcriberFactory: (@Sendable (WoZScript) async -> any Transcriber)? = nil,
+                speechReadiness: SpeechReadiness? = nil) {
         self.core = core
+        self.speechReadiness = speechReadiness ?? .live()
         self.consentDefaults = consentDefaults
         self.authStore = authStore ?? .shared
         self.transcriberFactory = transcriberFactory
@@ -288,7 +306,49 @@ public final class AppState {
         RosterContextBuilder.normalizedNames(names)
     }
 
-    /// Called by NewGameView on "Start game". The optional lineups (nine name fields per team on
+    /// Called by NewGameView on "Start". Asks for microphone and speech permission (each prompt
+    /// only if still unanswered), starts the on-device model download WITHOUT waiting for it, then
+    /// creates the game (DL-176 R4 / KTD5). A denied permission or a model still downloading never
+    /// blocks the game — manual entry always works; the readiness message says why voice is off.
+    func startNewGame(homeTeam: String, visitorTeam: String,
+                      homeLineup: [String] = [], visitorLineup: [String] = []) async {
+        // No prompts for someone who cannot start a game; `createGame` surfaces why.
+        if recordingAllowed, session?.ownerId.isEmpty == false {
+            voiceReadiness = await speechReadiness.prepareForNewGame()
+        }
+        await createGame(homeTeam: homeTeam, visitorTeam: visitorTeam,
+                         homeLineup: homeLineup, visitorLineup: visitorLineup)
+    }
+
+    /// Re-reads live permission and model status (DL-176 R4). Call on every press and whenever the
+    /// scene becomes active, so access granted in Settings takes effect without a new game. Never
+    /// prompts; retries the model download if it is not ready.
+    @discardableResult
+    func refreshVoiceReadiness() async -> SpeechReadinessState {
+        let state = await speechReadiness.evaluate()
+        voiceReadiness = state
+        return state
+    }
+
+    /// User-facing text for a readiness verdict (`nil` when ready). Every message says manual entry
+    /// still works, so a scorer is never stuck (R5).
+    nonisolated static func readinessMessage(for state: SpeechReadinessState) -> String? {
+        switch state {
+        case .ready:
+            return nil
+        case .micDenied:
+            return "Microphone access is off. Turn it on in Settings > Diamond Ledger to score by "
+                + "voice. You can keep scoring with manual entry."
+        case .speechDenied:
+            return "Speech recognition access is off. Turn it on in Settings > Diamond Ledger to "
+                + "score by voice. You can keep scoring with manual entry."
+        case .modelPreparing:
+            return "Voice model still downloading — connect to Wi-Fi. Until it's ready, use "
+                + "manual entry."
+        }
+    }
+
+    /// Called by `startNewGame` (and directly by tests). The optional lineups (nine name fields per team on
     /// the New Game screen) become `activeRoster` — visitor first, then home (batting order).
     func createGame(homeTeam: String, visitorTeam: String,
                     homeLineup: [String] = [], visitorLineup: [String] = []) async {
