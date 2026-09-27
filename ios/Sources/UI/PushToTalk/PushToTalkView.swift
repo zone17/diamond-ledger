@@ -41,6 +41,9 @@
 /// - SeeAlso: `ios/Sources/Parse/GrammarParser.swift` — parse layer consumer
 
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 import DiamondSpeech
 import Parse
 import Core
@@ -62,6 +65,8 @@ struct PushToTalkView: View {
     // DL-176 KTD6 / A5: the Wizard-of-Oz facilitator panel exists in DEBUG builds only — a
     // release build cannot fabricate a play from a canned transcript.
     @State private var showWoZPanel: Bool = false
+    // DL-176 U5: confirmation after "Export voice diagnostics" copies the JSON.
+    @State private var diagnosticsNotice: String?
 #endif
 
     var body: some View {
@@ -77,7 +82,16 @@ struct PushToTalkView: View {
                             triggerFacilitatorPlay(script: script)
                         }
                     }
+                    Button("Export voice diagnostics") { exportDiagnostics() }
                     Button("Cancel", role: .cancel) {}
+                }
+                .alert("Voice diagnostics", isPresented: Binding(
+                    get: { diagnosticsNotice != nil },
+                    set: { if !$0 { diagnosticsNotice = nil } }
+                )) {
+                    Button("OK", role: .cancel) { diagnosticsNotice = nil }
+                } message: {
+                    Text(diagnosticsNotice ?? "")
                 }
 #endif
         }
@@ -168,6 +182,21 @@ struct PushToTalkView: View {
     // MARK: - Actions
 
 #if DEBUG
+    /// DEBUG-only: copies the last voice diagnostics records (numbers and reasons only — never
+    /// audio or transcript text) to the clipboard as JSON for the device checklist (DL-176 U5).
+    private func exportDiagnostics() {
+        let diagnostics = appState.voiceDiagnostics
+        Task {
+            let count = await diagnostics.recentRecords().count
+            let json = String(decoding: await diagnostics.exportJSON(), as: UTF8.self)
+            #if canImport(UIKit)
+            UIPasteboard.general.string = json
+            #endif
+            diagnosticsNotice = "Copied \(count) records to the clipboard as JSON. "
+                + "Paste them on your Mac (Universal Clipboard) into the device run record."
+        }
+    }
+
     /// DEBUG-only facilitator path: plays the chosen canned script through the Stub.
     private func triggerFacilitatorPlay(script: WoZScript) {
         let appState = self.appState
@@ -194,6 +223,8 @@ final class PTTPress {
     var capture: (any AudioCaptureSource)?
     /// Set by the first release (touch-up or cap); later releases are no-ops.
     var released = false
+    /// When that release happened — the start of the release-to-transcript latency (U5).
+    var releasedAt: Date?
 
     init(script: WoZScript) {
         self.script = script
@@ -310,6 +341,7 @@ enum PushToTalkPipeline {
                     release(press, appState: appState)
                 case .interrupted(let reason):
                     // R3: audio already discarded by the source; idle with the reason.
+                    if appState.currentPress === press { recordInterrupted(appState: appState) }
                     abandon(press, message: AppState.interruptionMessage(for: reason), appState: appState)
                 }
             }
@@ -324,6 +356,7 @@ enum PushToTalkPipeline {
     private static func release(_ press: PTTPress, appState: AppState) -> Task<Void, Never>? {
         guard appState.currentPress === press, !press.released else { return nil }
         press.released = true
+        press.releasedAt = Date()
         appState.pttState = .processing
         return Task {
             await press.startTask?.value
@@ -331,13 +364,15 @@ enum PushToTalkPipeline {
             guard appState.currentPress === press, let capture = press.capture else { return }
             // stop() and transcribe share this task: the ~Copyable buffer never crosses a Task.
             guard let buffer = await capture.stop() else {
+                if appState.currentPress === press { recordInterrupted(appState: appState) }
                 abandon(press, message: AppState.captureInterruptedMessage, appState: appState)
                 return
             }
             guard appState.currentPress === press else { return }
             appState.currentPress = nil
             let transcriber = await appState.transcriberFactory(press.script)
-            await score(with: transcriber, buffer: buffer, script: press.script, appState: appState)
+            await score(with: transcriber, buffer: buffer, script: press.script,
+                        releasedAt: press.releasedAt ?? Date(), appState: appState)
         }
     }
 
@@ -391,17 +426,43 @@ enum PushToTalkPipeline {
 #endif
 
     /// Scores one captured utterance with an already-resolved engine.
+    ///
+    /// - Parameter releasedAt: when the scorer released the button. A real capture passes it and
+    ///   gets one numeric diagnostics record (DL-176 U5: capture seconds, release-to-transcript
+    ///   latency, outcome — never audio or text). `nil` (the DEBUG facilitator's synthesized
+    ///   buffer) records nothing, so demo plays never pollute the device evidence.
     static func score(with transcriber: any Transcriber, buffer: consuming DiamondSpeech.AudioBuffer,
-                      script: WoZScript, appState: AppState) async {
+                      script: WoZScript, releasedAt: Date? = nil, appState: AppState) async {
+        let captureSeconds = buffer.durationSeconds
+        let (outcome, transcribedAt) = await run(
+            with: transcriber, buffer: buffer, script: script, appState: appState)
+        guard let releasedAt else { return }
+        let latencyMs = transcribedAt.map { Int(($0.timeIntervalSince(releasedAt) * 1000).rounded()) }
+        await appState.voiceDiagnostics.recordCapture(
+            durationSeconds: captureSeconds, latencyMs: latencyMs, outcome: outcome)
+    }
+
+    /// An utterance that ended without audio (interruption or a nil capture). Duration is not
+    /// known once the source discarded the frames, so it is recorded as 0 with no latency.
+    private static func recordInterrupted(appState: AppState) {
+        let diagnostics = appState.voiceDiagnostics
+        Task { await diagnostics.recordCapture(durationSeconds: 0, latencyMs: nil, outcome: .interrupted) }
+    }
+
+    /// The scoring body. Returns how the utterance ended and when its transcript arrived (nil
+    /// when transcription threw), for the diagnostics record.
+    private static func run(with transcriber: any Transcriber, buffer: consuming DiamondSpeech.AudioBuffer,
+                            script: WoZScript,
+                            appState: AppState) async -> (VoiceDiagnostics.CaptureOutcome, Date?) {
         // Snapshot once so the engine and the parser see the same roster (R21 + R22).
         let roster = appState.activeRoster
+        var transcribedAt: Date?
 
         do {
             // R21: the active game's roster reaches the engine before EVERY transcribe.
             await transcriber.setContextualStrings(roster)
             let transcript = try await transcriber.transcribe(buffer: consume buffer)
-            // DL-176 U5: diagnostics hook — record capture duration and release-to-transcript
-            // latency here (numbers only; never audio or transcript text).
+            transcribedAt = Date()
 
             // Grammar parse: Transcript → NormalizedPlay, with roster names masked (R22).
             let parser = GrammarParser()
@@ -415,7 +476,7 @@ enum PushToTalkPipeline {
                     // record a play nobody said (Article VII).
                     appState.pttState = .idle
                     appState.presentedSheet = .manualEntry(prefilledTranscript: transcript.text)
-                    return
+                    return (.manualEntry, transcribedAt)
                 }
                 // Stub/WoZ fallback: use the script's canned facts. For groundOut63 that's a
                 // deterministic ground out (Card A); for misplayedGrounder it's the
@@ -435,15 +496,18 @@ enum PushToTalkPipeline {
                 }
                 appState.pttState = .idle
                 appState.presentedSheet = .clarify(candidatePlays: Array(items))
-                return
+                return (.clarify, transcribedAt)
             }
 
             // Forward to the core.
             await appState.recordPlay(facts: facts)
+            return (.scored, transcribedAt)
 
         } catch {
             appState.pttState = .idle
             appState.presentedError = AppState.AppError(message: message(for: error))
+            if case TranscriberError.audioTooShort = error { return (.tooShort, transcribedAt) }
+            return (.error, transcribedAt)
         }
     }
 

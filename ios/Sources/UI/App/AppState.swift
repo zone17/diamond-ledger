@@ -174,6 +174,10 @@ public final class AppState {
     /// start another capture, even after a cap or interruption ended the first (plan U4).
     @ObservationIgnored var pttTouchActive = false
 
+    /// Where each push-to-talk utterance's numeric record goes (DL-176 U5, KTD7): capture
+    /// duration, release-to-transcript latency, outcome. Tests swap in a fresh instance.
+    @ObservationIgnored var voiceDiagnostics: VoiceDiagnostics = .shared
+
     // MARK: Error banner
 
     struct AppError: Identifiable {
