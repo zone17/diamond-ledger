@@ -239,10 +239,10 @@ final class T157PushToTalkWiringTests: XCTestCase {
     /// legacy parse reads "wright" as right field and Card A follows. Same transcript, same fake —
     /// the only difference is the roster the pipeline passed to `parse(_:roster:)`.
     ///
-    /// NOTE: the lineup entry is the bare surname on purpose. `GrammarParser.maskRosterNames`
-    /// matches a multi-word entry ("Dee Wright") only as the whole phrase, so a scorer who says
-    /// just "wright" against a full-name lineup is NOT masked today — a parser-side follow-up
-    /// (mask each token of a multi-word name), out of this unit's lane.
+    /// Since U9 (no-guess parser, whole-word keywords) "wright" is never read as "right" even
+    /// without a roster, so both arms clarify; the roster arm additionally proves the name was
+    /// masked (multi-word entries mask each token too — see `DL157RosterMaskingTests`). The
+    /// invariant under test is the same either way: a surname never becomes a fielder guess.
     func test_pipeline_passesRosterToParser_surnameNeverReadAsPosition() async throws {
         let transcript = "fly ball to wright, caught"
 
@@ -264,9 +264,12 @@ final class T157PushToTalkWiringTests: XCTestCase {
         try signIn(withoutRoster)
         await startGame(withoutRoster, withLineups: false)
         await PushToTalkPipeline.score(script: .groundOut63, appState: withoutRoster)
-        guard case .cardA = withoutRoster.presentedSheet else {
-            return XCTFail("legacy (no-roster) parse records the flyout, got \(String(describing: withoutRoster.presentedSheet))")
+        guard case .clarify(let legacyCandidates) = withoutRoster.presentedSheet else {
+            return XCTFail("no-roster parse must clarify (no fielder stated; 'wright' is not 'right'), got \(String(describing: withoutRoster.presentedSheet))")
         }
+        XCTAssertEqual(legacyCandidates.count, 1)
+        XCTAssertEqual(legacyCandidates.first?.facts["batter_result"], "flyout")
+        XCTAssertNil(legacyCandidates.first?.facts["fielder"], "never a guessed fielder (KTD-U9)")
     }
 
     // MARK: Stub engine (simulator) — canned script still reaches Card A unchanged
