@@ -50,6 +50,7 @@ label; the exact command that regenerates it; the environment (OS, Xcode, device
 | File | Label | Status |
 |------|-------|--------|
 | `2026-09-voice-accuracy-baseline.md` | `FIXTURE ROBUSTNESS (advisory — not field accuracy)` | **to be added** — the first run of `make voice-accuracy-gate` over the real `evals/voice-accuracy/` corpus, including the clarify-rate finding at confidence 60 and 100 (DL-157) |
+| `2026-09-device-voice-checklist.md` | procedure (no numbers) | the human device run for push-to-talk capture (#176); its run produces `YYYY-MM-device-voice-run.md` |
 | `YYYY-MM-crowd-noise-wer.md` | `FIELD ACCURACY` (on device) | **pending T076** — see below |
 
 ## Where T076 field results go
