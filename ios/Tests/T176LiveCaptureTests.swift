@@ -3,11 +3,11 @@
 /// CI safety (plan KTD1): the test host has no microphone usage string, so nothing here touches
 /// `AVAudioEngine.inputNode`, an `AVAudioSession`, or a real permission API. `LiveAudioCapture`
 /// is built with a `FakeAudioEngine` (records every call, hands the installed tap handler back to
-/// the test), a scripted permission closure, and a `FakeInterruptionSource`. Every await that
+/// the test), a scripted `MicrophonePermissionProviding` (U3's seam), and a `FakeInterruptionSource`. Every await that
 /// could hang is bounded by an `XCTestExpectation` of at most 5 s.
 ///
 /// Coverage (plan U2 test scenarios):
-///   - Mic permission denied → `permissionDenied`, no session touched, no tap.
+///   - Mic permission denied or unanswered → `permissionDenied`, no prompt, no session, no tap.
 ///   - Unconvertible input format (0 channels / 0 Hz / none) → `engineUnavailable`, no tap.
 ///   - Happy path: synthetic 48 kHz buffers through the installed tap → a buffer of the expected
 ///     duration; teardown order is tap removed → engine stopped → session deactivated.
@@ -95,15 +95,20 @@ final class FakeInterruptionSource: Sendable {
     }
 }
 
-/// Counts permission checks and answers with a scripted value.
-final class FakePermission: Sendable {
-    private let granted: Bool
-    private let count = Mutex(0)
-    init(granted: Bool) { self.granted = granted }
-    var checks: Int { count.withLock { $0 } }
-    func check() async -> Bool {
-        count.withLock { $0 += 1 }
-        return granted
+/// U3's microphone seam with a scripted status; counts status reads and any prompt attempt.
+final class FakePermission: MicrophonePermissionProviding {
+    private let answer: VoicePermissionStatus
+    private let counts = Mutex((checks: 0, requests: 0))
+    init(_ answer: VoicePermissionStatus) { self.answer = answer }
+    var checks: Int { counts.withLock { $0.checks } }
+    var requests: Int { counts.withLock { $0.requests } }
+    func status() async -> VoicePermissionStatus {
+        counts.withLock { $0.checks += 1 }
+        return answer
+    }
+    func request() async -> VoicePermissionStatus {
+        counts.withLock { $0.requests += 1 }
+        return answer
     }
 }
 
@@ -137,15 +142,15 @@ final class T176LiveCaptureTests: XCTestCase {
 
     private func makeCapture(
         engine: FakeAudioEngine = FakeAudioEngine(),
-        granted: Bool = true,
+        permission status: VoicePermissionStatus = .granted,
         source: FakeInterruptionSource = FakeInterruptionSource(),
         cap: Duration = .seconds(15),
         releaseTail: Duration = .zero
     ) -> (LiveAudioCapture, FakeAudioEngine, FakePermission, FakeInterruptionSource) {
-        let permission = FakePermission(granted: granted)
+        let permission = FakePermission(status)
         let capture = LiveAudioCapture(
             engine: engine,
-            hasMicPermission: { await permission.check() },
+            microphone: permission,
             interruptions: { source.subscribe() },
             cap: cap,
             releaseTail: releaseTail
@@ -189,21 +194,24 @@ final class T176LiveCaptureTests: XCTestCase {
 
     // MARK: Start failures
 
-    func testPermissionDenied_throws_andTouchesNoSessionOrTap() async {
-        let (capture, engine, permission, source) = makeCapture(granted: false)
-        do {
-            try await capture.start()
-            XCTFail("start must throw when the microphone is denied")
-        } catch TranscriberError.permissionDenied {
-            // expected
-        } catch {
-            XCTFail("expected permissionDenied, got \(error)")
+    func testPermissionDeniedOrUnanswered_throws_neverPrompts_andTouchesNoSessionOrTap() async {
+        for status: VoicePermissionStatus in [.denied, .notDetermined] {
+            let (capture, engine, permission, source) = makeCapture(permission: status)
+            do {
+                try await capture.start()
+                XCTFail("start must throw when the microphone is \(status)")
+            } catch TranscriberError.permissionDenied {
+                // expected
+            } catch {
+                XCTFail("expected permissionDenied, got \(error)")
+            }
+            XCTAssertEqual(permission.checks, 1)
+            XCTAssertEqual(permission.requests, 0, "a press never shows the permission prompt")
+            XCTAssertEqual(engine.calls, [], "no session configured, no tap installed")
+            XCTAssertEqual(source.subscriptions, 0)
+            let stopped = await stopDuration(capture)
+            XCTAssertEqual(stopped, .some(nil), "stop after a failed start returns nil")
         }
-        XCTAssertEqual(permission.checks, 1)
-        XCTAssertEqual(engine.calls, [], "no session configured, no tap installed")
-        XCTAssertEqual(source.subscriptions, 0)
-        let stopped = await stopDuration(capture)
-        XCTAssertEqual(stopped, .some(nil), "stop after a failed start returns nil")
     }
 
     func testUnconvertibleInputFormat_throwsEngineUnavailable_withNoTap() async throws {
@@ -412,6 +420,7 @@ final class T176LiveCaptureTests: XCTestCase {
         try await capture.start()   // a duplicate touch-down: no error, no new session
         XCTAssertEqual(engine.calls, [.activate, .installTap, .startEngine])
         XCTAssertEqual(permission.checks, 1)
+        XCTAssertEqual(permission.requests, 0)
         XCTAssertEqual(source.subscriptions, 1)
 
         engine.deliver(seconds: 0.25)
