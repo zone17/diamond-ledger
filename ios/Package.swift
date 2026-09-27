@@ -167,7 +167,8 @@ let package = Package(
         .testTarget(
             name: "DiamondLedgerTests",
             dependencies: ["Core", "DiamondSpeech", "Parse", "Persistence", "UI", "Auth"],
-            path: "Tests"
+            path: "Tests",
+            exclude: ["native"]
         ),
     ]
 )
