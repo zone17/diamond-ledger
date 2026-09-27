@@ -181,17 +181,17 @@ do {
     check("distance insertion == 1/4", abs(TokenEditDistance.normalized("a b c", "a b x c") - 0.25) < 1e-12)
 }
 
-// 14. Alignment-derived guards on insertions/deletions.
+// 14. Substitution only: insertions and deletions are refused outright.
 do {
-    // Insertion of an in-set token with nothing replaced: allowed.
     let ins = decide("ground ball to", nil, "ground ball to short", 0.90)
-    check("insert in-set token: overrides", ins.text == "ground ball to short" && ins.reason == .agreed, "got \(ins.reason)")
-    // Deletion of an in-vocabulary base token: refused.
+    check("insert in-set token: refused", ins.text == "ground ball to" && ins.reason == .insertionOrDeletion, "got \(ins.reason)")
+    let insPlay = decide("ground ball to short, threw him out at first", nil,
+                         "ground ball to short, threw him out at first, double play", 0.90)
+    check("insert play word: refused", insPlay.text == "ground ball to short, threw him out at first" && insPlay.reason == .insertionOrDeletion, "got \(insPlay.reason)")
     let del = decide("ground ball to short", nil, "ground ball to", 0.90)
-    check("delete in-vocab token: refused", del.text == "ground ball to short" && del.reason == .replacedTokenInVocabulary, "got \(del.reason)")
-    // Deletion of an OOV base token: allowed.
+    check("delete in-vocab token: refused", del.text == "ground ball to short" && del.reason == .insertionOrDeletion, "got \(del.reason)")
     let delOOV = decide("ground ball to um short", nil, "ground ball to short", 0.90)
-    check("delete OOV token: overrides", delOOV.text == "ground ball to short" && delOOV.reason == .agreed, "got \(delOOV.reason)")
+    check("delete OOV token: refused", delOOV.text == "ground ball to um short" && delOOV.reason == .insertionOrDeletion, "got \(delOOV.reason)")
 }
 
 print("")

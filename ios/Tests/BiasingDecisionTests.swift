@@ -184,19 +184,24 @@ final class BiasingDecisionTests: XCTestCase {
         XCTAssertEqual(TokenEditDistance.normalized("a b c", "a b x c"), 0.25, accuracy: 1e-12)
     }
 
-    // MARK: 14. Alignment-derived guards on insertions and deletions
+    // MARK: 14. Substitution only — insertions and deletions are refused outright
 
-    func testInsertionsAndDeletionsFollowTheAlignmentRule() {
+    func testInsertionsAndDeletionsAreRefused() {
         let ins = decide("ground ball to", nil, "ground ball to short", 0.90)
-        XCTAssertEqual(ins.text, "ground ball to short")
-        XCTAssertEqual(ins.reason, .agreed, "inserting an in-set token replaces nothing")
+        XCTAssertEqual(ins.text, "ground ball to")
+        XCTAssertEqual(ins.reason, .insertionOrDeletion, "inserting a token adds meaning; refused even when in-set")
+
+        let insPlay = decide("ground ball to short, threw him out at first", nil,
+                             "ground ball to short, threw him out at first, double play", 0.90)
+        XCTAssertEqual(insPlay.text, "ground ball to short, threw him out at first")
+        XCTAssertEqual(insPlay.reason, .insertionOrDeletion, "inserting a play word is adding a play, not correcting one")
 
         let del = decide("ground ball to short", nil, "ground ball to", 0.90)
         XCTAssertEqual(del.text, "ground ball to short")
-        XCTAssertEqual(del.reason, .replacedTokenInVocabulary, "deleting an in-vocabulary base token is refused")
+        XCTAssertEqual(del.reason, .insertionOrDeletion, "deleting a token is refused")
 
         let delOOV = decide("ground ball to um short", nil, "ground ball to short", 0.90)
-        XCTAssertEqual(delOOV.text, "ground ball to short")
-        XCTAssertEqual(delOOV.reason, .agreed, "deleting an OOV base token is allowed")
+        XCTAssertEqual(delOOV.text, "ground ball to um short")
+        XCTAssertEqual(delOOV.reason, .insertionOrDeletion, "even an OOV filler is not dropped by biasing")
     }
 }

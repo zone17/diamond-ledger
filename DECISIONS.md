@@ -55,7 +55,9 @@ score a plausibly mis-heard transcript as a wrong play *silently*" had no single
    2026-09-27, plan Key Decision 3). Because base confidence is nil forever on iOS 26, the rule is
    built on the biased leg's *measured* confidence plus text agreement. The biased hypothesis may
    replace the base **only when all of**: biased confidence ≥ the parser threshold (70); token-level
-   edit distance ≤ 0.30; every changed token is in the contextual set; every replaced base token
+   edit distance ≤ 0.30; the alignment contains only substitutions (an insertion or deletion is
+   a changed play, not a corrected word — the corpus caught a biased leg appending "double play");
+   every substituted token is in the contextual set; every replaced base token
    is *out of* the set. Any failed guard keeps the base with its own (nil) confidence — P0b
    preserved, nothing fabricated. A **silent-scoring switch, default off**, caps an override's
    confidence below 70: *"the biased engine may correct words, never confidence."* The switch

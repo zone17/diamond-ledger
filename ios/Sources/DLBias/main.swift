@@ -88,7 +88,11 @@ func decodeRow(_ line: String) throws -> BiasRow {
     /// A 0…1 confidence. `nil` when absent or JSON null (allowed only where the caller permits).
     func unitConfidence(_ key: String) throws -> Float? {
         guard let v = dict[key], !(v is NSNull) else { return nil }
-        guard let n = v as? NSNumber, !(v is Bool) else { throw RowError.wrongType(key, expected: "a number or null") }
+        // A JSON `true`/`false` arrives as a boolean NSNumber; a literal `0` or `1` is a number
+        // that ALSO bridges to Bool, so `v is Bool` would wrongly reject them. Check the CF type.
+        guard let n = v as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else {
+            throw RowError.wrongType(key, expected: "a number or null")
+        }
         let d = n.doubleValue
         guard d.isFinite, (0.0...1.0).contains(d) else { throw RowError.outOfRange(key) }
         return Float(d)

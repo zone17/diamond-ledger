@@ -26,14 +26,18 @@
 /// 2. `emptyBase`                       base is blank but biased is not (never fabricate)
 /// 3. `biasedConfidenceBelowThreshold`  biased confidence (mapped to 0…100) < parser threshold
 /// 4. `divergent`                       token edit distance > `agreementThreshold` (0.30)
-/// 5. `tokenNotContextual`              a differing biased token is not in the contextual set
-/// 6. `replacedTokenInVocabulary`       a replaced base token IS in the set (known→known swap)
+/// 5. `insertionOrDeletion`             the alignment inserts or deletes a token — biasing may
+///                                      only substitute words, never add or drop them (a biased
+///                                      leg that inserts "double play" is adding a play, not
+///                                      correcting a word)
+/// 6. `tokenNotContextual`              a substituted biased token is not in the contextual set
+/// 7. `replacedTokenInVocabulary`       a replaced base token IS in the set (known→known swap)
 /// 7. `baseMoreConfident`               base confidence known and higher than biased
 /// 8. `agreed`                          override: biased text verbatim, confidence per R20
 ///
 /// "Differing" and "replaced" tokens come from the word-level Levenshtein alignment
-/// (`TokenEditDistance.alignment`): substitutions contribute one of each, insertions only a
-/// differing token, deletions only a replaced token. A distance of 0 (e.g. a casing-only
+/// (`TokenEditDistance.alignment`): only substitutions are eligible; any insertion or deletion
+/// refuses the override outright (guard 5). A distance of 0 (e.g. a casing-only
 /// difference, `wright` → `Wright`) has no differing tokens, so guards 5–6 pass vacuously and the
 /// biased spelling is returned verbatim.
 ///
@@ -96,6 +100,7 @@ public enum BiasingReason: String, Sendable, Codable, CaseIterable {
     case emptyBase = "empty_base"
     case biasedConfidenceBelowThreshold = "biased_confidence_below_threshold"
     case divergent = "divergent"
+    case insertionOrDeletion = "insertion_or_deletion"
     case tokenNotContextual = "token_not_contextual"
     case replacedTokenInVocabulary = "replaced_token_in_vocabulary"
     case baseMoreConfident = "base_more_confident"
@@ -165,8 +170,16 @@ public enum BiasingDecision {
             return keepBase(.divergent)
         }
 
-        // 5 + 6. Every differing token must be contextual; every replaced token must be OOV.
+        // 5. Substitution only: an insertion or deletion is a changed play, not a corrected word.
         let ops = TokenEditDistance.alignment(base: baseTokens, biased: biasedTokens)
+        for op in ops {
+            switch op {
+            case .insert, .delete: return keepBase(.insertionOrDeletion)
+            case .equal, .substitute: break
+            }
+        }
+
+        // 6 + 7. Every substituted token must be contextual; every replaced token must be OOV.
         for op in ops {
             switch op {
             case .substitute(_, let differing), .insert(let differing):
