@@ -17,6 +17,7 @@ import Foundation
 import SwiftUI
 import Core
 import Auth
+import DiamondSpeech
 
 // MARK: - Active Game
 
@@ -110,6 +111,22 @@ public final class AppState {
     /// The in-progress game, or `nil` when no game is active.
     var activeGame: ActiveGame?
 
+    /// Player names of the active game (both lineups, visitor first) — DL-157 / R21 / R22.
+    ///
+    /// Fed to the ASR engine as contextual strings before every push-to-talk transcribe, and to
+    /// `GrammarParser.parse(_:roster:)` so a surname can never be read as a position. The roster
+    /// lives UI-side only (never in the core — plan Key Decision 4). Normalized by
+    /// `normalizeRoster`; empty whenever no game is active (cleared with `activeGame`).
+    private(set) var activeRoster: [String] = []
+
+    // MARK: Speech
+
+    /// Resolves the `Transcriber` for one push-to-talk capture (DL-157 R21). Production resolves
+    /// through `TranscriberEngineSelector` — the WoZ `StubTranscriber` in the simulator, Apple on
+    /// an iOS-26 device. Tests inject a recording fake to assert the roster reaches the engine
+    /// before every transcribe. Follows the `init(core:consentDefaults:authStore:)` injection style.
+    let transcriberFactory: @Sendable (WoZScript) async -> any Transcriber
+
     // MARK: Navigation
 
     /// The currently presented sheet (card A/B, new-game, clarify, etc.)
@@ -148,12 +165,16 @@ public final class AppState {
     ///   - core: the scoring core (real `DiamondCoreClient` in the app, `MockCore` in tests).
     ///   - consentDefaults: age-gate backing store; tests inject a throwaway suite.
     ///   - authStore: session persistence; tests inject one backed by `InMemorySessionStore`.
+    ///   - transcriberFactory: ASR engine resolution per capture; `nil` = `TranscriberEngineSelector`.
     public init(core: any CoreClient,
                 consentDefaults: UserDefaults = .standard,
-                authStore: AuthStore? = nil) {
+                authStore: AuthStore? = nil,
+                transcriberFactory: (@Sendable (WoZScript) async -> any Transcriber)? = nil) {
         self.core = core
         self.consentDefaults = consentDefaults
         self.authStore = authStore ?? .shared
+        self.transcriberFactory = transcriberFactory
+            ?? { script in await TranscriberEngineSelector.resolve(wozScript: script) }
         // `consentStatus` stays `.unknown` until an owner is signed in — the gate belongs to the
         // owner, so there is no answer to read before we know who they are.
     }
@@ -252,6 +273,7 @@ public final class AppState {
         authStore.signOut()
         session = nil
         activeGame = nil
+        activeRoster = []
         pttState = .idle
         // No owner, no standing answer — the next owner to sign in answers the gate themselves.
         refreshConsentStatus()
@@ -259,8 +281,17 @@ public final class AppState {
 
     // MARK: - Game actions
 
-    /// Called by NewGameView on "Start game".
-    func createGame(homeTeam: String, visitorTeam: String) async {
+    /// Normalizes lineup names into the `activeRoster` shape: whitespace-trimmed, empties dropped,
+    /// de-duplicated case-insensitively (first spelling wins), order preserved. Pure; pinned by
+    /// `T157PushToTalkWiringTests`.
+    nonisolated static func normalizeRoster(_ names: [String]) -> [String] {
+        RosterContextBuilder.normalizedNames(names)
+    }
+
+    /// Called by NewGameView on "Start game". The optional lineups (nine name fields per team on
+    /// the New Game screen) become `activeRoster` — visitor first, then home (batting order).
+    func createGame(homeTeam: String, visitorTeam: String,
+                    homeLineup: [String] = [], visitorLineup: [String] = []) async {
         guard let ownerId = session?.ownerId, !ownerId.isEmpty else {
             presentedError = AppError(message: "Sign in before starting a game.")
             return
@@ -284,6 +315,7 @@ public final class AppState {
                 visitorTeamName: visitorTeam,
                 state: result.state
             )
+            activeRoster = Self.normalizeRoster(visitorLineup + homeLineup)
             presentedSheet = nil
         } catch {
             presentedError = AppError(message: "Could not start game: \(error.localizedDescription)")
@@ -484,6 +516,7 @@ public final class AppState {
     /// user explicitly chose not to produce an official record. No finalize is attempted.
     func exitGameWithoutFinalizing() {
         activeGame = nil
+        activeRoster = []
         presentedSheet = nil
         pttState = .idle
     }

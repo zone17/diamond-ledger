@@ -1,20 +1,23 @@
 # Eval-Harness Interface Contract
 
-**Version**: 1.1.0  
-**Task**: T010 (Foundational Phase — Phase 2 unblocking interface)  
+**Version**: 1.2.0  
+**Task**: T010 (Foundational Phase — Phase 2 unblocking interface); DL-157 (1.2.0 additive change)  
 **Authority**: [`specs/001-voice-scorebook-core/tasks.md`](../specs/001-voice-scorebook-core/tasks.md) stories A9, C3, C4;
 [`research.md`](../specs/001-voice-scorebook-core/research.md) D4 (cwevent gate), D6 (gold);
 [`data-model.md`](../specs/001-voice-scorebook-core/data-model.md) §4 (NormalizedPlay, Classification);
-[`plan.md`](../specs/001-voice-scorebook-core/plan.md) (eval tree, SC-001/002/003/004)  
+[`plan.md`](../specs/001-voice-scorebook-core/plan.md) (eval tree, SC-001/002/003/004);
+[`DECISIONS.md`](../DECISIONS.md) ADR-0017 (voice-accuracy gate, labels, corpus schemas — 1.2.0)  
 **Status**: FROZEN — both squads code to this; any change requires a version bump and cross-squad review
 
 This document is the **single source of truth** for the interface between Squad A's eval-harness
-runners and Squad C's data.  It defines three things precisely:
+runners and Squad C's data.  It defines four things precisely:
 
 1. The **mislabeled-judgment corpus format** — what each corpus entry must contain and mean.
 2. The **gold-game format** — how a fully coupled gold game is packaged and consumed.
 3. The **gate exit semantics** — what each runner does and does not guarantee, which gates are
    hard-fails, and which are advisory.
+4. The **measurement labels** (§2.4) and the **voice-accuracy corpus formats** (§2.5) — what a
+   number printed by any runner is allowed to claim, and what the DL-157 fixtures must contain.
 
 Runners (`evals/runners/*.sh`) consume inputs in the formats defined here.  Data producers (Squad C)
 produce outputs in the formats defined here.  Neither side reads the other's internal implementation.
@@ -406,6 +409,61 @@ The runner MUST label its output:
 Any report, CI log, or PR comment that contains accuracy numbers MUST include this label.
 Omitting the label is a documentation defect equivalent to a fabricated Retrosheet record.
 
+#### 2.4.1 Additional labels (1.2.0 — DL-157, ADR-0017)
+
+Two further labels exist.  Like the two above they are literal strings, and any report, CI log, or
+PR comment that carries an accuracy-shaped number from the corresponding runner MUST include them.
+
+- `"FIXTURE ROBUSTNESS (advisory — not field accuracy)"` — MANDATORY on every accuracy-shaped
+  line (a percent, a ratio, a count of rows that …) printed by `evals/runners/voice-accuracy.sh`
+  and its judge `evals/runners/voice-accuracy-compare.py`.  The voice-accuracy runner measures the
+  deterministic transcript→score pipeline (`dl-score` / `dl-bias`) on frozen **text** fixtures.
+  No ASR leg runs (the comparator's WER hook is a no-op that prints `not measured`), so nothing it
+  prints is ever a statement about recognition accuracy.  Its hard-signal lines (confident-wrong
+  rows, canonical regressions, pair mismatches, determinism) are gate signals, not accuracy
+  numbers, and are deliberately printed **without** the label so they cannot be mistaken for
+  advisory output.  `tools/tests/voice-accuracy-tripwire.sh` fails if any `%` line lacks the label.
+- `"SYNTHETIC SPEECH (advisory — not field accuracy)"` — RESERVED for a future synthesized-audio
+  leg (text → TTS → on-host recognizer → `dl-score`).  Synthesized speech is not field audio: no
+  crowd noise, no real speaker, no real microphone.  No runner prints it today; when one does,
+  every accuracy-shaped line it prints MUST carry it.
+
+Only `FIELD ACCURACY` (a gold game with `meta.json.h3_ready == true`, §2.3) is a field-accuracy
+claim.  The other three labels are advisory by construction.
+
+### 2.5 Voice-accuracy corpus formats (`evals/voice-accuracy/`, 1.2.0)
+
+**Files**: `evals/voice-accuracy/variants.jsonl`, `evals/voice-accuracy/biasing-pairs.jsonl` (DL-157;
+owner Squad B).  **Encoding**: as §1 — UTF-8, one JSON object per line, no array wrapper.
+**Consumer**: `evals/runners/voice-accuracy.sh` via `voice-accuracy-compare.py`, which enforces this
+schema up front (a violation is exit 1 — see §3.6).  Authoring rules (which mis-hearings belong in
+which kind, how to choose `expect`) live in `evals/voice-accuracy/README.md`; this section is only
+the field contract.
+
+#### `variants.jsonl` — text-level variants of canonical transcripts
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `id` | string, unique | Stable identifier of the variant row. |
+| `base_id` | string | `id` of a row in `evals/transcript-regression/cases.jsonl`.  The variant is judged against that row's facts, scored at confidence 100 with no roster. |
+| `kind` | `mishear` \| `numeral` \| `filler` \| `roster` \| `roster_collision` | Which perturbation the transcript applies to its base.  `roster` and `roster_collision` REQUIRE `roster`. |
+| `transcript` | string | The perturbed transcript: one line, non-empty, no newline, must not start with `#` (`dl-score` reads one transcript per line and treats `#` lines as comments). |
+| `expect` | `same_as_base` \| `safe_surface` \| `text_layer_undetectable` | `same_as_base`: must score to the base's facts and outcome.  `safe_surface`: the pipeline must refuse to score silently (clarify `ambiguous(…)`, `out_of_grammar`, or the base's own judgment kind with the base's own facts).  `text_layer_undetectable`: a mis-hearing the text layer cannot distinguish from a valid play; counted and reported, EXCLUDED from the hard signal. |
+| `roster` | string[], optional | Names passed as `dl-score --roster` (comma-separated, so a name may not contain `,`).  Rows are grouped by exact roster value: one `dl-score` process per (roster value, confidence). |
+
+#### `biasing-pairs.jsonl` — (base, biased) ASR hypothesis pairs for `dl-bias`
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `id` | string, unique | Stable identifier of the pair. |
+| `base` | string | The base (`SpeechAnalyzer`) hypothesis text. |
+| `base_confidence` | number 0…1 \| null | Base-leg confidence; `null` when unknown — always the case on iOS 26 (ADR-0017).  The key MUST be present. |
+| `biased` | string \| null | The contextually biased (`SFSpeechRecognizer`) hypothesis text; `null` when the biased leg produced nothing.  The key MUST be present. |
+| `biased_confidence` | number 0…1 | The biased leg's measured confidence.  REQUIRED when `biased` is non-null. |
+| `contextual_set` | string[] | The contextual strings the biased leg was given (lexicon + roster).  Under the policy every changed token must be in this set and every replaced base token out of it. |
+| `expect_decision` | `override` \| `keep_base` | The decision `BiasingDecision.decide` MUST return for this pair under the conservative policy (ADR-0017 decision 3). |
+| `expect_text` | string | The text `dl-bias` MUST emit: the biased text on `override`, the base text on `keep_base`. |
+
 ---
 
 ## 3. Gate Exit Semantics
@@ -420,6 +478,7 @@ Omitting the label is a documentation defect equivalent to a fabricated Retroshe
 | `retrosheet-gate.sh` Layer 3 | Golden diff regression | `retrosheet-gate` | **YES** | Diff against `expected.csv` is non-empty |
 | `accuracy.sh` | SC-001 / SC-002 accuracy | `core-eval` | **ADVISORY** until real gold game (H3); then YES if h3_ready |
 | `parity.sh` | Agent/CLI vs UI parity SC-008 | (standalone) | **YES** | Any byte-level difference between CLI/agent path and core path for identical facts |
+| `voice-accuracy.sh` | Voice-accuracy fixture robustness (DL-157 / FR-008) | `voice-accuracy` | **YES** | Any **confident-wrong** variant row (at confidence 100: `ok: true` + `needs` ∈ {`none`, `confirm`} + facts ≠ base; OR a judgment surfaced on a deterministic base; OR a judgment kind ≠ the base's, OR the same judgment kind with facts ≠ base), OR any parseable row that scores silently at confidence 60 (FR-008 regression), OR a canonical regression against `cases.jsonl`, OR a biasing-pair `decision`/`text` mismatch, OR non-identical raw output across two runs, OR a corpus schema violation, OR (Darwin) a missing toolchain.  Exit 2 (never green) when it did no work.  Non-Darwin: `SKIP`, exit 0.  See §3.6 |
 
 ### 3.2 SC-003 judgment gate — hard-fail semantics
 
@@ -512,6 +571,42 @@ Once `meta.json.h3_ready == true`:
 | accuracy.sh (advisory) | The system is internally self-consistent across two runs | Field accuracy against trained human ground truth |
 | accuracy.sh (field, h3_ready) | The system's output agrees with independent human scorer ground truth at ≥SC-001/SC-002 bar | Perfect coverage of all play types; expert-level judgment calls |
 | parity.sh | CLI/agent path and core path produce byte-identical output for identical facts (SC-008) | Correctness of the output itself |
+| voice-accuracy.sh | On the frozen text fixtures the deterministic transcript→score pipeline never confidently scores a text-detectable mis-hearing as a different play; every biasing pair decides as expected under the conservative policy; the output is byte-deterministic | Recognition (ASR) accuracy of any kind — no audio is processed; field accuracy against a gold game |
+
+### 3.6 Voice-accuracy gate — hard-fail semantics (1.2.0 — DL-157)
+
+**Runner**: `evals/runners/voice-accuracy.sh` (no arguments; `VOICE_ACCURACY_DIR` and `TRANSCRIPT_CASES`
+override the corpus paths).  **Judge**: `evals/runners/voice-accuracy-compare.py`.  **CI job**:
+`voice-accuracy` (`macos-latest`, `needs: core-build`, no `continue-on-error`).  **Make**:
+`make voice-accuracy-gate`.  **ADR**: ADR-0017.
+
+It runs `dl-score` over the canonical corpus plus `variants.jsonl` at `--confidence 100` and `60` (one
+process per exact roster value, §2.5), runs `dl-bias` over `biasing-pairs.jsonl`, then repeats the whole
+measurement and byte-diffs the raw outputs.  Base facts come from the canonical row scored at 100 with no
+roster.  Fact agreement is judged at confidence 100 only; the 60 run routes every parseable row to clarify
+by design and is reported for its clarify rate.
+
+Exit codes (as implemented in the runner header and the comparator):
+
+| Exit | Meaning | Tripped by |
+|------|---------|------------|
+| `0` | PASS | No confident-wrong row, no canonical regression, no pair mismatch, byte-identical output across the two runs.  ALSO `0` on non-Darwin, where the CLIs cannot build: the runner prints a distinct `[voice-accuracy] SKIP` marker (advisory skip — Linux CI). |
+| `1` | FAIL | (a) a **confident-wrong** row — a variant (not `text_layer_undetectable`) that at confidence 100 scores `ok: true` with `needs` ∈ {`none`, `confirm`} and `facts` ≠ its base's; or surfaces a judgment while its base is deterministic; or surfaces a judgment kind different from its base's; or surfaces the same judgment kind with different facts (a wrong fielder rides the card).  (b) a **canonical regression** — any `cases.jsonl` row diverging from its `expect_*` fields (same comparison as `transcript-score.sh`).  (c) a **biasing-pair mismatch** — `dl-bias` `decision` or `text` ≠ `expect_decision` / `expect_text`.  (d) **non-determinism** — any `out.jsonl` differs between the two runs.  (e) a corpus schema violation (§2.5) or missing/misaligned CLI output.  (f) any parseable row that scores silently (`ok: true`, `needs` ∈ {`none`, `confirm`}) at confidence 60 — the FR-008 low-confidence route regressed.  (g) on Darwin, `swift`, `cargo` or `python3` missing — a hard gate that silently exits 0 because the toolchain vanished is the vacuous-green failure this gate exists to prevent. |
+| `2` | NO WORK | Zero variants or zero pairs, a missing corpus file, or (Darwin) the `dl-score` / `dl-bias` binary was not produced.  A run that measured nothing is never green. |
+
+**Safe misses** — a variant the pipeline refuses to score (clarify `ambiguous(…)`, `out_of_grammar`, or the
+base's own judgment kind) — are counted per kind and reported under the `FIXTURE ROBUSTNESS` label; they
+are advisory, never a hard signal.  A variant whose observed category differs from its `expect` label is
+reported as an *expectation mismatch*, also advisory.
+
+**Proof the gate trips**: `tools/tests/voice-accuracy-tripwire.sh` drives the runner over scratch corpora
+that MUST exit 1 (a confident-wrong variant; a judgment on a deterministic base; a wrong pair
+expectation), MUST exit 2 (an empty corpus), and a control corpus that MUST exit 0 with every `%` line
+labeled.  The CI job runs the tripwire before the gate.
+
+**This gate does not measure ASR.**  No audio is processed.  Every accuracy-shaped line it prints carries
+`FIXTURE ROBUSTNESS (advisory — not field accuracy)` (§2.4.1).  The gates in §3.2–§3.4 are unchanged by
+this version.
 
 ---
 
@@ -524,6 +619,7 @@ Once `meta.json.h3_ready == true`:
 | `evals/gold/<game>/` (all three components) | Squad C (T064, T065) | Squad A `accuracy.sh` (T042) | **H3** — completes when `meta.json.h3_ready == true` |
 | `evals/retrosheet-fixtures/<year>/` | Squad C (T061, T062) | Squad A/C `retrosheet-gate.sh` (T060) | **H2**-adjacent; both squads target frozen grammar (T009) |
 | `expected.csv` per fixture | Squad C (T062) | `retrosheet-gate.sh` Layer 3 | Must be committed before the gate is wired as a hard-fail |
+| `evals/voice-accuracy/variants.jsonl`, `biasing-pairs.jsonl` | Squad B (DL-157) | `voice-accuracy.sh` (CI job `voice-accuracy`) | Additive in 1.2.0; schema in §2.5; cross-squad review by Squad C recorded in the DL-157 PR |
 
 ---
 
@@ -533,6 +629,7 @@ Once `meta.json.h3_ready == true`:
 
 | Version | Date | Change |
 |---------|------|--------|
+| 1.2.0 | 2026-09-27 | **Additive (DL-157, ADR-0017).** New hard-gate row in §3.1 for `evals/runners/voice-accuracy.sh` (CI job `voice-accuracy`, `macos-latest`), its exit semantics in §3.6 and a PASS row in §3.5. Two new §2.4 labels: `FIXTURE ROBUSTNESS (advisory — not field accuracy)` (mandatory on every accuracy-shaped line the voice-accuracy runner prints) and `SYNTHETIC SPEECH (advisory — not field accuracy)` (reserved for a future synthesized-audio leg). Two new corpus schemas in §2.5 (`variants.jsonl`, `biasing-pairs.jsonl`). No existing §3.1 row, label, or schema changed; `judgment-gate.sh`, `proof-box.sh`, `retrosheet-gate.sh`, `accuracy.sh` and `parity.sh` semantics are untouched. Cross-squad review: Squad C (review recorded in PR). Gate-semantics ADR: ADR-0017. |
 | 1.1.0 | 2026-06-01 | Added optional `inning_error_context` field (required for `EarnedVsUnearned` entries) so `classify()` can mechanically derive the half-inning error/passed-ball trigger from normalized inputs. Added optional `synthetic` boolean field for corpus provenance. Both additions are backward-compatible; existing entries without these fields remain valid for non-`EarnedVsUnearned` triggers. |
 | 1.0.0 | 2026-06-01 | Initial frozen interface. |
 
@@ -563,9 +660,15 @@ require a version bump but do require cross-squad notification.
 | `evals/judgment-corpus/seed.jsonl` | Synthetic seed corpus (Squad A, T011) |
 | `evals/gold/<game>/` | Gold-game triple per §2 (Squad C, T064–T065) |
 | `evals/retrosheet-fixtures/<year>/` | cwevent regression fixtures (Squad C, T061–T062) |
+| `evals/runners/voice-accuracy.sh` | Consumes §2.5 corpora; enforces §3.6 gate semantics (DL-157) |
+| `evals/runners/voice-accuracy-compare.py` | Stages and judges the voice-accuracy run; prints the §2.4.1 label |
+| `evals/voice-accuracy/` | Variants + biasing-pair corpora per §2.5 (Squad B, DL-157) |
+| `tools/tests/voice-accuracy-tripwire.sh` | Proves the §3.6 gate trips on known-bad corpora |
+| `docs/evaluations/` | Durable, labeled evaluation records (Article XXI) |
 | `core/src/classify/guard.rs` | Instrumented SC-003 silent-resolution counter (T024) |
 | `core/src/classify/mod.rs` | `classify(NormalizedPlay) -> Classification` (T021) |
 | `specs/001-voice-scorebook-core/data-model.md` | NormalizedPlay, Classification, JudgmentKind canonical types |
 | `specs/001-voice-scorebook-core/research.md` | D4 (cwevent gate), D6 (gold dataset) |
 | `specs/001-voice-scorebook-core/tasks.md` | T010, A9, C3, C4 |
 | `DECISIONS.md` | ADR-0007 (tech stack), future gate-semantics ADRs |
+| `DECISIONS.md` — ADR-0017 | Voice-accuracy gate, `dl-score` flags, `dl-bias`, conservative biasing policy (1.2.0) |

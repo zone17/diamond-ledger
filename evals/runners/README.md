@@ -30,13 +30,16 @@ fully wired) or an **advisory runner** (labeled explicitly below).
 
 ## Scripts
 
-| Script | Gate tier | CI job | Hard-fail? | Status |
-|--------|-----------|--------|-----------|--------|
-| `judgment-gate.sh` | SC-003 silent-resolution counter | `core-eval` | Yes (once wired) | Placeholder |
-| `accuracy.sh` | SC-001 / SC-002 accuracy | `core-eval` | Advisory until gold | Placeholder |
-| `proof-box.sh` | Proof-box Layer 1 | `core-eval` | Yes (once wired) | Placeholder |
-| `retrosheet-gate.sh` | cwevent 3-layer gate | `retrosheet-gate` | Yes (once wired) | Placeholder |
-| `parity.sh` | Agent/CLI vs UI parity (SC-008) | — | Yes (once wired) | Placeholder |
+| Script | Gate tier | CI job | Hard-fail? | Notes |
+|--------|-----------|--------|-----------|-------|
+| `judgment-gate.sh` | SC-003 silent-resolution counter | `core-eval` | **Yes** | Any corpus entry not `Judgment(...)`, counter > 0, missing trigger type, or empty corpus |
+| `proof-box.sh` | Proof-box Layer 1 (offline identity) | `core-eval` | **Yes** | Layer 1 only — the authoritative check is `retrosheet-gate.sh` Layer 2 |
+| `parity.sh` | Agent/CLI vs core parity (SC-008) | `core-eval` | **Yes** | Byte-identical state / notation / classification across both paths |
+| `accuracy.sh` | SC-001 / SC-002 accuracy | `core-eval` | Advisory until gold (H3) | Output labeled `SELF-CONSISTENCY (advisory — not field accuracy)` until `h3_ready` |
+| `retrosheet-gate.sh` | cwevent 3-layer gate | `retrosheet-gate` | **Yes** | stderr-driven (cwevent exits 0 on malformed plays); Layer 3 golden diff |
+| `h2-export.sh` | SC-004 real-core → cwevent export | `h2-export-gate` | **Yes** (exit 2 = cwevent absent, advisory) | Drives the Rust integration test, then `retrosheet-gate.sh` on the produced EVN |
+| `transcript-score.sh` | Transcript→score regression (DL-37) | `transcript-score` (macOS) | **Yes** on Darwin; SKIP marker on Linux | `dl-score` over `evals/transcript-regression/cases.jsonl`; exit 2 on zero cases |
+| `voice-accuracy.sh` (+ `voice-accuracy-compare.py`) | Mis-heard-transcript robustness (DL-157, Art. VII / FR-008) | `voice-accuracy` (macOS; also `make voice-accuracy-gate`, Mac-only, not in `make gates`) | **Yes** on confident-wrong row / canonical regression / biasing-pair mismatch / non-determinism | `dl-score` over canonical rows + `evals/voice-accuracy/variants.jsonl` at confidence 100 and 60, `dl-bias` over `biasing-pairs.jsonl`, run twice and byte-diffed. Every accuracy-shaped line is labeled `FIXTURE ROBUSTNESS (advisory — not field accuracy)`. Exit 2 on zero variants or zero pairs. Tripwire: `tools/tests/voice-accuracy-tripwire.sh` |
 
 ## judgment-gate.sh (T041)
 
@@ -115,6 +118,33 @@ evals/runners/parity.sh <play-facts-file>
 - Asserts that resulting state, notation, classification, and verify semantics are
   byte-identical across both paths (SC-008 agent-native parity).
 
+## voice-accuracy.sh (DL-157)
+
+```
+make voice-accuracy-gate                       # or: bash evals/runners/voice-accuracy.sh
+VOICE_ACCURACY_DIR=<dir> TRANSCRIPT_CASES=<file> bash evals/runners/voice-accuracy.sh
+```
+
+- Answers one question: does the deterministic pipeline ever score a plausibly mis-heard
+  transcript as a WRONG play *silently*, for text-detectable mis-hearings (Article VII / FR-008)?
+- Runs `dl-score` over the canonical corpus plus `variants.jsonl` (kinds: mishear, numeral,
+  filler, roster, roster_collision) at `--confidence 100` and `60`, one process per exact
+  roster value; runs `dl-bias` over `biasing-pairs.jsonl`; repeats the whole measurement and
+  byte-diffs the raw output.
+- The ONLY hard signals: a **confident-wrong** row (scored `ok` with `needs` none/confirm and
+  facts ≠ base, or a judgment surfaced on a deterministic base, or a different judgment kind),
+  a canonical regression (same semantics as `transcript-score.sh`), a pair whose `decision`/`text`
+  differ from `expect_*`, or non-deterministic output. Safe misses (clarify / out-of-grammar /
+  same judgment kind) are counted per kind, advisory. `text_layer_undetectable` rows are counted
+  and excluded from the hard signal.
+- Every accuracy-shaped line carries `FIXTURE ROBUSTNESS (advisory — not field accuracy)`:
+  the corpus is synthetic text, no ASR leg runs (WER hook is a no-op), so nothing here is a
+  field-accuracy claim.
+- Exit 0 PASS · 1 FAIL / schema error · 2 no work (zero variants or pairs) · non-Darwin SKIP
+  marker + exit 0. Mac-only, so it is standalone (not in `make gates`).
+- `tools/tests/voice-accuracy-tripwire.sh` proves the gate trips (confident-wrong, judgment on
+  deterministic base, empty corpus, wrong pair expectation) and that the control corpus passes.
+
 ## Interface contract
 
 All runners consume inputs per the format defined in `evals/INTERFACE.md` (T010).
@@ -127,6 +157,8 @@ gate exit semantics.
 - `evals/judgment-corpus/` — mislabeled-judgment adversarial corpus
 - `evals/gold/` — gold-standard game dataset
 - `evals/retrosheet-fixtures/` — cwevent regression fixtures
+- `evals/transcript-regression/` — canonical transcript→score corpus (`transcript-score.sh`)
+- `evals/voice-accuracy/` — mis-heard-transcript variants + biasing pairs (`voice-accuracy.sh`)
 - `.github/workflows/ci.yml` — CI jobs that invoke these runners
 - `core/src/classify/guard.rs` — instrumented SC-003 counter (T024)
 - `specs/001-voice-scorebook-core/tasks.md` T041–T043, T060

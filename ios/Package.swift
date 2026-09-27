@@ -46,6 +46,9 @@ let package = Package(
         // Headless transcript→score CLI (DL-37) — agent/CLI parity for scoring (Art. II/FR-018)
         // + the `$DL_PIPELINE_SCORER` the eval harness needs (evals/runners/accuracy.sh).
         .executable(name: "dl-score", targets: ["DLScore"]),
+        // Headless biasing-decision harness (DL-157 / KTD4) — labels an adversarial corpus of
+        // (base, biased) hypothesis pairs with the pure `BiasingDecision` (evals/runners/voice-accuracy.sh).
+        .executable(name: "dl-bias", targets: ["DLBias"]),
     ],
     dependencies: [
         // GRDB for SQLite / append-only event log (T055).
@@ -163,11 +166,23 @@ let package = Package(
             path: "Sources/DLScore"
         ),
 
+        // MARK: - DLBias (headless CLI, macOS)
+        // (base, biased) hypothesis pair → BiasingDecision → JSON. Measures the conservative roster-
+        // biasing policy (DL-157 / R8 / KTD4) off-device, one decision per JSON line, mirroring
+        // dl-score's shape. Depends only on SpeechTypes (the decision) + Parse (the parser
+        // threshold constant) — never the iOS ASR engines. See ios/Sources/DLBias/main.swift.
+        .executableTarget(
+            name: "DLBias",
+            dependencies: ["SpeechTypes", "Parse"],
+            path: "Sources/DLBias"
+        ),
+
         // MARK: - Tests
         .testTarget(
             name: "DiamondLedgerTests",
             dependencies: ["Core", "DiamondSpeech", "Parse", "Persistence", "UI", "Auth"],
-            path: "Tests"
+            path: "Tests",
+            exclude: ["native"]
         ),
     ]
 )

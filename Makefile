@@ -9,7 +9,7 @@
 #   make cli     # build the dl CLI and print its usage
 
 .PHONY: demo test lint gates judgment-gate retrosheet-gate proof-box-gate parity-gate accuracy-gate \
-        cli ffi-check uniffi-bindings xcframework help
+        cli ffi-check uniffi-bindings xcframework voice-accuracy-gate help
 .DEFAULT_GOAL := help
 
 CARGO ?= cargo
@@ -35,6 +35,7 @@ help:
 	@echo "  make ffi-check    build dl-core with --features uniffi (FFI surface compiles)"
 	@echo "  make uniffi-bindings  generate Swift bindings from the host dylib (no Mac SDK)"
 	@echo "  make xcframework  build the iOS XCFramework + Swift bindings (needs Xcode)"
+	@echo "  make voice-accuracy-gate  DL-157 mis-heard-transcript robustness gate via dl-score/dl-bias (Mac-only; not in gates)"
 
 # ---------------------------------------------------------------------------
 # make demo — the push-button 'does the whole pipeline work?' check.
@@ -133,3 +134,15 @@ uniffi-bindings:
 xcframework:
 	@echo ">> building iOS XCFramework (scripts/build-xcframework.sh)"
 	bash scripts/build-xcframework.sh
+
+# Voice-accuracy harness (DL-157): does the deterministic pipeline ever score a plausibly
+# mis-heard transcript as a WRONG play silently? Runs dl-score over the canonical corpus + text
+# variants (at confidence 100 and 60) and dl-bias over (base, biased) hypothesis pairs, twice,
+# and hard-fails ONLY on a confident-wrong row, a canonical regression, a pair mismatch, or
+# non-determinism. Everything else it prints is FIXTURE ROBUSTNESS (advisory — not field
+# accuracy). Mac-only (builds the macOS XCFramework slice + Swift CLIs), so it is standalone
+# like `xcframework` and deliberately NOT part of `gates` / `demo`.
+#   VOICE_ACCURACY_DIR=<dir> TRANSCRIPT_CASES=<file>  point it at another corpus.
+voice-accuracy-gate:
+	@echo ">> Voice-accuracy gate (DL-157 — dl-score/dl-bias, Mac-only)"
+	bash evals/runners/voice-accuracy.sh
