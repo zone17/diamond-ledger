@@ -15,6 +15,7 @@
 - confident-wrong rows: **0**
 - canonical regressions: **0**
 - biasing-pair mismatches: **0**
+- advisory expectation mismatches: 4 (keyword-named roster players over-clarify; corpus README finding F13, open, safe direction)
 - determinism: identical raw `dl-score`/`dl-bias` output across two runs
 
 ## What the harness found before the parser fix (same corpus, parser at commit fc670d5)
@@ -44,6 +45,7 @@ Twenty-one variant labels were corrected during the fix: 15 `same_as_base` → `
 - Numerals are deliberately not treated as positions (too overloaded in narration: counts, outs, runs), so every spoken-number variant surfaces rather than scores.
 - Text-layer undetectable rows (a mis-hearing that is itself a valid different play, e.g. "to second" for "to short"): 12, of which 10 score the other play confidently. No text-only harness can catch these; they are the case for the ASR leg (T076) and for the roster/lexicon biasing to keep those words right at the source.
 - Biasing pairs: 11 override, 28 keep_base, all as expected.
+- Independent corpus review (Article XX, 2026-09-27): 224/228 variant and 39/39 pair expectations confirmed; 4 collision rows relabeled to play semantics.
 - Transcript WER: not measured (no ASR leg in this harness).
 
 ## Open items this baseline does not cover
