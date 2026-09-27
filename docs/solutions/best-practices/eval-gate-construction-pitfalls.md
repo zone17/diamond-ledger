@@ -1,6 +1,7 @@
 ---
 module: evals/runners
 date: 2026-06-09
+last_updated: 2026-09-27
 problem_type: best_practice
 component: ci_eval_harness
 severity: high
@@ -9,13 +10,15 @@ applies_when:
   - "A toolchain-guarded gate may SKIP when its build environment is unavailable"
   - "Embedding a Python/awk comparator inside a bash heredoc that interpolates program output"
   - "Declaring a new CI job a 'hard gate' that protects a correctness invariant"
+  - "A gate reports some outcomes as 'safe' or 'advisory' categories next to its hard-fail signal"
+  - "A gate measures more than one leg (e.g. two confidence levels) but asserts only one"
 related_components:
   - ci-cd
   - eval-harness
-tags: [eval-harness, ci-gate, vacuous-gate, shell, heredoc, injection, skip-vs-pass, baseline, dl-37, sc-003, robustness]
+tags: [eval-harness, ci-gate, vacuous-gate, shell, heredoc, injection, skip-vs-pass, baseline, dl-37, sc-003, robustness, tripwire, safe-category, dl-157]
 ---
 
-# Two pitfalls that turn a "hard" eval gate into a false guardian
+# Pitfalls that turn a "hard" eval gate into a false guardian
 
 ## Context
 DL-37 added a CI regression gate (`evals/runners/transcript-score.sh`) that runs a scorer over a
@@ -71,8 +74,42 @@ command -v swift >/dev/null || { fail "swift missing on macOS — Xcode required
 if [[ "$passed_plus_failed" -eq 0 ]]; then fail "zero cases scored — vacuous run"; exit 2; fi
 ```
 
+### Pitfall 3 — a hard-fail branch no failing fixture exercises is unproven (DL-157)
+The voice-accuracy gate (`evals/runners/voice-accuracy.sh`, PR #181) shipped with a tripwire that
+proved three of its hard-fail branches and a green control. The multi-lens review then *reproduced*
+three ways it went green while wrong, each in a branch or category the tripwire never pushed on:
+
+- **A "safe" category absorbed wrong facts.** A variant that surfaced the *same judgment kind* as
+  its base was counted as a safe miss — but "reached on error by the third baseman" against an E6
+  base carries fielder 5 into the card's recommended call exactly as a confirm card would. The
+  gate reported `confident-wrong rows: 0` on it. Fix: a safe category must also require the carried
+  facts to equal the base (`is_safe_miss`, `evals/runners/voice-accuracy-compare.py:329`), and the
+  same case became a confident-wrong reason (`confident_wrong_reason`, `:347`).
+- **A measured leg had no hard signal.** The corpus ran at confidence 100 *and* at the production
+  default 60, but the 60 leg only fed an advisory clarify-rate line, so a regression of the
+  FR-008 low-confidence route (plays scoring silently at 60) would have stayed green. Fix: any
+  parseable row with `ok` and `needs` in {none, confirm} at 60 is a hard failure (`silent_at_60`,
+  `:466`).
+- **The determinism branch was never tripped.** Nothing made run 1 and run 2 differ, so the
+  `non-deterministic output → exit 1` path was dead weight nobody had seen work.
+
+The fix pattern: **one tripwire fixture per hard-fail branch, and one per "safe" category that
+could carry a wrong fact.** Branches the runner cannot easily provoke end-to-end (a silent score at
+60, a one-byte run difference) are proven by keeping the runner's scratch dir
+(`VOICE_ACCURACY_SCRATCH`), tampering with the raw outputs, and calling the comparator directly
+(`tools/tests/voice-accuracy-tripwire.sh`, fixtures 6–8; 24 assertions).
+
+### Pitfall 4 — expectations copied from today's output freeze today's bugs
+Author corpus expectations from domain semantics and *then* run the pipeline. The voice-accuracy
+corpus, written from play semantics, was red on its first run with 25 confident-wrong rows; those
+rows exposed hard-coded default fielders in the parser (a lost "short" silently became 6-3). Had
+the expectations been captured from `dl-score` output, all 25 would have been frozen as correct and
+the gate would have guarded the bug. When a semantic expectation fails, fix the pipeline or prove
+the expectation wrong from semantics — never relabel to green — and have someone other than the
+author read the rows before freezing (constitution Article XX).
+
 ## Why This Matters
-Both defects pass CI green while protecting nothing — the inverse of the project's cardinal rule
+All four defects pass CI green while protecting nothing — the inverse of the project's cardinal rule
 ("a 'never silently X' gate is only as good as its instrumentation"). A gate you trust to catch a
 correctness regression must be **robust against its own inputs** (Pitfall 1) and must **prove it
 actually ran** (Pitfall 2), or it is theater. The corpus-freeze step has a sibling trap: freeze the
@@ -89,6 +126,13 @@ its build environment is missing. Add a standing checklist for new eval gates:
   swallow the banner — capture with `cmd || RC=$?`).
 - Strengthen weak matches: require an expected token to be *present*, but don't let an unrelated
   message that merely *contains* the token pass (drop loose "equal-or-substring" branches).
+- **Every hard-fail branch has a tripwire fixture that makes it exit non-zero**, including the
+  ones only reachable by tampering with raw outputs (determinism, secondary measured legs).
+- **Every "safe"/advisory category is checked for carried wrong facts** — a category that reports
+  "the pipeline refused to score" must not also admit rows that scored something different.
+- **Every measured leg with an invariant gets a hard signal**, not only an advisory metric.
+- **Expectations come from domain semantics, reviewed by someone other than the author**, never
+  from a capture of current output.
 
 ## Examples — and the meta-lesson
 All four runner findings here were surfaced by the adversarial persona in `/ce-code-review`, which
@@ -100,6 +144,7 @@ unproven.
 
 ## Related
 - DL-37 (ADR-0015), PR #163 review.
+- DL-157 (ADR-0017), PR #181 review — pitfalls 3 and 4; `evals/voice-accuracy/README.md` records the corpus findings.
 - [[harness-on-stale-base-flags-missing-upstream-fix]] — the baseline-freeze sibling trap.
 - [[verify-generated-code-with-real-toolchain]] — `continue-on-error` advisory jobs hide failures.
 - [[parallel-squad-integration]] — green CI ≠ correct; the review gate catches real P1s.

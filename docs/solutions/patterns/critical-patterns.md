@@ -42,11 +42,23 @@ guards is broken. Three instances of the same shape have already bitten this pro
   showed the run green while the build failed — read the per-*job* conclusion
   ([verify-generated-code-with-real-toolchain](../best-practices/verify-generated-code-with-real-toolchain.md)).
 
-**Detection:** a "pass" condition no code path can make fail; an exit-code/HTTP-200 check on a tool
-that succeeds on bad input; a loop trusted by its log rather than verified by reading its output.
+- **Voice-accuracy gate holes (DL-157, PR #181)** — a "safe miss" category (same judgment kind as the
+  base) silently admitted a variant carrying a *different fielder*; the production-confidence leg
+  (60) fed only an advisory metric, so an FR-008 regression would pass; the determinism branch was
+  never tripped. The first tripwire proved three branches and missed all three holes. And a corpus
+  whose expectations were authored from semantics (not captured output) was red on day one with 25
+  confident-wrong rows — captured expectations would have frozen that bug as correct
+  ([eval-gate-construction-pitfalls](../best-practices/eval-gate-construction-pitfalls.md), pitfalls 3–4).
 
-**Rule:** wire an adversarial input that *should* trip the gate and prove it fails; assert on the
-authoritative signal, not a convenient proxy.
+**Detection:** a "pass" condition no code path can make fail; an exit-code/HTTP-200 check on a tool
+that succeeds on bad input; a loop trusted by its log rather than verified by reading its output; a
+hard-fail branch with no failing fixture; a "safe"/advisory bucket that never compares the facts it
+carries; a measured leg with an invariant but no hard signal; expectations captured from current output.
+
+**Rule:** wire an adversarial input that *should* trip the gate and prove it fails — **one per hard-fail
+branch and one per "safe" category that could carry a wrong fact** (tamper with kept raw outputs for
+branches the runner can't provoke end-to-end); assert on the authoritative signal, not a convenient
+proxy; author expectations from domain semantics and have someone other than the author freeze them.
 
 **When to apply:** every eval gate, CI check, and batch mutation.
 
