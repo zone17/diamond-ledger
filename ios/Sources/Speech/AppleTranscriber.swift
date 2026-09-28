@@ -500,7 +500,7 @@ public actor AppleTranscriber: Transcriber {
         let decision = BiasingStrategy.decide(
             baseText: baseText, baseConfidence: baseConfidence, biased: biased,
             contextualStrings: contextualStrings)
-        return (BiasingStrategy.Outcome(text: decision.text, confidence: decision.confidence),
+        return (BiasingStrategy.Outcome(decision),
                 VoiceDiagnostics.BiasingPass(decision.reason), biased?.1)
     }
 
@@ -692,6 +692,17 @@ enum BiasingStrategy {
     struct Outcome: Sendable, Equatable {
         let text: String
         let confidence: Float?
+
+        init(text: String, confidence: Float?) {
+            self.text = text
+            self.confidence = confidence
+        }
+
+        /// The kept text and confidence of a full decision — the one mapping `choose` and the
+        /// production biasing pass share.
+        init(_ decision: BiasingOutcome) {
+            self.init(text: decision.text, confidence: decision.confidence)
+        }
     }
 
     /// Mirrors `GrammarParser.lowConfidenceThreshold` (70). `DiamondSpeech` must not import
@@ -733,10 +744,9 @@ enum BiasingStrategy {
         biased: (String, Float)?,
         contextualStrings: [String]
     ) -> Outcome {
-        let decision = decide(
+        Outcome(decide(
             baseText: baseText, baseConfidence: baseConfidence, biased: biased,
-            contextualStrings: contextualStrings)
-        return Outcome(text: decision.text, confidence: decision.confidence)
+            contextualStrings: contextualStrings))
     }
 
     /// `choose` with the deciding guard kept: the full `BiasingOutcome`, whose `reason` feeds the

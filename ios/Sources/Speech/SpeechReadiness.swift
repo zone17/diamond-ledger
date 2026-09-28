@@ -144,20 +144,28 @@ public actor SpeechReadiness {
     private var modelReady = false
     /// The preload currently in flight, if any (never more than one).
     private var preloadTask: Task<Void, Never>?
+    /// After a failed preload, no new attempt starts before this instant, so a bad connection
+    /// does not restart a model download on every press and scene activation.
+    private var nextPreloadAttempt: ContinuousClock.Instant?
+    /// How long to wait after a failed preload before trying again (`live()` uses 30 s).
+    private let retryCooldown: Duration
 
     public init(microphone: any MicrophonePermissionProviding,
                 speech: any SpeechAuthorizationProviding,
-                model: any SpeechModelPreloading) {
+                model: any SpeechModelPreloading,
+                retryCooldown: Duration = .zero) {
         self.microphone = microphone
         self.speech = speech
         self.model = model
+        self.retryCooldown = retryCooldown
     }
 
     /// The production wiring: real permission APIs and the Apple model preload.
     public static func live() -> SpeechReadiness {
         SpeechReadiness(microphone: LiveMicrophonePermission(),
                         speech: LiveSpeechAuthorization(),
-                        model: LiveSpeechModelPreloader())
+                        model: LiveSpeechModelPreloader(),
+                        retryCooldown: .seconds(30))
     }
 
     /// New Game: shows the microphone and speech prompts (each only if still unanswered), starts
@@ -174,9 +182,11 @@ public actor SpeechReadiness {
         let mic = await microphone.status()
         let speechStatus = await speech.status()
 
-        // The model can download as soon as speech access is not refused — even while the mic is
-        // still denied — so granting the mic later finds the model already there.
-        if speechStatus != .denied {
+        // The model downloads once speech access is GRANTED — even while the mic is still denied —
+        // so granting the mic later finds the model already there. Never while speech is merely
+        // unanswered: the Apple preload itself requests speech authorization, and `evaluate` runs
+        // on scene activation and on every press, where a system prompt must never appear (R4).
+        if speechStatus == .granted {
             startPreloadIfNeeded()
         }
 
@@ -194,6 +204,7 @@ public actor SpeechReadiness {
 
     private func startPreloadIfNeeded() {
         guard !modelReady, preloadTask == nil else { return }
+        if let next = nextPreloadAttempt, ContinuousClock.now < next { return }
         let model = self.model
         preloadTask = Task.detached { [weak self] in
             let succeeded: Bool
@@ -208,7 +219,12 @@ public actor SpeechReadiness {
     }
 
     private func preloadFinished(succeeded: Bool) {
-        if succeeded { modelReady = true }
+        if succeeded {
+            modelReady = true
+            nextPreloadAttempt = nil
+        } else {
+            nextPreloadAttempt = ContinuousClock.now.advanced(by: retryCooldown)
+        }
         preloadTask = nil
     }
 }

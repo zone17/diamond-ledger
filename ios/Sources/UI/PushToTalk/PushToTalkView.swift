@@ -225,9 +225,17 @@ final class PTTPress {
     var released = false
     /// When that release happened — the start of the release-to-transcript latency (U5).
     var releasedAt: Date?
+    /// The game this press scores into. A transcript that arrives after that game closed is
+    /// dropped, never recorded into nothing or into a different game.
+    let gameId: String?
+    /// Set when the app leaves the foreground after the release but before `stop()` returned
+    /// (the release tail): the utterance is discarded like any other interruption (R3). iOS may
+    /// cancel the touch — which reads as a release — before the scene reports `.background`.
+    var discardOnRelease = false
 
-    init(script: WoZScript) {
+    init(script: WoZScript, gameId: String?) {
         self.script = script
+        self.gameId = gameId
     }
 }
 
@@ -269,9 +277,16 @@ enum PushToTalkPipeline {
     @discardableResult
     static func scenePhaseChanged(_ phase: ScenePhase, appState: AppState) -> Task<Void, Never>? {
         switch phase {
-        case .background:
-            guard let press = appState.currentPress, !press.released else { return nil }
-            return cancel(press, message: AppState.interruptionMessage(for: .background), appState: appState)
+        case .background, .inactive:
+            // R3: losing the foreground ends the utterance. A held press is cancelled now; a press
+            // already released but still in its tail is discarded when `stop()` returns, because
+            // iOS may cancel the touch (a release) before the scene phase changes.
+            guard let press = appState.currentPress else { return nil }
+            guard press.released else {
+                return cancel(press, message: AppState.interruptionMessage(for: .background), appState: appState)
+            }
+            press.discardOnRelease = true
+            return nil
         case .active:
             return Task { _ = await appState.refreshVoiceReadiness() }
         default:
@@ -303,7 +318,7 @@ enum PushToTalkPipeline {
             discardCapture(of: stale)
         }
         appState.pttState = .listening
-        let press = PTTPress(script: script)
+        let press = PTTPress(script: script, gameId: appState.activeGame?.gameId)
         appState.currentPress = press
         let task = Task { await begin(press, appState: appState) }
         press.startTask = task
@@ -369,10 +384,15 @@ enum PushToTalkPipeline {
                 return
             }
             guard appState.currentPress === press else { return }
+            guard !press.discardOnRelease else {
+                recordInterrupted(appState: appState)
+                abandon(press, message: AppState.interruptionMessage(for: .background), appState: appState)
+                return
+            }
             appState.currentPress = nil
             let transcriber = await appState.transcriberFactory(press.script)
             await score(with: transcriber, buffer: buffer, script: press.script,
-                        releasedAt: press.releasedAt ?? Date(), appState: appState)
+                        releasedAt: press.releasedAt ?? Date(), gameId: press.gameId, appState: appState)
         }
     }
 
@@ -390,6 +410,18 @@ enum PushToTalkPipeline {
     private static func cancel(_ press: PTTPress, message: String, appState: AppState) -> Task<Void, Never> {
         abandon(press, message: message, appState: appState)
         return discardCapture(of: press)
+    }
+
+    /// Ends any live press without scoring it: the game it belongs to is going away (exit without
+    /// saving, sign-out). A held press stops its capture and drops the audio; a released press
+    /// still in `stop()` finds itself no longer current and drops its buffer. Called by
+    /// `AppState` before it resets `pttState`, so a microphone is never left open behind a
+    /// closed game.
+    static func endLivePress(appState: AppState) {
+        guard let press = appState.currentPress else { return }
+        appState.currentPress = nil
+        recordInterrupted(appState: appState)
+        if !press.released { discardCapture(of: press) }
     }
 
     /// Stops `press`'s capture once its start settles and drops the buffer unread (FR-022).
@@ -432,10 +464,12 @@ enum PushToTalkPipeline {
     ///   latency, outcome — never audio or text). `nil` (the DEBUG facilitator's synthesized
     ///   buffer) records nothing, so demo plays never pollute the device evidence.
     static func score(with transcriber: any Transcriber, buffer: consuming DiamondSpeech.AudioBuffer,
-                      script: WoZScript, releasedAt: Date? = nil, appState: AppState) async {
+                      script: WoZScript, releasedAt: Date? = nil, gameId: String? = nil,
+                      appState: AppState) async {
         let captureSeconds = buffer.durationSeconds
         let (outcome, transcribedAt) = await run(
-            with: transcriber, buffer: buffer, script: script, appState: appState)
+            with: transcriber, buffer: buffer, script: script,
+            gameId: gameId ?? appState.activeGame?.gameId, appState: appState)
         guard let releasedAt else { return }
         let latencyMs = transcribedAt.map { Int(($0.timeIntervalSince(releasedAt) * 1000).rounded()) }
         await appState.voiceDiagnostics.recordCapture(
@@ -452,7 +486,7 @@ enum PushToTalkPipeline {
     /// The scoring body. Returns how the utterance ended and when its transcript arrived (nil
     /// when transcription threw), for the diagnostics record.
     private static func run(with transcriber: any Transcriber, buffer: consuming DiamondSpeech.AudioBuffer,
-                            script: WoZScript,
+                            script: WoZScript, gameId: String?,
                             appState: AppState) async -> (VoiceDiagnostics.CaptureOutcome, Date?) {
         // Snapshot once so the engine and the parser see the same roster (R21 + R22).
         let roster = appState.activeRoster
@@ -463,6 +497,11 @@ enum PushToTalkPipeline {
             await transcriber.setContextualStrings(roster)
             let transcript = try await transcriber.transcribe(buffer: consume buffer)
             transcribedAt = Date()
+            // The game closed (exit without saving, sign-out) while this utterance was being
+            // transcribed: drop it. Recording it would be a silent no-op or land in another game.
+            guard gameId != nil, appState.activeGame?.gameId == gameId else {
+                return (.interrupted, transcribedAt)
+            }
 
             // Grammar parse: Transcript → NormalizedPlay, with roster names masked (R22).
             let parser = GrammarParser()

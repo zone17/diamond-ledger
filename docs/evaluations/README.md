@@ -59,7 +59,8 @@ T076 (`specs/001-voice-scorebook-core/tasks.md`): *field-test crowd-noise WER on
 phrases — the real ASR risk; ties SC-005/A5 — record results in `docs/evaluations/`.*
 
 It needs a physical iPhone on iOS 26 with a microphone, a real crowd environment, and microphone
-capture on the push-to-talk path (T046, not yet implemented — see `MANUAL-TESTING.md`).  Record it
+capture on the push-to-talk path (T046, implemented in #176 — run
+`2026-09-device-voice-checklist.md` first).  Record it
 here as `YYYY-MM-crowd-noise-wer.md` with:
 
 - device model and iOS build; engine (`AppleTranscriber` or `SherpaTranscriber`); app commit;

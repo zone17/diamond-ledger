@@ -8,7 +8,7 @@ rather than rewrite. Newest decisions at the top.
 
 ## ADR-0019 — Push-to-talk microphone capture, readiness, and no Stub on device (#176)
 
-**Date:** 2026-09-27 · **Status:** Accepted · **Plan:** `docs/plans/2026-09-27-1046-feat-ptt-mic-capture-plan.md`
+**Date:** 2026-09-27 · **Status:** Accepted · **Plan:** `docs/plans/2026-09-27-1046-feat-ptt-mic-capture-plan.md` · **Owner:** Squad B (iOS Voice Client), #176
 
 ### Context
 Push-to-talk handed the transcriber an empty buffer, so on a phone the Apple engine threw

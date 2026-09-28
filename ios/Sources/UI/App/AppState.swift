@@ -308,6 +308,7 @@ public final class AppState {
     #endif
 
     func signOut() {
+        PushToTalkPipeline.endLivePress(appState: self)   // never leave a mic open behind the game
         authStore.signOut()
         session = nil
         activeGame = nil
@@ -618,6 +619,7 @@ public final class AppState {
     /// game). The real core keeps its append-only log, but the iOS session forgets the game — the
     /// user explicitly chose not to produce an official record. No finalize is attempted.
     func exitGameWithoutFinalizing() {
+        PushToTalkPipeline.endLivePress(appState: self)   // never leave a mic open behind the game
         activeGame = nil
         activeRoster = []
         presentedSheet = nil
