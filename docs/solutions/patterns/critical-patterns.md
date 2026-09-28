@@ -49,8 +49,15 @@ guards is broken. Three instances of the same shape have already bitten this pro
   whose expectations were authored from semantics (not captured output) was red on day one with 25
   confident-wrong rows — captured expectations would have frozen that bug as correct
   ([eval-gate-construction-pitfalls](../best-practices/eval-gate-construction-pitfalls.md), pitfalls 3–4).
+- **Silent fake over a side-effecting platform call (#176, PR #186)** — every readiness test injected
+  a `FakePreloader` that only succeeds, fails, or holds, but the real `AppleTranscriber.preloadAssets()`
+  calls `SpeechAuthorization.request()` first. A readiness check that promised "never prompts" showed
+  the system speech prompt on app activation, and 353 green tests could not see it. The fake was the
+  proxy; the real call's side effect was the signal
+  ([push-to-talk-implicit-exits-and-hidden-prompt-side-effects](../ui-bugs/push-to-talk-implicit-exits-and-hidden-prompt-side-effects.md)).
 
-**Detection:** a "pass" condition no code path can make fail; an exit-code/HTTP-200 check on a tool
+**Detection:** a "pass" condition no code path can make fail; a fake for a platform call whose real
+implementation prompts, downloads, or persists; an exit-code/HTTP-200 check on a tool
 that succeeds on bad input; a loop trusted by its log rather than verified by reading its output; a
 hard-fail branch with no failing fixture; a "safe"/advisory bucket that never compares the facts it
 carries; a measured leg with an invariant but no hard signal; expectations captured from current output.
