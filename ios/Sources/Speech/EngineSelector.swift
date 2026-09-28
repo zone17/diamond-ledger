@@ -5,13 +5,13 @@
 /// Priority order:
 ///   1. **Apple** (`AppleTranscriber`) — primary, on-device, iOS 26+ only.
 ///   2. **Sherpa** (`SherpaTranscriber`) — fallback, portable, iOS 16+.
-///   3. **Stub** (`StubTranscriber`) — debug / Wizard-of-Oz fallback behind a runtime toggle.
+///   3. **Stub** (`StubTranscriber`) — DEBUG-only Wizard-of-Oz seam (`forceStub`); never a fallback.
 ///
 /// The default at runtime is:
 ///   - Simulator + debug: **Stub** (WoZ-compatible; no microphone required).
-///   - Device, iOS 26+, `SpeechAnalyzer` authorized: **Apple**.
-///   - Device, sherpa model present: **Sherpa**.
-///   - Fallback: **Stub** with a warning log.
+///   - Device, iOS 26+, speech authorization not denied: **Apple**.
+///   - Speech denied, or no real engine: **`UnavailableTranscriber`** — throws, never a canned
+///     transcript (DL-176 KTD6).
 ///
 /// ## Integration point
 ///
@@ -73,57 +73,62 @@ public enum TranscriberEngineSelector {
 
     /// Returns the best available `any Transcriber` for the current runtime context.
     ///
-    /// Resolution priority:
-    ///   1. `forceStub == true` → `StubTranscriber` (WoZ / debug).
-    ///   2. iOS 26+ AND Apple engine available → `AppleTranscriber`.
-    ///   3. Sherpa model present → `SherpaTranscriber`.
-    ///   4. Fallback → `StubTranscriber` with a warning.
-    public static func resolve(wozScript: WoZScript = .groundOut63) async -> any Transcriber {
-        // 1. Debug / WoZ override.
+    /// Resolution priority (DL-176 KTD6 — **no Stub on a device**):
+    ///   1. `forceStub == true` → `StubTranscriber` (DEBUG-only seam: simulator default + WoZ demo).
+    ///   2. Speech authorization denied → `UnavailableTranscriber(.permissionDenied)`.
+    ///   3. iOS 26+ → `AppleTranscriber` (a not-yet-downloaded model is a readiness concern,
+    ///      handled by `SpeechReadiness`, not a reason to pick another engine).
+    ///   4. Sherpa model present → `SherpaTranscriber`.
+    ///   5. Otherwise → `UnavailableTranscriber(.engineUnavailable(.apple))`.
+    ///
+    /// Outside the DEBUG seam this can never return the Stub: a canned transcript on a device would
+    /// be a fabricated play (Article VII / FR-008).
+    ///
+    /// - Parameter speechAuthorization: live speech-authorization status. Injected so tests never
+    ///   call `SFSpeechRecognizer.authorizationStatus()` (the test host has no usage strings).
+    public static func resolve(
+        wozScript: WoZScript = .groundOut63,
+        speechAuthorization: any SpeechAuthorizationProviding = LiveSpeechAuthorization()
+    ) async -> any Transcriber {
+        // 1. Debug / WoZ override. The Stub construction is compiled into DEBUG builds only, so a
+        //    release binary has no path that returns a canned transcript (DL-176 KTD6).
+#if DEBUG
         if forceStub {
             return StubTranscriber(script: wozScript)
         }
+#endif
 
-        // 2. Apple on-device (iOS 26+, primary).
-        if #available(iOS 26, *) {
-            let apple = AppleTranscriber()
-            if await apple.isAvailable {
-                return apple
-            }
+        // 2. A denied speech permission can never produce a play.
+        if await speechAuthorization.status() == .denied {
+            engineWarningLog("Speech recognition permission denied — voice capture unavailable.")
+            return UnavailableTranscriber(reason: .permissionDenied)
         }
 
-        // 3. Sherpa fallback (portable, iOS 16+).
+        // 3. Apple on-device (iOS 26+, primary).
+        if #available(iOS 26, *) {
+            return AppleTranscriber()
+        }
+
+        // 4. Sherpa fallback (portable, pre-26 OS).
         let sherpa = SherpaTranscriber()
         if await sherpa.isAvailable {
             return sherpa
         }
 
-        // 4. Last resort: stub with a warning.
-        // This path should not be reached in production; it indicates either:
-        //   - No microphone permission granted (handled by the individual engine's `isAvailable`).
-        //   - Pre-iOS-26 device with no sherpa model bundle present.
-        // Log a warning and surface the stub so the UI degrades gracefully.
-        engineWarningLog("No real ASR engine available — falling back to StubTranscriber. " +
-            "On-device speech recognition will not function.")
-        return StubTranscriber(script: wozScript)
+        // 5. No real engine: fail visibly, never fall back to the Stub.
+        engineWarningLog("No real ASR engine available — voice capture unavailable.")
+        return UnavailableTranscriber(reason: .engineUnavailable(.apple))
     }
 
     // MARK: - Engine identification (for observability / audit)
 
-    /// Returns the `TranscriberEngine` that `resolve()` would select (without constructing
-    /// the full transcriber). Useful for logging and diagnostics.
-    public static func resolvedEngineKind() async -> TranscriberEngine {
-        if forceStub { return .stub }   // WoZ / debug stub — reported distinctly (ADR-0010)
-
-        if #available(iOS 26, *) {
-            let apple = AppleTranscriber()
-            if await apple.isAvailable { return .apple }
-        }
-
-        let sherpa = SherpaTranscriber()
-        if await sherpa.isAvailable { return .sherpa }
-
-        return .stub  // last-resort fallback is the stub — never a lie about real ASR
+    /// Returns the `TranscriberEngine` that `resolve()` would select. `.stub` only under the DEBUG
+    /// `forceStub` seam; an `UnavailableTranscriber` reports the engine it stands in for (it never
+    /// produces a transcript, so no transcript can be mislabeled — ADR-0010).
+    public static func resolvedEngineKind(
+        speechAuthorization: any SpeechAuthorizationProviding = LiveSpeechAuthorization()
+    ) async -> TranscriberEngine {
+        await resolve(speechAuthorization: speechAuthorization).engine
     }
 
     // MARK: - Private
@@ -133,4 +138,36 @@ public enum TranscriberEngineSelector {
         // For now, use os_log or a simple print that can be replaced at T023.
         print("[EngineSelector WARNING] \(message)")
     }
+}
+
+// MARK: - UnavailableTranscriber
+
+/// Stands in for a real engine that cannot run (speech permission denied, no model/engine). Every
+/// call throws its reason, so the push-to-talk pipeline surfaces a readable message instead of a
+/// play (DL-176 KTD6). This replaces the old silent `StubTranscriber` fallback on devices.
+public struct UnavailableTranscriber: Transcriber {
+    /// Why the engine cannot run. Only `.permissionDenied` or `.engineUnavailable` are meaningful.
+    public let reason: TranscriberError
+    /// The engine this stands in for (it never produces a transcript under that label).
+    public let engine: TranscriberEngine
+
+    public init(reason: TranscriberError, engine: TranscriberEngine = .apple) {
+        self.reason = reason
+        self.engine = engine
+    }
+
+    public var isAvailable: Bool {
+        get async { false }
+    }
+
+    public func transcribe(buffer: consuming AudioBuffer) async throws -> Transcript {
+        _ = consume buffer   // FR-022: nothing retained
+        throw reason
+    }
+
+    public func preloadAssets() async throws {
+        throw reason
+    }
+
+    public func setContextualStrings(_ phrases: [String]) async {}
 }

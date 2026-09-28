@@ -50,6 +50,7 @@ label; the exact command that regenerates it; the environment (OS, Xcode, device
 | File | Label | Status |
 |------|-------|--------|
 | `2026-09-voice-accuracy-baseline.md` | `FIXTURE ROBUSTNESS (advisory — not field accuracy)` | **to be added** — the first run of `make voice-accuracy-gate` over the real `evals/voice-accuracy/` corpus, including the clarify-rate finding at confidence 60 and 100 (DL-157) |
+| `2026-09-device-voice-checklist.md` | procedure (no numbers) | the human device run for push-to-talk capture (#176); its run produces `YYYY-MM-device-voice-run.md` |
 | `YYYY-MM-crowd-noise-wer.md` | `FIELD ACCURACY` (on device) | **pending T076** — see below |
 
 ## Where T076 field results go
@@ -58,7 +59,8 @@ T076 (`specs/001-voice-scorebook-core/tasks.md`): *field-test crowd-noise WER on
 phrases — the real ASR risk; ties SC-005/A5 — record results in `docs/evaluations/`.*
 
 It needs a physical iPhone on iOS 26 with a microphone, a real crowd environment, and microphone
-capture on the push-to-talk path (T046, not yet implemented — see `MANUAL-TESTING.md`).  Record it
+capture on the push-to-talk path (T046, implemented in #176 — run
+`2026-09-device-voice-checklist.md` first).  Record it
 here as `YYYY-MM-crowd-noise-wer.md` with:
 
 - device model and iOS build; engine (`AppleTranscriber` or `SherpaTranscriber`); app commit;

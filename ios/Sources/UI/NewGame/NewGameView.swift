@@ -8,6 +8,9 @@
 ///   - B1 / T045 Gherkin AC: "Given signed-in owner, when they enter two team names and tap
 ///     Start, then createGame is called with those names and the active game is set."
 ///
+/// DL-176 R4: Start requests microphone + speech permission before creating the game; the
+/// on-device model downloads in the background and never delays the game.
+///
 /// MVP scope: team names + optional lineup names (no positions at this stage).
 /// Full roster management (FR-001 substitutions) is a later increment.
 
@@ -124,7 +127,9 @@ struct NewGameView: View {
         defer { isCreating = false }
         // Lineups feed the active roster (DL-157 R21/R22: ASR biasing + parser name masking).
         // Only what is on screen counts: with the toggle off, names typed earlier are not sent.
-        await appState.createGame(
+        // `startNewGame` asks for mic + speech permission here — never mid-hold — and starts the
+        // voice-model download in the background; the game never waits for it (DL-176 R4).
+        await appState.startNewGame(
             homeTeam: home,
             visitorTeam: visitor,
             homeLineup: showLineups ? homeLineup : [],

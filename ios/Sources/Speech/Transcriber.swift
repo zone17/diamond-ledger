@@ -56,13 +56,15 @@ import Foundation
 ///         the `transcribe` call — doing so with a noncopyable type is a compile-time error,
 ///         which is intentional.
 ///
-/// TODO: T046 — bind to AVAudioPCMBuffer or CMSampleBuffer; decide format (16 kHz mono Int16).
+/// Format (decided at DL-176): 16 kHz, mono, interleaved, native-endian Int16 PCM with no header,
+/// produced by `PCM16Accumulator` from the push-to-talk capture; `durationSeconds` is the frame
+/// count ÷ 16 000. Never retained after `transcribe(buffer:)` returns (FR-022).
 /// TODO: T047 — verify at conformer review that no retained copy of rawBytes escapes the frame.
 /// `Sendable` (all stored properties — `Data`, `Double`, `Date` — are `Sendable`) so the
 /// `~Copyable` buffer can be transferred into an `actor`-isolated `Transcriber` conformer
 /// (e.g. `StubTranscriber`) across the async boundary without a Swift 6 concurrency error.
 public struct AudioBuffer: ~Copyable, Sendable {
-    /// Opaque raw bytes — format TBD at T046 (16 kHz mono Int16 expected).
+    /// Raw PCM bytes: 16 kHz mono interleaved Int16, `frames × 2` bytes (see the type doc).
     ///
     /// CONTRACT: conformers of `Transcriber` MUST NOT retain a reference to this `Data` value
     /// after `transcribe(buffer:)` returns. The `~Copyable` annotation on `AudioBuffer` makes

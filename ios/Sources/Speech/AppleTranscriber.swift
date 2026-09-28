@@ -123,10 +123,14 @@ public actor AppleTranscriber: Transcriber {
     /// Tracks whether the `AssetInventory` model preload has completed for `locale` (idempotent).
     private var modelInstalled: Bool = false
 
+    /// Where each transcription's numeric record goes (DL-176 U5, KTD7). Numbers and reasons only.
+    private let diagnostics: VoiceDiagnostics
+
     // MARK: - Init
 
-    public init(locale: Locale = Locale.current) {
+    public init(locale: Locale = Locale.current, diagnostics: VoiceDiagnostics = .shared) {
         self.locale = locale
+        self.diagnostics = diagnostics
     }
 
     // MARK: - Transcriber: isAvailable
@@ -259,8 +263,9 @@ public actor AppleTranscriber: Transcriber {
         let captureLocale = locale
 
         // Run the real SpeechAnalyzer transcription, biased by the domain vocabulary.
-        let (text, confidence) = try await Self.runTranscription(
+        let (text, confidence, record) = try await Self.runTranscription(
             pcmBuffer: pcmBuffer, contextualStrings: strings, locale: captureLocale)
+        await diagnostics.recordTranscription(record)
 
         // FR-008: a terminal-but-empty hypothesis is an error, never a silent empty transcript.
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -337,11 +342,14 @@ public actor AppleTranscriber: Transcriber {
     ///
     /// After the final hypothesis is collected, the `applyBiasing` / SFSpeechRecognizer pass runs
     /// under the four-guard `BiasingDecision` policy (DL-157) — see the type-level doc comment.
+    /// The third element is the utterance's numeric diagnostics record (DL-176 U5): the base
+    /// confidence as reported (nil stays nil — never the fallback), the biased leg's measured
+    /// confidence, and the biasing reason.
     private nonisolated static func runTranscription(
         pcmBuffer: sending AVAudioPCMBuffer,
         contextualStrings: [String],
         locale: Locale
-    ) async throws -> (String, Float) {
+    ) async throws -> (String, Float, VoiceDiagnostics.TranscriptionRecord) {
         let transcriber = makeTranscriber(locale: locale)
         let analyzer = SpeechAnalyzer(modules: [transcriber])
 
@@ -431,15 +439,19 @@ public actor AppleTranscriber: Transcriber {
         // text AND its nil confidence untouched, which falls through to the conservative default.
         let baseTrimmed = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !contextualStrings.isEmpty, !baseTrimmed.isEmpty else {
-            return (finalText, nativeConfidence ?? defaultConfidenceWhenUnreported)
+            let record = VoiceDiagnostics.TranscriptionRecord(
+                engine: .apple, baseConfidence: nativeConfidence, biasedConfidence: nil, biasing: .notAttempted)
+            return (finalText, nativeConfidence ?? defaultConfidenceWhenUnreported, record)
         }
-        let outcome = await applyBiasing(
+        let (outcome, pass, biasedConfidence) = await applyBiasing(
             baseText: finalText,
             baseConfidence: nativeConfidence,
             pcmBuffer: pcmBuffer,
             contextualStrings: contextualStrings,
             locale: locale)
-        return (outcome.text, outcome.confidence ?? defaultConfidenceWhenUnreported)
+        let record = VoiceDiagnostics.TranscriptionRecord(
+            engine: .apple, baseConfidence: nativeConfidence, biasedConfidence: biasedConfidence, biasing: pass)
+        return (outcome.text, outcome.confidence ?? defaultConfidenceWhenUnreported, record)
     }
 
     /// `nonisolated` contextual-biasing pass. Building the `SFSpeechAudioBufferRecognitionRequest`
@@ -455,17 +467,20 @@ public actor AppleTranscriber: Transcriber {
     /// `requiresOnDeviceRecognition = true` would produce an immediate error — but the explicit
     /// guard makes the intent unambiguous and avoids any state where we'd enqueue a recognition
     /// task that Apple cannot service on-device.
+    /// Alongside the outcome it returns, for diagnostics only, why the pass ended and the biased
+    /// leg's measured confidence (nil when that leg produced nothing).
     private nonisolated static func applyBiasing(
         baseText: String,
         baseConfidence: Float?,
         pcmBuffer: sending AVAudioPCMBuffer,
         contextualStrings: [String],
         locale: Locale
-    ) async -> BiasingStrategy.Outcome {
+    ) async -> (BiasingStrategy.Outcome, VoiceDiagnostics.BiasingPass, Float?) {
+        let keepBase = BiasingStrategy.Outcome(text: baseText, confidence: baseConfidence)
         guard let recognizer = SFSpeechRecognizer(locale: locale),
               recognizer.isAvailable,
               recognizer.supportsOnDeviceRecognition else {       // P1: never a dangling callback
-            return .init(text: baseText, confidence: baseConfidence)
+            return (keepBase, .recognizerUnavailable, nil)
         }
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition = true        // on-device only (FR-021/FR-022)
@@ -480,11 +495,13 @@ public actor AppleTranscriber: Transcriber {
         do {
             biased = try await SFRecognitionBridge.recognizeOnce(recognizer: recognizer, request: request)
         } catch {
-            return .init(text: baseText, confidence: baseConfidence)
+            return (keepBase, .recognizerFailed, nil)
         }
-        return BiasingStrategy.choose(
+        let decision = BiasingStrategy.decide(
             baseText: baseText, baseConfidence: baseConfidence, biased: biased,
             contextualStrings: contextualStrings)
+        return (BiasingStrategy.Outcome(decision),
+                VoiceDiagnostics.BiasingPass(decision.reason), biased?.1)
     }
 
     /// Extracts a native confidence in [0, 1] from a `SpeechTranscriber` result, if the framework
@@ -675,6 +692,17 @@ enum BiasingStrategy {
     struct Outcome: Sendable, Equatable {
         let text: String
         let confidence: Float?
+
+        init(text: String, confidence: Float?) {
+            self.text = text
+            self.confidence = confidence
+        }
+
+        /// The kept text and confidence of a full decision — the one mapping `choose` and the
+        /// production biasing pass share.
+        init(_ decision: BiasingOutcome) {
+            self.init(text: decision.text, confidence: decision.confidence)
+        }
     }
 
     /// Mirrors `GrammarParser.lowConfidenceThreshold` (70). `DiamondSpeech` must not import
@@ -716,13 +744,25 @@ enum BiasingStrategy {
         biased: (String, Float)?,
         contextualStrings: [String]
     ) -> Outcome {
-        let decision = BiasingDecision.decide(
+        Outcome(decide(
+            baseText: baseText, baseConfidence: baseConfidence, biased: biased,
+            contextualStrings: contextualStrings))
+    }
+
+    /// `choose` with the deciding guard kept: the full `BiasingOutcome`, whose `reason` feeds the
+    /// voice diagnostics record (DL-176 U5). Same inputs, same policy, same text and confidence.
+    static func decide(
+        baseText: String,
+        baseConfidence: Float?,
+        biased: (String, Float)?,
+        contextualStrings: [String]
+    ) -> BiasingOutcome {
+        BiasingDecision.decide(
             base: baseText,
             baseConfidence: baseConfidence,
             biased: biased.map { BiasedHypothesis(text: $0.0, confidence: $0.1) },
             vocabulary: ContextualVocabulary(phrases: contextualStrings),
             policy: policy)
-        return Outcome(text: decision.text, confidence: decision.confidence)
     }
 }
 

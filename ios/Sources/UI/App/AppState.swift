@@ -127,6 +127,25 @@ public final class AppState {
     /// before every transcribe. Follows the `init(core:consentDefaults:authStore:)` injection style.
     let transcriberFactory: @Sendable (WoZScript) async -> any Transcriber
 
+    /// Permission + on-device model readiness (DL-176 R4/R5, KTD5). Production uses the live
+    /// providers; tests inject fakes so no real permission API is ever called.
+    let speechReadiness: SpeechReadiness
+
+    /// The last readiness verdict — set at New Game and on every `refreshVoiceReadiness()` (each
+    /// press and each scene activation). `nil` until first evaluated.
+    private(set) var voiceReadiness: SpeechReadinessState?
+
+    /// What to tell the scorer about the current readiness, or `nil` when voice is ready (or has
+    /// not been evaluated yet).
+    var voiceReadinessMessage: String? {
+        voiceReadiness.flatMap(Self.readinessMessage(for:))
+    }
+
+    /// Builds the microphone capture for ONE press (DL-176 U4, KTD1). Called once per press, never
+    /// reused: after a media-services reset the audio engine must be rebuilt, and `LiveAudioCapture`
+    /// holds one engine for its lifetime. Tests inject a fake yielding synthetic PCM.
+    let captureFactory: @Sendable () -> any AudioCaptureSource
+
     // MARK: Navigation
 
     /// The currently presented sheet (card A/B, new-game, clarify, etc.)
@@ -147,6 +166,18 @@ public final class AppState {
 
     var pttState: PTTState = .idle
 
+    /// The press in flight, from touch-down until its utterance is handed to the transcriber or
+    /// discarded. Owned by `PushToTalkPipeline`; never observed by views.
+    @ObservationIgnored var currentPress: PTTPress?
+
+    /// True from a touch-down until its touch-up. One touch is one press: drags within it never
+    /// start another capture, even after a cap or interruption ended the first (plan U4).
+    @ObservationIgnored var pttTouchActive = false
+
+    /// Where each push-to-talk utterance's numeric record goes (DL-176 U5, KTD7): capture
+    /// duration, release-to-transcript latency, outcome. Tests swap in a fresh instance.
+    @ObservationIgnored var voiceDiagnostics: VoiceDiagnostics = .shared
+
     // MARK: Error banner
 
     struct AppError: Identifiable {
@@ -166,11 +197,18 @@ public final class AppState {
     ///   - consentDefaults: age-gate backing store; tests inject a throwaway suite.
     ///   - authStore: session persistence; tests inject one backed by `InMemorySessionStore`.
     ///   - transcriberFactory: ASR engine resolution per capture; `nil` = `TranscriberEngineSelector`.
+    ///   - speechReadiness: permission/model readiness; `nil` = `SpeechReadiness.live()`. The live
+    ///     providers are only touched by `startNewGame` / `refreshVoiceReadiness`, never at init.
+    ///   - captureFactory: one microphone capture per press; `nil` = a fresh `LiveAudioCapture`.
     public init(core: any CoreClient,
                 consentDefaults: UserDefaults = .standard,
                 authStore: AuthStore? = nil,
-                transcriberFactory: (@Sendable (WoZScript) async -> any Transcriber)? = nil) {
+                transcriberFactory: (@Sendable (WoZScript) async -> any Transcriber)? = nil,
+                speechReadiness: SpeechReadiness? = nil,
+                captureFactory: (@Sendable () -> any AudioCaptureSource)? = nil) {
         self.core = core
+        self.speechReadiness = speechReadiness ?? .live()
+        self.captureFactory = captureFactory ?? { LiveAudioCapture() }
         self.consentDefaults = consentDefaults
         self.authStore = authStore ?? .shared
         self.transcriberFactory = transcriberFactory
@@ -270,6 +308,7 @@ public final class AppState {
     #endif
 
     func signOut() {
+        PushToTalkPipeline.endLivePress(appState: self)   // never leave a mic open behind the game
         authStore.signOut()
         session = nil
         activeGame = nil
@@ -288,7 +327,72 @@ public final class AppState {
         RosterContextBuilder.normalizedNames(names)
     }
 
-    /// Called by NewGameView on "Start game". The optional lineups (nine name fields per team on
+    /// Called by NewGameView on "Start". Asks for microphone and speech permission (each prompt
+    /// only if still unanswered), starts the on-device model download WITHOUT waiting for it, then
+    /// creates the game (DL-176 R4 / KTD5). A denied permission or a model still downloading never
+    /// blocks the game — manual entry always works; the readiness message says why voice is off.
+    func startNewGame(homeTeam: String, visitorTeam: String,
+                      homeLineup: [String] = [], visitorLineup: [String] = []) async {
+        // No prompts for someone who cannot start a game; `createGame` surfaces why.
+        if recordingAllowed, session?.ownerId.isEmpty == false {
+            voiceReadiness = await speechReadiness.prepareForNewGame()
+        }
+        await createGame(homeTeam: homeTeam, visitorTeam: visitorTeam,
+                         homeLineup: homeLineup, visitorLineup: visitorLineup)
+    }
+
+    /// Re-reads live permission and model status (DL-176 R4). Call on every press and whenever the
+    /// scene becomes active, so access granted in Settings takes effect without a new game. Never
+    /// prompts; retries the model download if it is not ready.
+    @discardableResult
+    func refreshVoiceReadiness() async -> SpeechReadinessState {
+        let state = await speechReadiness.evaluate()
+        voiceReadiness = state
+        return state
+    }
+
+    /// User-facing text for a readiness verdict (`nil` when ready). Every message says manual entry
+    /// still works, so a scorer is never stuck (R5).
+    nonisolated static func readinessMessage(for state: SpeechReadinessState) -> String? {
+        switch state {
+        case .ready:
+            return nil
+        case .micDenied:
+            return "Microphone access is off. Turn it on in Settings > Diamond Ledger to score by "
+                + "voice. You can keep scoring with manual entry."
+        case .speechDenied:
+            return "Speech recognition access is off. Turn it on in Settings > Diamond Ledger to "
+                + "score by voice. You can keep scoring with manual entry."
+        case .modelPreparing:
+            return "Voice model still downloading — connect to Wi-Fi. Until it's ready, use "
+                + "manual entry."
+        }
+    }
+
+    /// User-facing text for a capture cut off while the button was held (DL-176 R3). Captured audio
+    /// is discarded, so every message says nothing was scored and how to try again.
+    nonisolated static func interruptionMessage(for reason: CaptureEvent.InterruptionReason) -> String {
+        let retry = " Nothing was scored — hold the button and say the play again."
+        switch reason {
+        case .phoneCall:
+            return "Recording stopped: a call took the microphone." + retry
+        case .otherInterruption:
+            return "Recording stopped: another app or Siri took the microphone." + retry
+        case .routeChange:
+            return "Recording stopped: the microphone changed (headset or Bluetooth)." + retry
+        case .mediaServicesReset:
+            return "Recording stopped: the phone's audio system restarted." + retry
+        case .background:
+            return "Recording stopped because Diamond Ledger left the screen." + retry
+        }
+    }
+
+    /// Shown when a released capture comes back with no audio because it was interrupted during
+    /// the release tail (the interruption's own reason was not observed first).
+    nonisolated static let captureInterruptedMessage =
+        "Recording was interrupted, so nothing was scored. Hold the button and say the play again."
+
+    /// Called by `startNewGame` (and directly by tests). The optional lineups (nine name fields per team on
     /// the New Game screen) become `activeRoster` — visitor first, then home (batting order).
     func createGame(homeTeam: String, visitorTeam: String,
                     homeLineup: [String] = [], visitorLineup: [String] = []) async {
@@ -515,6 +619,7 @@ public final class AppState {
     /// game). The real core keeps its append-only log, but the iOS session forgets the game — the
     /// user explicitly chose not to produce an official record. No finalize is attempted.
     func exitGameWithoutFinalizing() {
+        PushToTalkPipeline.endLivePress(appState: self)   // never leave a mic open behind the game
         activeGame = nil
         activeRoster = []
         presentedSheet = nil

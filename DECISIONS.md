@@ -6,6 +6,72 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0019 — Push-to-talk microphone capture, readiness, and no Stub on device (#176)
+
+**Date:** 2026-09-27 · **Status:** Accepted · **Plan:** `docs/plans/2026-09-27-1046-feat-ptt-mic-capture-plan.md` · **Owner:** Squad B (iOS Voice Client), #176
+
+### Context
+Push-to-talk handed the transcriber an empty buffer, so on a phone the Apple engine threw
+`audioTooShort` and voice never worked. Research found four more gaps capture alone would not close:
+no permission or model preparation anywhere; a denied speech permission on device fell back to the
+`StubTranscriber`, whose canned transcript parses into a play nobody said (Article VII); the
+listening state could be stranded by a prompt, a call, or backgrounding mid-hold; and under Swift 6
+an audio tap closure built inside a `@MainActor` type traps on the first audio-thread callback with
+no compiler warning.
+
+### Decision
+1. **Capture seam.** A Sendable `AudioCaptureSource` protocol (`start`, `stop -> AudioBuffer?`,
+   a per-capture `events` stream of `capReached` and `interrupted(reason)`) is injected through
+   `AppState` like `transcriberFactory`. `LiveAudioCapture` implements it on `AVAudioEngine` behind
+   its own injected engine/session, permission, and notification seams, so no CI test touches the
+   real microphone or permission APIs (the test host has no usage string).
+2. **Buffer on release, not streaming.** Capture runs from press to release plus a 250 ms tail,
+   capped at 15 s; the converted 16 kHz mono Int16 buffer goes through the unchanged
+   `Transcriber.transcribe(buffer:)` contract and biasing decision. One `AVAudioConverter` per
+   press, drained after the tap is removed so the resampler's held-back tail is not lost.
+3. **Isolation.** Tap handlers are built in `nonisolated static` factories; chunks cross to the
+   capture side through a Sendable path, never through main-actor state.
+4. **Session.** `.playAndRecord`, mode `.spokenAudio`, options `.allowBluetoothHFP` and
+   `.duckOthers`; activated on press and deactivated with `.notifyOthersOnDeactivation` after the
+   tap is removed and the engine stopped. An interruption, engine configuration change, media
+   services reset, or backgrounding ends the utterance: audio discarded, state idle, a message shown,
+   and a new capture only on a fresh touch-down.
+5. **Readiness.** New Game awaits only the microphone and speech permission prompts; the on-device
+   model preloads detached. `SpeechReadiness` (`ready | micDenied | speechDenied | modelPreparing`)
+   is re-read from live, injected providers on every press and on scene activation.
+6. **No Stub on device.** Engine resolution returns an `UnavailableTranscriber` that throws instead
+   of the Stub whenever not in the simulator and `forceStub` is off. The Wizard-of-Oz facilitator
+   panel and its scripted Stub path compile only in DEBUG.
+7. **Privacy and evidence.** No raw audio is written, logged, or retained after transcription; the
+   accumulator zeroes and releases its storage when it builds the buffer (FR-022, privacy gate green
+   with no allowlist entry). Diagnostics log numbers and enum reasons only: the base leg's confidence
+   as reported (`unreported` when nil, never the 0.60 fallback), the biased leg's measured
+   confidence, capture duration, and latency. The device checklist
+   (`docs/evaluations/2026-09-device-voice-checklist.md`) turns a run into a `FIELD ACCURACY` record.
+
+### Why this is the right move
+It makes voice real on a phone without changing the transcriber contract, the parser, or the
+biasing policy that DL-157 gated, so the existing voice-accuracy and transcript gates still cover
+everything downstream of the buffer. Every failure mode found in research ends in a readable
+message and no play, never a fabricated one.
+
+### Alternatives Considered
+- **Stream into SpeechAnalyzer during the press.** Lower latency, but it changes the transcriber
+  contract and the biasing decision in the same PR. Deferred until device latency numbers exist.
+- **Request permissions on first press.** Rejected: a system prompt during a hold strands the gesture.
+- **Keep the Stub fallback on device.** Rejected: a canned transcript is a fabricated play.
+
+### Reversibility
+The capture source is one injected factory; swapping in a streaming implementation later touches
+`LiveAudioCapture` and the pipeline only. The session mode is one constant.
+
+### Impact
+Hands-free scoring stays closed (ADR-0017); this change only produces the evidence for that decision.
+Release builds lose the facilitator panel; owner demos use Debug builds until a labeled demo mode
+exists. Assumptions A1–A6 in the plan are unconfirmed bets the device run will test.
+
+---
+
 ## ADR-0018 — The iOS build + XCTest suite is a hard CI gate (#182)
 
 **Date:** 2026-09-27 · **Status:** Accepted · **Supersedes:** the advisory `ios-build` job (ADR-0002 advisory-CI posture, for this job only)
