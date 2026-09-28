@@ -41,6 +41,7 @@ the fast path. Add a row when a new P2/P3 learning is compounded.
 | 15 | **Eval-gate construction pitfalls:** a CI runner that (a) interpolates program output into comparator SOURCE (`"""${ACTUAL}"""` in a Python heredoc) corrupts on a quote/backslash — the exact regression inputs it must catch — and (b) SKIPs with `exit 0` indistinguishably from PASS makes a "hard gate" protect nothing. Pass output as DATA (file/stdin/argv); skip only where the gate genuinely can't run and hard-fail where it should; assert N>0 units compared; let a real regression exit non-zero WITH a legible banner (`cmd \|\| RC=$?`). **+ DL-157:** a tripwire must trip EVERY hard-fail branch (tamper kept raw outputs for the ones the runner can't provoke); a "safe" bucket must compare the facts it carries; every measured leg with an invariant needs a hard signal; expectations come from semantics, never captured output (the honest corpus was red with 25 confident-wrong rows on day one). | P1 | [best-practices/eval-gate-construction-pitfalls](../best-practices/eval-gate-construction-pitfalls.md) |
 | 16 | **Headless-decoupling of an iOS-trapped pipeline:** to make a platform-independent capability (parse/score) invokable from CLI/CI/agent (Art. II parity), (1) extract the pure value types into a Foundation-only SwiftPM target (iOS target `@_exported import`s it), (2) add a `macos-arm64_x86_64` slice to the UniFFI XCFramework, (3) `swift build --product <cli>` so only that closure compiles (iOS-only targets stay out). The parser never needed the ASR engine — only the transcript value. | P2 | [design-patterns/headless-decoupling-of-an-ios-trapped-pipeline](../design-patterns/headless-decoupling-of-an-ios-trapped-pipeline.md) |
 | 17 | **A privacy gate must be keyed to the identity it protects, and must delete what preceded it:** a device-global COPPA answer let one owner's "13 or older" pre-answer the gate for the next person on a shared device (and a child's answer permanently blocked later adults); separately, sign-in necessarily persists `{ownerId, displayName}` BEFORE the age gate can be shown, so an under-13 answer must purge that Keychain item, not just set a flag — otherwise "No under-13 PII stored" is false. Route the blocked branch BEFORE the session branch, or the purge bounces the user off the screen that explains the block. A gate unit-tested against one fresh store cannot reveal a cross-identity leak. | P1 | [logic-errors/privacy-gate-scoped-to-device-not-identity](../logic-errors/privacy-gate-scoped-to-device-not-identity.md) |
+| 18 | **A push-to-talk hold ends through paths that don't look like a release:** iOS can cancel the touch (a `@GestureState` reset, indistinguishable from a lift) BEFORE `scenePhase` reports `.inactive`/`.background`, so "background cancels a held press" scored the partial utterance; app-level resets written before the capture (`exitGameWithoutFinalizing`, `signOut`) reset `pttState` but left the mic open; a readiness fake hid that the real preload shows the speech prompt. Enumerate every end of the hold, both event orders, and every existing reset; generalizes #10. | P2 | [ui-bugs/push-to-talk-implicit-exits-and-hidden-prompt-side-effects](../ui-bugs/push-to-talk-implicit-exits-and-hidden-prompt-side-effects.md) |
 
 ## Checklists (fast path)
 
@@ -63,6 +64,14 @@ runner; assert N>0; `cmd || RC=$?` banner; **one tripwire fixture per hard-fail 
 determinism and every secondary measured leg) **+ one per "safe" bucket that could carry wrong facts**;
 expectations from semantics, independently reviewed before freeze. Template:
 `evals/runners/voice-accuracy.sh` + `tools/tests/voice-accuracy-tripwire.sh`.
+
+**#18 State that lives between two gestures (push-to-talk, drag, hold):** list every end before the
+first test — real lift, cancelled gesture, `.inactive` and `.background` in **both** orders relative to
+the touch cancel, interruptions, and every existing method that resets neighbouring state (route each
+through one cleanup like `PushToTalkPipeline.endLivePress`); tag async work with the owning entity
+(`gameId`) and re-check it before committing a result; read a platform call's real side effects
+(prompts, downloads) before faking it, and gate the call so the side effect cannot fire where it is
+forbidden. Template: `ios/Tests/T176ReviewFixTests.swift`.
 
 **#8 Verify generated code:** install the real toolchain locally (`rustup` ~2 min) and run
 `cargo check --workspace --all-targets` + `cargo clippy -- -D clippy::float_arithmetic` before merging —

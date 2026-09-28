@@ -51,6 +51,11 @@ Retrosheet valued beyond SABR) is **confidence-L, untested**.
   agent from one artifact; ASR = Apple `SpeechAnalyzer` + sherpa-onnx/Parakeet (two-engine); grammar parse
   (no LLM v1); **`cwevent` v0.10.0** pinned (stderr-driven 3-layer gate); event-sourced SQLite/GRDB +
   CloudKit (no CRDTs). Plan + Phase 0/1 artifacts in `specs/001-voice-scorebook-core/`.
+- **Voice capture (ADR-0019):** `ios/Sources/Speech/AudioCapture.swift` (seam, 16 kHz Int16 accumulator,
+  conversion) · `LiveAudioCapture.swift` (engine/session/interruptions) · `SpeechReadiness.swift`
+  (permissions + model preload) · `VoiceDiagnostics.swift` (numbers only); wired by
+  `PushToTalkPipeline` in `ios/Sources/UI/PushToTalk/PushToTalkView.swift`. On-device check:
+  `docs/evaluations/2026-09-device-voice-checklist.md`.
 
 ## 4. Decisions index (`DECISIONS.md`)
 
@@ -66,6 +71,8 @@ Retrosheet valued beyond SABR) is **confidence-L, untested**.
 | **0008** | Cargo **workspace root at repo root** (members must live below root) · toolchain pin bumped 1.83→1.96 (proptest MSRV) |
 | **0009** | **UniFFI wired (H1/T037)**: feature-gated derives + `custom_newtype!` + `CoreFfiError` enum + in-crate bindgen + `make xcframework` (delete-before-regenerate cache guard) · CLI event-log persistence (#128) · #127 trigger-priority reconcile (0 kind-disagreements, SC-003 intact) |
 | **0017** | **Voice-accuracy fixture-robustness gate** (hard-fails only on confident-wrong / canonical regression / pair mismatch / silent score at confidence 60 / non-determinism) · `dl-score --confidence/--roster` · `dl-bias` · conservative biasing: the biased engine may correct words, never confidence (substitution-only, cap below the parser threshold, silent scoring off) |
+| **0018** | **iOS build + XCTest suite is a hard CI gate** (`tools/ci/ios-xctest.sh` = `make ios-test`; newest iOS 26+ simulator picked at runtime) |
+| **0019** | **Push-to-talk microphone capture** (#176): `AudioCaptureSource` seam + `LiveAudioCapture`, buffer on release (250 ms tail, 15 s cap), permissions at New Game, readiness re-read per press, **no Stub on a device**, numeric-only diagnostics |
 
 ## 5. Critical invariants (spec 001 — the probe broke these once; keep them)
 
@@ -100,6 +107,7 @@ the underlying detail docs.
 | SwiftUI swipe-dismissible `.sheet` → reconcile owner state in `onDismiss` (gesture-dismiss skips button handlers) | `ui-bugs/swiftui-sheet-ondismiss-state-reconciliation.md` |
 | **Eval-gate construction pitfalls** (P1-1) — output as data; SKIP≠PASS; one tripwire per hard-fail branch and per "safe" bucket; a hard signal on every measured leg; expectations from semantics, never captured output | `best-practices/eval-gate-construction-pitfalls.md` |
 | **A privacy gate is keyed to the identity it protects, and deletes what preceded it** (P1-5) — a device-global consent answer leaks across owners on a shared device; data collected before the gate must be purged when the gate says no | `logic-errors/privacy-gate-scoped-to-device-not-identity.md` |
+| **A push-to-talk hold ends through paths that don't look like a release** (#18) — touch cancel can precede `.background`; pre-existing resets must end the live capture; a silent fake hid the real preload's speech prompt | `ui-bugs/push-to-talk-implicit-exits-and-hidden-prompt-side-effects.md` |
 
 ## 7. Anti-patterns (do not reintroduce)
 
