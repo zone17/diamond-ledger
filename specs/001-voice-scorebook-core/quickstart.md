@@ -79,9 +79,20 @@ cd evals
 
 ## Determinism check (I6 / FR-003)
 
+The same confirmed inputs must produce byte-identical output. Run one game's commands against two
+fresh state files and compare the finalize results, which include the Retrosheet export:
+
 ```bash
-dl finalize --game <id> --out a.EVN && dl finalize --game <id> --out b.EVN && diff a.EVN b.EVN  # must be empty
+for f in a b; do
+  export DL_STATE_FILE="/tmp/dl-$f.json"; rm -f "$DL_STATE_FILE"
+  dl new-game Hawks Owls owner-1 --visitor-roster "Ana Ruiz, Ben Ortiz" >/dev/null
+  dl finalize 1 owner-1 > "/tmp/finalize-$f.json"
+done
+diff /tmp/finalize-a.json /tmp/finalize-b.json   # must be empty
 ```
+
+`bash evals/runners/parity.sh` is the CI form of the same guarantee: the CLI and the replay path must
+produce identical state and setup for the same operations.
 
 ## What you can demo after Phase B (US1 + US2 + US3 export)
 
