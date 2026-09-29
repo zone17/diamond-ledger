@@ -33,7 +33,7 @@ cargo clippy -- -D warnings   # includes the no-float lint (determinism, I6)
 # the CLI is a thin client over the same primitives an agent/API calls; state persists
 # between invocations in $DL_STATE_FILE (default ./.dl-state.json)
 dl new-game Hawks Owls owner-1 \
-    --visitor-roster "Ana Ruiz, Ben Ortiz, Cy Park" --home-roster "Dee Lang, Eli Moss"
+    --visitor-roster "Ana Ruiz, Ben Ortiz, Cy Park" --home-roster "1:Dee Lang, 2:Eli Moss, 5:Fay Ng"
 dl setup <game-id>                                        # teams + lineups, read back from the core
 dl record-play <game-id> '<normalized-play-json>' owner-1 # → recorded_seq, needs confirm
 dl confirm-play <game-id> <seq> owner-1
@@ -45,9 +45,16 @@ dl state <game-id>
 
 The roster flags are optional, and either can be given alone. Each takes a comma-separated list
 (like `dl-score --roster`): names are trimmed, empty entries are dropped, and the names are numbered
-1..N in batting order. A name cannot contain a comma. The core validates the lineup (at most 20 names,
-each at most 60 characters, no control characters); an invalid one exits non-zero with the core's
-`invalid_argument` error as JSON on stderr and writes nothing. `dl setup` prints the game's `GameSetup`
+1..N in batting order. To keep gaps (the app's rows 1, 2 and 5, say), number every entry with its
+batting order: `1:Dee Lang, 2:Eli Moss, 5:Fay Ng`. Number all entries or none; a mix, or a number
+that is not an integer 1..255, is a usage error. An entry that starts with digits and a colon is always
+read as numbered, so a name that itself starts that way needs an explicit number (`1:12:30 Club`); any
+other colon stays part of the name (`Ana: The Great`). A name cannot contain a comma. The core
+validates the lineup (at most 20 names, batting orders 1..20 in increasing order, each name at most 60
+characters, no control characters); an invalid one exits non-zero with the core's `invalid_argument`
+error as JSON on stderr and writes nothing. Every command reports a core error that way
+(`{"code":"not_found",...}` after `Error: `), and no error repeats a player's name. The state file
+is created owner-only (`0600`) because it holds player names. `dl setup` prints the game's `GameSetup`
 (`contracts/get_game_setup.md`); a team started without a roster has no `lineup` key. Player names
 stay in the local state file and are not exported (ADR-0020).
 

@@ -576,7 +576,9 @@ const MAX_PLAYER_NAME_CHARS: usize = 60;
 /// most 20 slots; each name is trimmed, non-empty, at most 60 characters, and free
 /// of control characters; a present player id is non-empty; a present position is
 /// a valid [`crate::model::Position`]. Any violation is `INVALID_ARGUMENT` with the
-/// `team` (`"home"`/`"visitor"`), the `slot_index` (0-based) and the `field`.
+/// `team` (`"home"`/`"visitor"`), the `slot_index` (0-based) and the `field`; a
+/// per-slot violation also carries the slot's `batting_order`, and its message names
+/// that batting order (the row the scorer typed), never the offending name (FR-029).
 /// Names are never de-duplicated across teams (KTD5).
 fn validate_lineup(team: &str, lineup: &[LineupSlot]) -> CoreResult<Vec<LineupSlot>> {
     let invalid = |slot_index: usize, field: &str, message: String| {
@@ -598,48 +600,42 @@ fn validate_lineup(team: &str, lineup: &[LineupSlot]) -> CoreResult<Vec<LineupSl
     let mut out = Vec::with_capacity(lineup.len());
     for (i, slot) in lineup.iter().enumerate() {
         let order = slot.batting_order;
+        let invalid_slot = |field: &str, problem: String| {
+            invalid(i, field, format!("{team} batting order {order}: {problem}"))
+                .with_detail("batting_order", order.to_string())
+        };
         if !(1..=MAX_BATTING_ORDER).contains(&order) {
-            return Err(invalid(
-                i,
+            return Err(invalid_slot(
                 "batting_order",
-                format!("{team} slot {i}: batting order {order} is outside 1..={MAX_BATTING_ORDER}"),
+                format!("batting order is outside 1..={MAX_BATTING_ORDER}"),
             ));
         }
         if let Some(prev) = previous_order {
             if order <= prev {
                 let why = if order == prev { "duplicates" } else { "comes before" };
-                return Err(invalid(
-                    i,
-                    "batting_order",
-                    format!("{team} slot {i}: batting order {order} {why} batting order {prev}"),
-                ));
+                return Err(invalid_slot("batting_order", format!("{why} batting order {prev}")));
             }
         }
         previous_order = Some(order);
 
         let name = slot.name.trim();
         if name.is_empty() {
-            return Err(invalid(i, "name", format!("{team} slot {i}: name is empty")));
+            return Err(invalid_slot("name", "name is empty".into()));
         }
         if name.chars().count() > MAX_PLAYER_NAME_CHARS {
-            return Err(invalid(
-                i,
+            return Err(invalid_slot(
                 "name",
-                format!("{team} slot {i}: name is longer than {MAX_PLAYER_NAME_CHARS} characters"),
+                format!("name is longer than {MAX_PLAYER_NAME_CHARS} characters"),
             ));
         }
         if name.chars().any(char::is_control) {
-            return Err(invalid(i, "name", format!("{team} slot {i}: name has a control character")));
+            return Err(invalid_slot("name", "name has a control character".into()));
         }
         if slot.player_id.as_deref().is_some_and(|id| id.trim().is_empty()) {
-            return Err(invalid(i, "player_id", format!("{team} slot {i}: player id is empty")));
+            return Err(invalid_slot("player_id", "player id is empty".into()));
         }
         if let Some(pos) = slot.field_pos.filter(|p| !p.is_valid()) {
-            return Err(invalid(
-                i,
-                "field_pos",
-                format!("{team} slot {i}: position {} is outside 0..=9", pos.0),
-            ));
+            return Err(invalid_slot("field_pos", format!("position {} is outside 0..=9", pos.0)));
         }
 
         out.push(LineupSlot { name: name.to_owned(), ..slot.clone() });

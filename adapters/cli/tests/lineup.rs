@@ -267,3 +267,156 @@ fn replay_core_setup_matches_the_cli_and_can_diverge() {
 
     let _ = std::fs::remove_file(&state);
 }
+
+/// The core error envelope behind a failed command's `Error: ` prefix on stderr.
+fn error_json(out: &Output) -> serde_json::Value {
+    let err = stderr(out);
+    let body = err.trim().strip_prefix("Error: ").unwrap_or_else(|| panic!("stderr: {err}"));
+    serde_json::from_str(body).unwrap_or_else(|x| panic!("stderr is not a JSON error ({x}): {err}"))
+}
+
+/// Every command reports a core error as the same parseable JSON envelope, not just
+/// `new-game` and `setup` (Art. I).
+#[test]
+fn older_commands_report_core_errors_as_json() {
+    let state = temp_path("errjson");
+    let _ = std::fs::remove_file(&state);
+    for args in [
+        &["state", "999"][..],
+        &["confirm-play", "999", "1", "owner-1"][..],
+        &["finalize", "999", "owner-1"][..],
+    ] {
+        let out = dl(&state, args);
+        assert!(!out.status.success(), "{args:?} should fail: {}", stdout(&out));
+        assert_eq!(error_json(&out)["code"], "not_found", "{args:?}");
+    }
+}
+
+/// `N:` prefixes give explicit batting orders, gaps kept, on both the CLI and replay paths.
+#[test]
+fn prefixed_roster_keeps_gapped_batting_orders() {
+    let state = temp_path("gapped");
+    let _ = std::fs::remove_file(&state);
+    let roster = "1:Ana Ruiz, 2: Ben Ortiz ,5:Cara Diaz";
+    let out = dl(&state, &["new-game", "Hawks", "Owls", "owner-1", "--home-roster", roster]);
+    assert!(out.status.success(), "new-game failed: {}", stderr(&out));
+    let out = dl(&state, &["setup", "1"]);
+    assert_eq!(
+        json(&out)["home"]["lineup"],
+        serde_json::json!([
+            {"batting_order": 1, "name": "Ana Ruiz"},
+            {"batting_order": 2, "name": "Ben Ortiz"},
+            {"batting_order": 5, "name": "Cara Diaz"}
+        ])
+    );
+
+    let ops = temp_path("gapped-ops");
+    let op = serde_json::json!([
+        {"op": "new-game", "home": "Hawks", "visitor": "Owls", "owner": "owner-1",
+         "home_roster": roster}
+    ]);
+    std::fs::write(&ops, op.to_string()).unwrap();
+    let replay = dl(&temp_path("unused"), &["replay-core", "--setup", &ops]);
+    assert!(replay.status.success(), "replay failed: {}", stderr(&replay));
+    assert_eq!(stdout(&replay), stdout(&out), "replay-core --setup diverged from dl setup");
+
+    let _ = std::fs::remove_file(&ops);
+    let _ = std::fs::remove_file(&state);
+}
+
+/// A name with a colon is a name unless it starts with `digits:`.
+#[test]
+fn a_colon_in_an_unprefixed_name_is_kept() {
+    let state = temp_path("colon");
+    let _ = std::fs::remove_file(&state);
+    let out = dl(
+        &state,
+        &["new-game", "Hawks", "Owls", "owner-1", "--visitor-roster", "Ana: The Great, B2:Ben"],
+    );
+    assert!(out.status.success(), "new-game failed: {}", stderr(&out));
+    assert_eq!(
+        json(&dl(&state, &["setup", "1"]))["visitor"]["lineup"],
+        serde_json::json!([
+            {"batting_order": 1, "name": "Ana: The Great"},
+            {"batting_order": 2, "name": "B2:Ben"}
+        ])
+    );
+    let _ = std::fs::remove_file(&state);
+}
+
+/// Mixed or out-of-range prefixes are usage errors that name the item, never its value,
+/// and write nothing; an in-range order the core rejects is the core's JSON error.
+#[test]
+fn bad_batting_order_prefixes_are_usage_errors() {
+    let state = temp_path("prefix");
+    let _ = std::fs::remove_file(&state);
+    for roster in ["1:Ana Ruiz, Ben Ortiz", "Ana Ruiz, 2:Ben Ortiz", "0:Ana Ruiz", "256:Ana Ruiz",
+                   "99999999999999999999:Ana Ruiz"] {
+        let out = dl(&state, &["new-game", "Hawks", "Owls", "owner-1", "--home-roster", roster]);
+        assert!(!out.status.success(), "{roster:?} should fail: {}", stdout(&out));
+        let err = stderr(&out);
+        assert!(err.contains("--home-roster"), "{roster:?}: {err}");
+        assert!(!err.contains("Ana") && !err.contains("Ben"), "{roster:?} echoed a name: {err}");
+        assert!(!std::path::Path::new(&state).exists(), "{roster:?} wrote a state file");
+    }
+
+    let out = dl(&state, &["new-game", "Hawks", "Owls", "owner-1", "--home-roster", "21:Ana Ruiz"]);
+    assert_eq!(error_json(&out)["code"], "invalid_argument");
+    assert!(!std::path::Path::new(&state).exists(), "a rejected lineup wrote a state file");
+
+    // The replay path shares the parser.
+    let ops = temp_path("prefix-ops");
+    let op = serde_json::json!([
+        {"op": "new-game", "home": "Hawks", "visitor": "Owls", "owner": "owner-1",
+         "visitor_roster": "1:Ana Ruiz, Ben Ortiz"}
+    ]);
+    std::fs::write(&ops, op.to_string()).unwrap();
+    let out = dl(&temp_path("unused"), &["replay-core", "--setup", &ops]);
+    assert!(!out.status.success(), "replay accepted a mixed roster");
+    let err = stderr(&out);
+    assert!(err.contains("visitor_roster") && !err.contains("Ana"), "{err}");
+    let _ = std::fs::remove_file(&ops);
+}
+
+/// Usage errors say where the bad argument was, not what it was: a stray argument may be
+/// a player's name (FR-029).
+#[test]
+fn usage_errors_do_not_echo_argument_values() {
+    let state = temp_path("echo");
+    let _ = std::fs::remove_file(&state);
+    for args in [
+        &["new-game", "Hawks", "Owls", "owner-1", "Ana Ruiz"][..],
+        &["new-game", "Hawks", "Owls", "owner-1", "--home-roster", "Cy", "Ana Ruiz"][..],
+        &["Ana Ruiz"][..],
+    ] {
+        let out = dl(&state, args);
+        assert!(!out.status.success(), "{args:?} should fail: {}", stdout(&out));
+        assert!(!stderr(&out).contains("Ana"), "{args:?} echoed a value: {}", stderr(&out));
+    }
+}
+
+/// The state file holds player names, so it is owner-only, even when it replaces a
+/// file that was not.
+#[cfg(unix)]
+#[test]
+fn state_file_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let state = temp_path("perms");
+    std::fs::write(&state, PRE_LINEUP_SNAPSHOT).unwrap();
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let out = dl(&state, &["new-game", "Rays", "Cubs", "owner-1", "--home-roster", "Ana Ruiz"]);
+    assert!(out.status.success(), "new-game failed: {}", stderr(&out));
+    let mode = std::fs::metadata(&state).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "state file mode {mode:o}");
+
+    let fresh = temp_path("perms-fresh");
+    let _ = std::fs::remove_file(&fresh);
+    let out = dl(&fresh, &["new-game", "Rays", "Cubs", "owner-1"]);
+    assert!(out.status.success(), "new-game failed: {}", stderr(&out));
+    let mode = std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "fresh state file mode {mode:o}");
+
+    let _ = std::fs::remove_file(&state);
+    let _ = std::fs::remove_file(&fresh);
+}

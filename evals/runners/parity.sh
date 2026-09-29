@@ -19,8 +19,10 @@
 #
 # A second check covers the game lineup (#177, ADR-0020): a game started with a roster on
 # both paths must read back the BYTE-IDENTICAL `GameSetup` (`dl setup` on the persisted
-# game vs `dl replay-core --setup`). The state check's game has no roster, so it also
-# proves lineup-less games are unchanged.
+# game vs `dl replay-core --setup`). The visitor roster is unnumbered (batting 1..N); the
+# home roster numbers its batting orders with gaps (1, 2, 5), the shape the app sends. The
+# state check's game has no roster, so it also proves lineup-less games are unchanged.
+# The setup holds player names, so only a failing diff is printed, never the setup itself.
 #
 # Usage: parity.sh
 #
@@ -94,7 +96,7 @@ CORE_STATE="$("${DL}" replay-core "${OPS}")"
 # ── Lineup: the same rosters through both paths (#177) ────────────────────────
 info "Lineup — a game started with both rosters, read back on each path..."
 VISITOR_ROSTER="Ana Ruiz, Ben Ortiz, Cy Park"
-HOME_ROSTER="Dee Lang,Eli Moss"
+HOME_ROSTER="1:Dee Lang, 2:Eli Moss, 5:Fay Ng"
 export DL_STATE_FILE="${WORK}/dl-state-lineup.json"
 "${DL}" new-game Hawks Owls "${OWNER}" \
     --visitor-roster "${VISITOR_ROSTER}" --home-roster "${HOME_ROSTER}" >/dev/null
@@ -131,8 +133,6 @@ fi
 echo ""
 if diff -u "${WORK}/cli-setup.json" "${WORK}/core-setup.json" >"${WORK}/diff-setup.txt" 2>&1; then
     info "PASS: CLI/agent path and UI/core path read back a BYTE-IDENTICAL lineup (#177)."
-    echo "      Game setup (both paths):"
-    sed 's/^/        /' "${WORK}/cli-setup.json"
 else
     fail "PARITY VIOLATION (#177): dl setup != replay-core --setup for the same rosters."
     echo "--- diff (cli setup vs core setup) ---" >&2

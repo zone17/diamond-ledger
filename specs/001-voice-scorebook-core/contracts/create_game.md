@@ -48,7 +48,9 @@ for the FFI, the CLI, and the CLI replay tool (they all go through `create_game`
 
 A violation is `INVALID_ARGUMENT` with structured details `team` (`home` | `visitor`), `slot_index`
 (0-based index into the supplied list; `20` for a too-long lineup), and `field` (`lineup`,
-`batting_order`, `name`, `player_id`, or `field_pos`).
+`batting_order`, `name`, `player_id`, or `field_pos`). A violation in one slot also carries that
+slot's `batting_order`, and its message names it (`home batting order 5: name is empty`) so a scorer
+can find the row; no message or detail ever repeats the offending name (FR-029).
 
 ## Behavior
 1. Validate both lineups (above), then assign a stable `game_id` and append `GameStarted` (FR-001)

@@ -117,28 +117,35 @@ fn optional_player_id_and_position_round_trip() {
 }
 
 /// Every KTD2 violation is INVALID_ARGUMENT naming the team and slot, and writes nothing.
+///
+/// Per-slot messages name the batting order the scorer typed (not the 0-based index),
+/// and no message or detail echoes the offending name (player names stay local, FR-029).
 #[test]
 fn ill_formed_lineups_are_rejected_without_writing() {
-    let long = "x".repeat(61);
+    // 62 characters after trimming, built from a real-looking name.
+    let long = "Ana Ruiz ".repeat(7);
+    let control = "Bo\u{7}b Diaz";
     let twenty_one: Vec<LineupSlot> = (1u8..=21).map(|i| slot(i, "P")).collect();
-    let cases: Vec<(&str, Vec<LineupSlot>, &str)> = vec![
-        ("empty-after-trim name", vec![slot(1, "A"), slot(2, "   ")], "1"),
-        ("61-character name", vec![slot(1, &long)], "0"),
-        ("control character", vec![slot(1, "A"), slot(2, "Bo\u{7}b")], "1"),
-        ("21 slots", twenty_one, "20"),
-        ("batting order 21", vec![slot(21, "A")], "0"),
-        ("batting order 0", vec![slot(0, "A")], "0"),
-        ("duplicate batting order", vec![slot(1, "A"), slot(1, "B")], "1"),
-        ("out of order", vec![slot(2, "A"), slot(1, "B")], "1"),
+    // (label, lineup, slot_index, batting_order; None where no single slot is at fault)
+    let cases: Vec<(&str, Vec<LineupSlot>, &str, Option<&str>)> = vec![
+        ("empty-after-trim name", vec![slot(1, "A"), slot(2, "   ")], "1", Some("2")),
+        ("61-character name", vec![slot(1, &long)], "0", Some("1")),
+        ("control character", vec![slot(1, "A"), slot(3, control)], "1", Some("3")),
+        ("21 slots", twenty_one, "20", None),
+        ("batting order 21", vec![slot(21, "A")], "0", Some("21")),
+        ("batting order 0", vec![slot(0, "A")], "0", Some("0")),
+        ("duplicate batting order", vec![slot(1, "A"), slot(1, "B")], "1", Some("1")),
+        ("out of order", vec![slot(2, "A"), slot(1, "B")], "1", Some("1")),
         (
             "position 10",
             vec![LineupSlot {
-                batting_order: 1,
+                batting_order: 4,
                 name: "A".into(),
                 player_id: None,
                 field_pos: Some(Position(10)),
             }],
             "0",
+            Some("4"),
         ),
         (
             "empty player id",
@@ -149,10 +156,11 @@ fn ill_formed_lineups_are_rejected_without_writing() {
                 field_pos: None,
             }],
             "0",
+            Some("1"),
         ),
     ];
 
-    for (label, bad, slot_index) in cases {
+    for (label, bad, slot_index, batting_order) in cases {
         for side in ["home", "visitor"] {
             let core = DiamondCore::new();
             // A prior valid game, so "unchanged" is checked against a non-empty log.
@@ -169,6 +177,19 @@ fn ill_formed_lineups_are_rejected_without_writing() {
             assert_eq!(err.code, ErrorCode::InvalidArgument, "{label}: {err:?}");
             assert_eq!(detail(&err, "team"), Some(side), "{label}: {err:?}");
             assert_eq!(detail(&err, "slot_index"), Some(slot_index), "{label}: {err:?}");
+            assert_eq!(detail(&err, "batting_order"), batting_order, "{label}: {err:?}");
+            if let Some(order) = batting_order {
+                let want = format!("{side} batting order {order}: ");
+                assert!(err.message.starts_with(&want), "{label}: {:?}", err.message);
+            }
+            let echoed = [long.trim(), "Ana Ruiz", control, "Bo"];
+            for text in std::iter::once(err.message.as_str())
+                .chain(err.details.iter().map(|d| d.value.as_str()))
+            {
+                for name in echoed {
+                    assert!(!text.contains(name), "{label}: error echoes a name: {err:?}");
+                }
+            }
             assert_eq!(log_len(&core), before, "{label}: no event may be written");
             // No game id was allocated and no authority recorded for a phantom game.
             let snap_after = serde_json::to_value(core.snapshot()).unwrap();
