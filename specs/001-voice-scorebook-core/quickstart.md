@@ -30,14 +30,26 @@ cargo clippy -- -D warnings   # includes the no-float lint (determinism, I6)
 ## Drive a game from the CLI (agent-parity surface)
 
 ```bash
-# the CLI is a thin client over the same primitives an agent/API calls
-dl new-game --home "Hawks" --visitor "Owls"
-dl record-play  --game <id> --text "ground ball to short, threw him out at first"   # → 6-3, needs Confirm
-dl confirm      --game <id> --seq <n>
-dl record-play  --game <id> --text "ball gets by the shortstop, runner safe at first"  # → Judgment (hit/error)
-dl resolve      --game <id> --decision <id> --call error --decider <owner|agent>
-dl finalize     --game <id> --out game.EVN     # human book + reduced-Retrosheet file
+# the CLI is a thin client over the same primitives an agent/API calls; state persists
+# between invocations in $DL_STATE_FILE (default ./.dl-state.json)
+dl new-game Hawks Owls owner-1 \
+    --visitor-roster "Ana Ruiz, Ben Ortiz, Cy Park" --home-roster "Dee Lang, Eli Moss"
+dl setup <game-id>                                        # teams + lineups, read back from the core
+dl record-play <game-id> '<normalized-play-json>' owner-1 # → recorded_seq, needs confirm
+dl confirm-play <game-id> <seq> owner-1
+dl resolve-judgment <game-id> <decision-id> <call-token> <call-label> owner-1
+dl correct-event <game-id> <corrects-seq> '<amended-play-json>' owner-1
+dl finalize <game-id> owner-1
+dl state <game-id>
 ```
+
+The roster flags are optional, and either can be given alone. Each takes a comma-separated list
+(like `dl-score --roster`): names are trimmed, empty entries are dropped, and the names are numbered
+1..N in batting order. A name cannot contain a comma. The core validates the lineup (at most 20 names,
+each at most 60 characters, no control characters); an invalid one exits non-zero with the core's
+`invalid_argument` error as JSON on stderr and writes nothing. `dl setup` prints the game's `GameSetup`
+(`contracts/get_game_setup.md`); a team started without a roster has no `lineup` key. Player names
+stay in the local state file and are not exported (ADR-0020).
 
 Every command emits a structured result (the same `RecordPlayResult` / `FinalizeResult` the app gets) and
 an audit `CapabilityInvocation`. State never advances on an unconfirmed play; a judgment never resolves

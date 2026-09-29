@@ -5,19 +5,20 @@
 //! command line as from the iOS app.
 //!
 //! Usage:
-//!   dl new-game <home-name> <visitor-name> <owner-id>
+//!   dl new-game <home-name> <visitor-name> <owner-id> [--visitor-roster <csv>] [--home-roster <csv>]
 //!   dl record-play <game-id> <normalized-play-json> <owner-id>
 //!   dl confirm-play <game-id> <seq> <owner-id>
 //!   dl resolve-judgment <game-id> <decision-id> <call-token> <call-label> <owner-id>
 //!   dl finalize <game-id> <owner-id>
 //!   dl state <game-id>
+//!   dl setup <game-id>
 
 use std::env;
 use std::path::PathBuf;
 
 use dl_core::ffi::{
     Actor, ActorKind, Call, ConfirmPlayRequest, CoreApi, CorrectEventRequest, CreateGameRequest,
-    FinalizeMode, FinalizeRequest, GameId, PlayInput, RecordPlayRequest,
+    FinalizeMode, FinalizeRequest, GameId, LineupSlot, PlayInput, RecordPlayRequest,
     ResolveJudgmentRequest, Seq, Team,
 };
 use dl_core::model::NormalizedPlay;
@@ -98,16 +99,56 @@ fn owner_actor(id: &str) -> Actor {
     }
 }
 
+/// A team named `name`, with the lineup parsed from an optional roster list.
+///
+/// Shared by `new-game` and the `replay-core` new-game op, so both paths build the same
+/// `Team` and the core's `create_game` validation decides for both (ADR-0020 KTD2).
+fn team(name: &str, roster: Option<&str>) -> Team {
+    Team {
+        id: name.to_lowercase().replace(' ', "_"),
+        name: name.to_string(),
+        lineup: roster.map(roster_lineup).filter(|slots| !slots.is_empty()),
+    }
+}
+
+/// Parse a comma-separated roster into batting-order slots, matching `dl-score --roster`:
+/// split on `,`, trim, drop empties, then number the names `1..=N` in order.
+///
+/// Names are not validated here; the core does that. A list longer than `u8::MAX` saturates
+/// its batting orders, which the core's 20-slot limit rejects rather than this silently
+/// renumbering.
+fn roster_lineup(csv: &str) -> Vec<LineupSlot> {
+    csv.split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .enumerate()
+        .map(|(i, name)| LineupSlot {
+            batting_order: u8::try_from(i + 1).unwrap_or(u8::MAX),
+            name: name.to_string(),
+            player_id: None,
+            field_pos: None,
+        })
+        .collect()
+}
+
+/// A core error as its structured JSON envelope (code, message, details), so a caller can
+/// branch on `code` rather than parse prose (Art. I).
+fn core_error(e: dl_core::ffi::Error) -> String {
+    serde_json::to_string(&e).unwrap_or_else(|_| format!("{e:?}"))
+}
+
 fn usage() {
     eprintln!("Diamond Ledger CLI (dl)");
     eprintln!("Usage:");
-    eprintln!("  dl new-game <home-name> <visitor-name> <owner-id>");
+    eprintln!("  dl new-game <home-name> <visitor-name> <owner-id> [--visitor-roster <csv>] [--home-roster <csv>]");
     eprintln!("  dl record-play <game-id> <normalized-play-json> <owner-id>");
     eprintln!("  dl confirm-play <game-id> <seq> <owner-id>");
     eprintln!("  dl resolve-judgment <game-id> <decision-id> <call-token> <call-label> <owner-id>");
     eprintln!("  dl correct-event <game-id> <corrects-seq> <amended-play-json> <owner-id>");
     eprintln!("  dl finalize <game-id> <owner-id>");
     eprintln!("  dl state <game-id>");
+    eprintln!("  dl setup <game-id>");
+    eprintln!("  dl replay-core [--setup] <ops.json>");
     eprintln!();
     eprintln!("All outputs are JSON. Use --help for detailed options.");
 }
@@ -151,29 +192,37 @@ fn run(core: &DiamondCore, args: &[String]) -> Result<serde_json::Value, String>
     let cmd = args[1].as_str();
     match cmd {
         "new-game" => {
+            const USAGE: &str = "Usage: dl new-game <home-name> <visitor-name> <owner-id> \
+                                 [--visitor-roster <csv>] [--home-roster <csv>]";
             if args.len() < 5 {
-                return Err("Usage: dl new-game <home-name> <visitor-name> <owner-id>".into());
+                return Err(USAGE.into());
             }
             let home_name = &args[2];
             let visitor_name = &args[3];
             let owner_id = &args[4];
+            // Optional trailing roster flags, each taking one comma-separated value.
+            let (mut home_roster, mut visitor_roster) = (None, None);
+            let mut flags = args[5..].iter();
+            while let Some(flag) = flags.next() {
+                let slot = match flag.as_str() {
+                    "--home-roster" => &mut home_roster,
+                    "--visitor-roster" => &mut visitor_roster,
+                    other => return Err(format!("unknown new-game argument {other}. {USAGE}")),
+                };
+                let value = flags.next().ok_or_else(|| format!("{flag} requires a value. {USAGE}"))?;
+                if slot.replace(value.as_str()).is_some() {
+                    return Err(format!("{flag} given more than once. {USAGE}"));
+                }
+            }
             let req = CreateGameRequest {
-                home: Team {
-                    id: home_name.to_lowercase().replace(' ', "_"),
-                    name: home_name.clone(),
-                    lineup: None,
-                },
-                visitor: Team {
-                    id: visitor_name.to_lowercase().replace(' ', "_"),
-                    name: visitor_name.clone(),
-                    lineup: None,
-                },
+                home: team(home_name, home_roster),
+                visitor: team(visitor_name, visitor_roster),
                 idempotency_key: format!("new-{}-{}", home_name, visitor_name),
                 actor: owner_actor(owner_id),
             };
             core.create_game(req)
                 .map(|r| serde_json::to_value(r).unwrap())
-                .map_err(|e| format!("{:?}", e))
+                .map_err(core_error)
         }
         "record-play" => {
             if args.len() < 5 {
@@ -286,20 +335,40 @@ fn run(core: &DiamondCore, args: &[String]) -> Result<serde_json::Value, String>
                 .map(|s| serde_json::to_value(s).unwrap())
                 .map_err(|e| format!("{:?}", e))
         }
-        // replay-core <ops.json> — the UI/core-path reference for parity (SC-008/T040).
+        // setup <game-id> — the teams and lineups the game was started with (#177, ADR-0020).
+        "setup" => {
+            if args.len() < 3 {
+                return Err("Usage: dl setup <game-id>".into());
+            }
+            let game_id = GameId(args[2].parse::<u64>().map_err(|e| e.to_string())?);
+            core.get_game_setup(game_id)
+                .map(|s| serde_json::to_value(s).unwrap())
+                .map_err(core_error)
+        }
+        // replay-core [--setup] <ops.json> — the UI/core-path reference for parity (SC-008/T040).
         //
         // Runs a sequence of normalized operations through a FRESH in-memory `DiamondCore`
         // (no persistence) — exactly what the UniFFI/iOS UI path invokes — and prints the
         // final `GameState`. parity.sh compares this against the persisted multi-invocation
         // CLI/agent path for the same facts: byte-identical output proves SC-008 parity.
+        // With `--setup` it prints the last game's `GameSetup` instead, in the same process
+        // (the fresh core is gone afterwards), for parity.sh's lineup diff against `dl setup`.
         "replay-core" => {
-            if args.len() < 3 {
-                return Err("Usage: dl replay-core <ops.json>".into());
-            }
-            let ops_text = std::fs::read_to_string(&args[2])
-                .map_err(|e| format!("cannot read ops file {}: {e}", args[2]))?;
+            let (setup, ops_path) = match args.get(2).map(String::as_str) {
+                Some("--setup") => (true, args.get(3)),
+                _ => (false, args.get(2)),
+            };
+            let ops_path = ops_path.ok_or("Usage: dl replay-core [--setup] <ops.json>")?;
+            let ops_text = std::fs::read_to_string(ops_path)
+                .map_err(|e| format!("cannot read ops file {ops_path}: {e}"))?;
             let fresh = DiamondCore::new();
-            replay_ops(&fresh, &ops_text)
+            let gid = replay_ops(&fresh, &ops_text)?;
+            if setup {
+                fresh.get_game_setup(gid).map(|s| serde_json::to_value(s).unwrap())
+            } else {
+                fresh.get_game_state(gid).map(|s| serde_json::to_value(s).unwrap())
+            }
+            .map_err(|e| format!("{e:?}"))
         }
         "--help" | "-h" | "help" => {
             usage();
@@ -313,31 +382,36 @@ fn run(core: &DiamondCore, args: &[String]) -> Result<serde_json::Value, String>
 #[derive(serde::Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 enum ReplayOp {
-    NewGame { home: String, visitor: String, owner: String },
+    NewGame {
+        home: String,
+        visitor: String,
+        owner: String,
+        /// Optional comma-separated rosters, parsed exactly like `new-game`'s flags.
+        #[serde(default)]
+        home_roster: Option<String>,
+        #[serde(default)]
+        visitor_roster: Option<String>,
+    },
     RecordPlay { game_id: u64, play: NormalizedPlay, owner: String },
     ConfirmPlay { game_id: u64, seq: u64, owner: String },
 }
 
-/// Replay an ops stream through `core` and return the final state of the last game touched.
-fn replay_ops(core: &DiamondCore, ops_text: &str) -> Result<serde_json::Value, String> {
+/// Replay an ops stream through `core` and return the id of the last game touched.
+fn replay_ops(core: &DiamondCore, ops_text: &str) -> Result<GameId, String> {
     let ops: Vec<ReplayOp> =
         serde_json::from_str(ops_text).map_err(|e| format!("invalid ops JSON: {e}"))?;
     let mut last_game: Option<GameId> = None;
     for (i, op) in ops.into_iter().enumerate() {
         match op {
-            ReplayOp::NewGame { home, visitor, owner } => {
+            ReplayOp::NewGame { home, visitor, owner, home_roster, visitor_roster } => {
                 let r = core
                     .create_game(CreateGameRequest {
-                        home: Team { id: home.to_lowercase().replace(' ', "_"), name: home, lineup: None },
-                        visitor: Team {
-                            id: visitor.to_lowercase().replace(' ', "_"),
-                            name: visitor,
-                            lineup: None,
-                        },
+                        home: team(&home, home_roster.as_deref()),
+                        visitor: team(&visitor, visitor_roster.as_deref()),
                         idempotency_key: format!("replay-new-{i}"),
                         actor: owner_actor(&owner),
                     })
-                    .map_err(|e| format!("op {i} new-game: {e:?}"))?;
+                    .map_err(|e| format!("op {i} new-game: {}", core_error(e)))?;
                 last_game = Some(r.game_id);
             }
             ReplayOp::RecordPlay { game_id, play, owner } => {
@@ -362,10 +436,7 @@ fn replay_ops(core: &DiamondCore, ops_text: &str) -> Result<serde_json::Value, S
             }
         }
     }
-    let gid = last_game.ok_or("ops stream was empty")?;
-    core.get_game_state(gid)
-        .map(|s| serde_json::to_value(s).unwrap())
-        .map_err(|e| format!("{e:?}"))
+    last_game.ok_or_else(|| "ops stream was empty".to_string())
 }
 
 /// A collision-resistant token for idempotency keys / temp filenames (MVP — not a real UUID).
