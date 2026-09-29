@@ -14,7 +14,7 @@
 ///    log + projected state persist across `recordPlay` → `confirmPlay` → `resolveJudgment` →
 ///    `finalizeScorecard`. The real core is stateful (unlike the stateless `MockCore`); the
 ///    adapter is the session-lifetime holder of that state.
-/// 2. Maps the 7 write/lifecycle + 4 read `ffi*` methods of the generated `DiamondCore` to the
+/// 2. Maps the 7 write/lifecycle + 5 read `ffi*` methods of the generated `DiamondCore` to the
 ///    `CoreClient` protocol 1:1 (mapping table in `ios/Generated/README.md`).
 /// 3. Bridges the protocol's loosely-typed `normalizedFacts: [String: String]` (what the WoZ
 ///    harness / grammar parser produce today) into the generated, strongly-typed `NormalizedPlay`
@@ -75,13 +75,16 @@ public final class DiamondCoreClient: CoreClient, @unchecked Sendable {
     public func createGame(
         homeTeam: String,
         visitorTeam: String,
+        homeLineup: [LineupEntry],
+        visitorLineup: [LineupEntry],
         ownerId: String,
         correlationId: String
     ) async throws -> CreateGameResult {
-        // Names-only games are allowed (FR-001): no lineup. Use the display name as the id too —
-        // the core treats both as opaque strings; the export layer owns the real id mapping.
-        let home = Team(id: homeTeam, name: homeTeam, lineup: nil)
-        let visitor = Team(id: visitorTeam, name: visitorTeam, lineup: nil)
+        // Use the display name as the id too — the core treats both as opaque strings; the export
+        // layer owns the real id mapping. Lineups are optional (FR-001); the core validates and
+        // trims each name and rejects an ill-formed lineup with INVALID_ARGUMENT, writing nothing.
+        let home = Team(id: homeTeam, name: homeTeam, lineup: Self.slots(homeLineup))
+        let visitor = Team(id: visitorTeam, name: visitorTeam, lineup: Self.slots(visitorLineup))
         let req = CreateGameRequest(
             home: home,
             visitor: visitor,
@@ -90,10 +93,24 @@ public final class DiamondCoreClient: CoreClient, @unchecked Sendable {
         )
         do {
             let result = try core.ffiCreateGame(req: req)
+            // Read the setup back so every game exercises the persisted path (plan KTD6).
+            let setup = try core.ffiGetGameSetup(gameId: result.gameId)
             return CreateGameResult(
                 gameId: String(result.gameId),
-                state: Self.projectState(result.state, gameId: result.gameId)
+                state: Self.projectState(result.state, gameId: result.gameId),
+                setup: Self.projectSetup(setup)
             )
+        } catch let e as CoreFfiError {
+            throw Self.mapError(e)
+        }
+    }
+
+    // MARK: - Read — get_game_setup
+
+    public func gameSetup(gameId gameIdStr: String) async throws -> GameSetup {
+        let gid = try gameId(gameIdStr)
+        do {
+            return Self.projectSetup(try core.ffiGetGameSetup(gameId: gid))
         } catch let e as CoreFfiError {
             throw Self.mapError(e)
         }
@@ -306,6 +323,24 @@ extension DiamondCoreClient {
             isTopHalf: s.half == .top,
             outs: Int(s.outs)
         )
+    }
+
+    /// Protocol lineup → generated slots. An empty lineup stays `nil`, so a names-only game's
+    /// event is byte-identical to one created before lineups existed (plan KTD3).
+    static func slots(_ lineup: [LineupEntry]) -> [LineupSlot]? {
+        lineup.isEmpty ? nil : lineup.map { LineupSlot(battingOrder: $0.battingOrder, name: $0.name) }
+    }
+
+    /// Narrow the generated `GameSetup` to the protocol's names-in-batting-order shape.
+    static func projectSetup(_ s: DiamondLedgerCoreBindings.GameSetup) -> GameSetup {
+        func team(_ t: Team) -> TeamSetup {
+            TeamSetup(
+                id: t.id,
+                name: t.name,
+                lineup: (t.lineup ?? []).map { LineupEntry(battingOrder: $0.battingOrder, name: $0.name) }
+            )
+        }
+        return GameSetup(gameId: String(s.gameId), home: team(s.home), visitor: team(s.visitor))
     }
 
     static func projectRecordPlay(

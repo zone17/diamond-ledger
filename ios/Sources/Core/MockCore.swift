@@ -168,11 +168,22 @@ enum MockFFI {
 /// a deterministic confirm flow, and a sample finalize export. **Obviously a mock** — every
 /// branch returns a literal. Swapped out wholesale at H1 (drop-in, no caller changes).
 ///
-/// `final class` (not `actor`) + immutable canned data ⇒ trivially `Sendable`. There is no
-/// mutable state: the mock does not actually advance a game, so concurrent calls are safe.
-public final class MockCore: CoreClient {
+/// `final class` (not `actor`). The mock does not advance a game; its only mutable state is the
+/// setup each `createGame` stored (#177), so `gameSetup` and `CreateGameResult.setup` read back
+/// what was stored, as the real core does. That map is `NSLock`-guarded, hence `@unchecked
+/// Sendable` (`Mutex` needs macOS 15; `Core` still builds for the macOS 14 `dl-score` closure).
+public final class MockCore: CoreClient, @unchecked Sendable {
 
-    public init() {}
+    /// Setups stored by `createGame`, keyed by game id. Guarded by `lock`.
+    private var setups: [String: GameSetup] = [:]
+    private let lock = NSLock()
+    /// Applied to each setup before it is stored — a test seam for a core whose read-back differs
+    /// from what the caller sent. Identity by default.
+    private let transformSetup: @Sendable (GameSetup) -> GameSetup
+
+    public init(transformSetup: @escaping @Sendable (GameSetup) -> GameSetup = { $0 }) {
+        self.transformSetup = transformSetup
+    }
 
     // MARK: Canned input scripts
     //
@@ -198,11 +209,14 @@ public final class MockCore: CoreClient {
 
     // MARK: Primitive 0 — create_game
 
-    /// Returns a canned initial game state for two teams.
+    /// Returns a canned initial game state for two teams and stores their setup.
     /// Authority is mocked: an empty `ownerId` is rejected exactly as the real core would (I5/FR-020).
+    /// Lineup names are trimmed, as the core trims them; the mock does not otherwise validate.
     public func createGame(
         homeTeam: String,
         visitorTeam: String,
+        homeLineup: [LineupEntry],
+        visitorLineup: [LineupEntry],
         ownerId: String,
         correlationId: String
     ) async throws -> CreateGameResult {
@@ -216,7 +230,27 @@ public final class MockCore: CoreClient {
             isTopHalf: true,
             outs: 0
         )
-        return CreateGameResult(gameId: gameId, state: initialState)
+        func team(_ name: String, _ lineup: [LineupEntry]) -> TeamSetup {
+            TeamSetup(id: name, name: name, lineup: lineup.map {
+                LineupEntry(battingOrder: $0.battingOrder,
+                            name: $0.name.trimmingCharacters(in: .whitespacesAndNewlines))
+            })
+        }
+        let setup = transformSetup(GameSetup(gameId: gameId,
+                                             home: team(homeTeam, homeLineup),
+                                             visitor: team(visitorTeam, visitorLineup)))
+        lock.withLock { setups[gameId] = setup }
+        return CreateGameResult(gameId: gameId, state: initialState, setup: setup)
+    }
+
+    // MARK: Read — get_game_setup
+
+    /// Returns the setup `createGame` stored for this game.
+    public func gameSetup(gameId: String) async throws -> GameSetup {
+        guard let setup = lock.withLock({ setups[gameId] }) else {
+            throw CoreError.notFound("MockCore: no game '\(gameId)'")
+        }
+        return setup
     }
 
     // MARK: Primitive 1 — record_play (US1/US2 · contracts/record_play.md)

@@ -114,9 +114,10 @@ public final class AppState {
     /// Player names of the active game (both lineups, visitor first) — DL-157 / R21 / R22.
     ///
     /// Fed to the ASR engine as contextual strings before every push-to-talk transcribe, and to
-    /// `GrammarParser.parse(_:roster:)` so a surname can never be read as a position. The roster
-    /// lives UI-side only (never in the core — plan Key Decision 4). Normalized by
-    /// `normalizeRoster`; empty whenever no game is active (cleared with `activeGame`).
+    /// `GrammarParser.parse(_:roster:)` so a surname can never be read as a position. Taken from
+    /// the lineups the core stored and read back (`CreateGameResult.setup`, #177), never from the
+    /// typed text. Normalized by `normalizeRoster`; empty whenever no game is active (cleared with
+    /// `activeGame`).
     private(set) var activeRoster: [String] = []
 
     // MARK: Speech
@@ -392,8 +393,21 @@ public final class AppState {
     nonisolated static let captureInterruptedMessage =
         "Recording was interrupted, so nothing was scored. Hold the button and say the play again."
 
-    /// Called by `startNewGame` (and directly by tests). The optional lineups (nine name fields per team on
-    /// the New Game screen) become `activeRoster` — visitor first, then home (batting order).
+    /// New Game rows → lineup slots: each non-blank row keeps its own row number as its batting
+    /// order (rows #1, #2 and #5 filled → 1, 2, 5), and blank rows are dropped, never renumbering
+    /// the others (plan KTD2). The name goes to the core as typed; the core trims it.
+    nonisolated static func lineupEntries(fromRows rows: [String]) -> [LineupEntry] {
+        rows.enumerated().compactMap { index, name in
+            guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let order = UInt8(exactly: index + 1) else { return nil }
+            return LineupEntry(battingOrder: order, name: name)
+        }
+    }
+
+    /// Called by `startNewGame` (and directly by tests). The optional lineups (nine name fields per
+    /// team on the New Game screen, one per row) are stored in the core; the lineups it reads back
+    /// become `activeRoster` — visitor first, then home (batting order). A lineup the core rejects
+    /// surfaces as the create-game error, and no game starts.
     func createGame(homeTeam: String, visitorTeam: String,
                     homeLineup: [String] = [], visitorLineup: [String] = []) async {
         guard let ownerId = session?.ownerId, !ownerId.isEmpty else {
@@ -410,6 +424,8 @@ public final class AppState {
             let result = try await core.createGame(
                 homeTeam: homeTeam,
                 visitorTeam: visitorTeam,
+                homeLineup: Self.lineupEntries(fromRows: homeLineup),
+                visitorLineup: Self.lineupEntries(fromRows: visitorLineup),
                 ownerId: ownerId,
                 correlationId: UUID().uuidString
             )
@@ -419,7 +435,8 @@ public final class AppState {
                 visitorTeamName: visitorTeam,
                 state: result.state
             )
-            activeRoster = Self.normalizeRoster(visitorLineup + homeLineup)
+            activeRoster = Self.normalizeRoster(
+                (result.setup.visitor.lineup + result.setup.home.lineup).map(\.name))
             presentedSheet = nil
         } catch {
             presentedError = AppError(message: "Could not start game: \(error.localizedDescription)")

@@ -274,9 +274,56 @@ public struct CreateGameResult: Sendable {
     public let gameId: String
     /// Initial projected game state (top of 1st, 0-0-0 count, bases empty).
     public let state: GameState
-    public init(gameId: String, state: GameState) {
+    /// The teams and lineups as the core stored them, read back right after create (#177). The
+    /// app's roster comes from here, never from the text the scorer typed.
+    public let setup: GameSetup
+    public init(gameId: String, state: GameState, setup: GameSetup) {
         self.gameId = gameId
         self.state = state
+        self.setup = setup
+    }
+}
+
+// MARK: - GameSetup (get_game_setup · contracts/get_game_setup.md, #177)
+//
+// Mirrors `ffi::GameSetup` / `ffi::Team` / `ffi::LineupSlot`, narrowed to what the app uses:
+// names in batting order. Player id and fielding position are optional in the core and unused here.
+
+/// One lineup slot: the batting order the scorer gave it and the player's name.
+public struct LineupEntry: Sendable, Equatable {
+    /// Batting order, `1...20`, unique and increasing within a lineup. Gaps are allowed: New Game
+    /// rows #1, #2 and #5 filled store 1, 2 and 5.
+    public let battingOrder: UInt8
+    /// Player name. The core trims it; it rejects an empty, over-long, or control-character name.
+    public let name: String
+    public init(battingOrder: UInt8, name: String) {
+        self.battingOrder = battingOrder
+        self.name = name
+    }
+}
+
+/// One team as the core stored it.
+public struct TeamSetup: Sendable, Equatable {
+    public let id: String
+    public let name: String
+    /// Batting-order lineup; empty when the team was created without one (FR-001).
+    public let lineup: [LineupEntry]
+    public init(id: String, name: String, lineup: [LineupEntry]) {
+        self.id = id
+        self.name = name
+        self.lineup = lineup
+    }
+}
+
+/// A game's teams and lineups, projected from its game-started event (`get_game_setup`).
+public struct GameSetup: Sendable, Equatable {
+    public let gameId: String
+    public let home: TeamSetup
+    public let visitor: TeamSetup
+    public init(gameId: String, home: TeamSetup, visitor: TeamSetup) {
+        self.gameId = gameId
+        self.home = home
+        self.visitor = visitor
     }
 }
 
@@ -329,20 +376,29 @@ public protocol CoreClient: Sendable {
     // plus the initial projected GameState (top of 1st, zero count, bases empty).
     // Authority (ownerId) is required — empty ownerId → CoreError.unauthorized (I5/FR-020).
 
-    /// Create a new game for the given teams.
+    /// Create a new game for the given teams and (optional) lineups.
     /// - Parameters:
     ///   - homeTeam: Home team name or identifier.
     ///   - visitorTeam: Visiting team name or identifier.
+    ///   - homeLineup: Home batting order; empty for a names-only game (FR-001).
+    ///   - visitorLineup: Visitor batting order; empty for a names-only game.
     ///   - ownerId: Authenticated owner identity (FR-020).
     ///   - correlationId: Caller-supplied idempotency key.
-    /// - Returns: `CreateGameResult` with the stable game id and initial state.
-    /// - Throws: `CoreError.unauthorized` if `ownerId` is empty.
+    /// - Returns: `CreateGameResult` with the stable game id, initial state, and stored setup.
+    /// - Throws: `CoreError.unauthorized` if `ownerId` is empty; `CoreError.invalidState` if the
+    ///   core rejects a lineup (`INVALID_ARGUMENT`) — no game is created.
     func createGame(
         homeTeam: String,
         visitorTeam: String,
+        homeLineup: [LineupEntry],
+        visitorLineup: [LineupEntry],
         ownerId: String,
         correlationId: String
     ) async throws -> CreateGameResult
+
+    /// Read a game's teams and lineups back from the core (`get_game_setup`, #177).
+    /// - Throws: `CoreError.notFound` if the game does not exist.
+    func gameSetup(gameId: String) async throws -> GameSetup
 
     // MARK: Primitive 1 — record_play (US1 · FR-002 · contracts/record_play.md)
     //
@@ -499,4 +555,24 @@ public protocol CoreClient: Sendable {
 
     // MARK: Read surface (T037 — get_game_state / list_events / get_play / get_proof_box)
     // TODO: T044 — add typed read methods once T037 finalizes the FFI surface.
+}
+
+extension CoreClient {
+    /// Names-only game (FR-001): the pre-#177 signature, kept so every existing caller compiles
+    /// unchanged (plan KTD6). Forwards empty lineups.
+    public func createGame(
+        homeTeam: String,
+        visitorTeam: String,
+        ownerId: String,
+        correlationId: String
+    ) async throws -> CreateGameResult {
+        try await createGame(
+            homeTeam: homeTeam,
+            visitorTeam: visitorTeam,
+            homeLineup: [],
+            visitorLineup: [],
+            ownerId: ownerId,
+            correlationId: correlationId
+        )
+    }
 }
