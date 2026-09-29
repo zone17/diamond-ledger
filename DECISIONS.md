@@ -68,12 +68,12 @@ persists player names before that flow exists. The facts, stated so the owner ca
   hosted-model agents that send them off the device.
 
 This exception must be confirmed by the owner, with this exposure stated, before merge. Consent for
-players' data is follow-up work (issue to be linked here when filed).
+players' data is follow-up work (#188).
 
 ### Deferred
 - **`create_game` idempotency.** The core registers the create key but never checks it, so a retried
   create makes a second game, though the contract promises dedupe. It is a separate fix with its own
-  tests (issue to be linked here when filed).
+  tests (#189).
 - Fielding positions in the New Game screen and CLI, substitutions, editing a lineup after creation,
   and real names in the Retrosheet export.
 
