@@ -1,0 +1,41 @@
+{
+  "log": {
+    "games": {
+      "1": [
+        {
+          "seq": 0,
+          "game_id": 1,
+          "actor": {
+            "kind": "human",
+            "id": "owner-1"
+          },
+          "event": {
+            "event_type": "GameStarted",
+            "payload": {
+              "home_team_id": "hawks",
+              "home_team_name": "Hawks",
+              "visitor_team_id": "owls",
+              "visitor_team_name": "Owls",
+              "idempotency_key": "new-Hawks-Owls"
+            }
+          },
+          "confirmed": true,
+          "corrects_seq": null
+        }
+      ]
+    },
+    "idempotency": {
+      "1": {
+        "new-Hawks-Owls": 0
+      }
+    },
+    "judgment_counters": {},
+    "game_id_counter": 1
+  },
+  "authorities": {
+    "1": {
+      "owner_id": "owner-1",
+      "authorized_agents": []
+    }
+  }
+}

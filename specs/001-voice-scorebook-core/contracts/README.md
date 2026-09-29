@@ -19,6 +19,13 @@ illustrative pseudo-types; the Rust core + UniFFI surface is the reference bindi
 | `correct_event` | Tier 2 (reversible, history-preserving) | [`correct_event.md`](./correct_event.md) |
 | `finalize_scorecard` | Tier 3 (produces the official record / export) | [`finalize_scorecard.md`](./finalize_scorecard.md) |
 
+| Read | Returns | File |
+|------|---------|------|
+| `get_game_setup` | the teams and lineups a game was started with (#177, ADR-0020) | [`get_game_setup.md`](./get_game_setup.md) |
+
+The other reads (`get_game_state`, `list_game_events`, `get_play`, `get_proof_box`) are listed under
+*Read-verify-correct* below. Every read checks only that the game exists; none checks authority.
+
 The four *atomic write* primitives (`record_play`, `advance_runner`, `correct_event`,
 `finalize_scorecard`) are joined by the game-lifecycle / loop-control primitives `create_game` (FR-001),
 `confirm_play` (FR-007 read-verify gate), and `resolve_judgment` (FR-011) so the quickstart CLI verbs
@@ -79,7 +86,8 @@ asserted *and audited* at each call — not a non-empty "decider" string (the pr
 - **Idempotency:** each command carries a client-supplied `idempotency_key`; a duplicate key returns the
   original result without a second append (safe retry — Art. XXXIII).
 - **Read-verify-correct (Art. XII):** every write is paired with reads — `get_game_state`,
-  `list_game_events`, `get_play(seq)`, `get_proof_box(half_inning)`, `preview_*` — and is correctable.
+  `list_game_events`, `get_play(seq)`, `get_proof_box(half_inning)`, `get_game_setup`, `preview_*` — and
+  is correctable.
 - **Audit (Art. XXIII):** each call emits a `CapabilityInvocation` (actor, authority result, prior/after
   state refs, correlation/causation ids).
 - **No raw audio (FR-022):** `record_play` accepts a *transcript/normalized facts*; any audio buffer is

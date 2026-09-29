@@ -6,6 +6,94 @@ rather than rewrite. Newest decisions at the top.
 
 ---
 
+## ADR-0020 — A game's lineup goes through the core: stored in `GameStarted`, read by `get_game_setup` (#177)
+
+**Date:** 2026-09-28 · **Status:** Accepted (pending owner confirmation of the FR-029 exception below) · **Plan:** `docs/plans/2026-09-28-2302-feat-core-game-lineup-parity-plan.md` · **Owner:** Squad A (Core), #177
+
+### Context
+The batting-order names drive speech biasing and parser name masking, but they lived only in the iOS
+screen's memory (`AppState.activeRoster`). The DL-157 plan kept the roster UI-side because the core's
+`LineupSlot` required a fielding position the New Game screen does not collect. Meanwhile the core
+already accepted `Team.lineup` and silently dropped it: `create_game` never read it and
+`GameStartedPayload` had no field for it, contradicting `contracts/create_game.md`. An agent or CLI
+user could neither set nor read the roster a phone user gets (Article II), and a lineup sent through
+the FFI vanished without an error (Article VII). This ADR supersedes the DL-157 plan's "roster lives
+UI-side" decision.
+
+### Decision
+1. **KTD1 — Evolve `LineupSlot` in place.** It becomes
+   `{ batting_order, name, player_id: Option, field_pos: Option<Position> }`. No caller ever sent
+   `Some(lineup)` and nothing was persisted, so the change is lossless, and future positions fill
+   `field_pos` on the same slot. The optional fields carry `#[uniffi(default = None)]`, so the
+   generated Swift initializer is `LineupSlot(battingOrder:name:)` for a names-only slot. A parallel
+   names-only `Team.roster` was rejected: two lineup concepts on an append-only log would need
+   reconciling later.
+2. **KTD2 — One validation function.** `validate_lineup` runs in `create_game` after the identity
+   check and before any game id, authority, or event is written, so the FFI, the CLI, and the CLI
+   replay tool all share it. At most 20 slots; batting orders in `1..=20`, unique and strictly
+   increasing, gaps allowed (the DH slot `0` is deferred with positions); each name trimmed,
+   non-empty, at most 60 Unicode scalar values, no control characters; a present player id non-empty;
+   a present position a valid `Position`. A violation is `INVALID_ARGUMENT` with `team`,
+   `slot_index`, and `field` details, and writes nothing.
+3. **KTD3 — Back-compatible persistence.** `GameStartedPayload` gains `home_lineup` and
+   `visitor_lineup` with `#[serde(default, skip_serializing_if = "Vec::is_empty")]`, the idiom
+   already on `Team.lineup`. Pre-#177 state files load, and a lineup-less game serializes
+   byte-identically; `core/tests/fixtures/pre-lineup-snapshot.json`, written by the pre-change CLI,
+   pins both.
+4. **KTD4 — A new read, `get_game_setup(game_id)`,** returns the team ids, names, and lineups
+   projected from `GameStarted` (`contracts/get_game_setup.md`), through `CoreApi` and UniFFI
+   (`ffiGetGameSetup`). It is not a `GameState` field: `GameState` rides every write's result and
+   every `dl state` output, so a field there would change those bytes for every game and the SC-008
+   parity diff. A team with no stored lineup reads back `lineup: None`.
+5. **KTD5 — Name cleanup split by concern.** The core trims and keeps per-team batting order; it does
+   not de-duplicate across teams, since two teams can share a surname. iOS keeps
+   `RosterContextBuilder.normalizedNames` for the flat, case-insensitive list biasing and masking
+   need, applied to the read-back, so Rust and Swift never disagree about lowercasing.
+
+**The read has no authority check.** Like every existing read (`get_game_state`,
+`list_game_events`, `get_play`, `get_proof_box`), `get_game_setup` checks only that the game exists.
+The local state file is the trust boundary: any process that can call the read can already read the
+file.
+
+### FR-029 note — a knowing, recorded exception (plan Assumption A1)
+FR-029 requires a COPPA-aligned consent flow before a minor's data is collected or shared. This change
+persists player names before that flow exists. The facts, stated so the owner can confirm or reject:
+- The players named may be minors whatever the owner's age, because the iOS age gate checks only the
+  owner.
+- Neither the CLI nor the core has any age or consent check.
+- The only at-rest store is the CLI's `.dl-state.json`; the iOS core is in memory.
+- Names are never exported (the Retrosheet export keeps its synthetic starters, and a comment at that
+  code says why) and never logged.
+- `get_game_setup` and the CLI's `dl setup` deliberately let any agent read them, including
+  hosted-model agents that send them off the device.
+
+This exception must be confirmed by the owner, with this exposure stated, before merge. Consent for
+players' data is follow-up work (issue to be linked here when filed).
+
+### Deferred
+- **`create_game` idempotency.** The core registers the create key but never checks it, so a retried
+  create makes a second game, though the contract promises dedupe. It is a separate fix with its own
+  tests (issue to be linked here when filed).
+- Fielding positions in the New Game screen and CLI, substitutions, editing a lineup after creation,
+  and real names in the Retrosheet export.
+
+### Alternatives Considered
+- **A names-only `Team.roster` beside `lineup`.** Rejected (KTD1): two lineup concepts on one log.
+- **A lineup field on `GameState`.** Rejected (KTD4): changes every state output byte for byte.
+- **Echo the lineup only in `CreateGameResult`.** Rejected: it cannot be read back in a later process,
+  so the CLI and agents would still lack the read.
+
+### Reversibility
+The payload fields are additive and skipped when empty, so removing the read or the fields later
+leaves every lineup-less log unchanged. Stored names are append-only in the event log; removing them
+from an existing state file requires rewriting it.
+
+### Impact
+The FFI surface grows to 12 methods, and the `LineupSlot` shape changes (no caller had used it). The
+CLI and iOS clients adopt the read in the same PR (#177, U2/U3).
+
+---
+
 ## ADR-0019 — Push-to-talk microphone capture, readiness, and no Stub on device (#176)
 
 **Date:** 2026-09-27 · **Status:** Accepted · **Plan:** `docs/plans/2026-09-27-1046-feat-ptt-mic-capture-plan.md` · **Owner:** Squad B (iOS Voice Client), #176

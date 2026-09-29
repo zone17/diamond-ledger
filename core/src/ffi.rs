@@ -118,28 +118,42 @@ pub struct Actor {
 // Team / lineup (FR-001 — names-only allowed at game creation)
 // ===========================================================================
 
-/// One batting-order slot of a starting lineup (data-model §4, minimal form).
+/// One batting-order slot of a starting lineup (data-model §4, ADR-0020 KTD1).
 ///
-/// Integer/discrete/`String` only (I6). `field_pos` reuses the fact-layer
-/// [`Position`] (`0` = DH, `1..=9` fielders). Mid-game substitutions are an event
-/// concern (`Substitution`, FR-002) and are not carried on this create-time slot.
+/// Integer/discrete/`String` only (I6). A slot needs only a `name` (FR-001): the
+/// player id and fielding position are optional, so a names-only lineup is valid.
+/// `field_pos` reuses the fact-layer [`Position`] (`0` = DH, `1..=9` fielders).
+/// Mid-game substitutions are an event concern (`Substitution`, FR-002) and are
+/// not carried on this create-time slot.
+///
+/// [`CoreApi::create_game`] validates every slot (KTD2) and rejects an ill-formed
+/// lineup with `INVALID_ARGUMENT`; it never drops one. Player names stay local:
+/// they are not exported or logged (FR-029 note in ADR-0020).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct LineupSlot {
-    /// Batting order: `1..=9`, or `0` for the DH slot.
+    /// Batting order, `1..=20`, unique and strictly increasing within a lineup.
+    /// Gaps are allowed, so a slot keeps the number the scorer gave it.
     pub batting_order: u8,
-    /// Stable player id occupying the slot.
-    pub player_id: String,
-    /// Fielding position (reuses [`Position`]: `0` = DH, `1..=9`).
-    pub field_pos: Position,
+    /// Player name: trimmed, non-empty, at most 60 characters, no control characters.
+    pub name: String,
+    /// Stable player id, if known (non-empty when present).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "uniffi", uniffi(default = None))]
+    pub player_id: Option<String>,
+    /// Fielding position, if known (reuses [`Position`]: `0` = DH, `1..=9`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "uniffi", uniffi(default = None))]
+    pub field_pos: Option<Position>,
 }
 
-/// A team as supplied to [`CoreApi::create_game`] (data-model §4, FR-001).
+/// A team as supplied to [`CoreApi::create_game`] and returned by
+/// [`CoreApi::get_game_setup`] (data-model §4, FR-001).
 ///
 /// Names-only is allowed (FR-001): `lineup` is optional, so a game can start with
-/// just team names and have rosters filled in later. When present, `lineup` is the
-/// starting batting order.
+/// just team names. When present, `lineup` is the starting batting order, which
+/// `create_game` validates and stores in `GameStarted` (ADR-0020).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 // UNIFFI-EXPORT: #[derive(uniffi::Record)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
@@ -149,6 +163,7 @@ pub struct Team {
     /// Display name (e.g. `"Hawks"`).
     pub name: String,
     /// Starting batting order, if supplied (names-only games omit it, FR-001).
+    /// An empty list is the same as none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineup: Option<Vec<LineupSlot>>,
 }
@@ -671,6 +686,22 @@ pub struct CreateGameResult {
     pub state: GameState,
 }
 
+// --- get_game_setup --------------------------------------------------------
+
+/// Result of [`CoreApi::get_game_setup`] (`contracts/get_game_setup.md`).
+///
+/// The teams a game was started with, projected from its `GameStarted` event.
+/// Each team's `lineup` is the stored (trimmed) batting order, or `None` when the
+/// game was started without one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+// UNIFFI-EXPORT: #[derive(uniffi::Record)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct GameSetup {
+    pub game_id: GameId,
+    pub home: Team,
+    pub visitor: Team,
+}
+
 // --- confirm_play ----------------------------------------------------------
 
 /// Request for [`CoreApi::confirm_play`] (`contracts/confirm_play.md`).
@@ -1043,4 +1074,8 @@ pub trait CoreApi {
 
     /// The proof box for a given half-inning (the offline balance gate, SC-011).
     fn get_proof_box(&self, game_id: GameId, inning: u8, half: Half) -> CoreResult<ProofBox>;
+
+    /// The teams and lineups the game was started with
+    /// (`contracts/get_game_setup.md`, else `NOT_FOUND`).
+    fn get_game_setup(&self, game_id: GameId) -> CoreResult<GameSetup>;
 }

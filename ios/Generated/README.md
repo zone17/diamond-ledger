@@ -72,7 +72,7 @@ bash scripts/build-xcframework.sh [--debug] [--out ios/Generated] [--kotlin]
 ## Map `MockCore` → the real core
 
 The generated Swift exposes an `open class DiamondCore` with a static constructor and the
-**11 methods** that mirror `CoreApi` 1:1. They take the same request records and return the
+**12 methods** that mirror `CoreApi` 1:1. They take the same request records and return the
 same result records the boundary defines in `core/src/ffi.rs`:
 
 | `CoreClient` protocol method (Swift) | Generated `DiamondCore` method | Rust `CoreApi` |
@@ -88,6 +88,7 @@ same result records the boundary defines in `core/src/ffi.rs`:
 | (read) event log    | `ffiListGameEvents(gameId:)` | `list_game_events`   |
 | (read) one play     | `ffiGetPlay(gameId:seq:)`    | `get_play`           |
 | (read) proof box    | `ffiGetProofBox(gameId:inning:half:)` | `get_proof_box` |
+| (read) game setup   | `ffiGetGameSetup(gameId:)`   | `get_game_setup`     |
 
 Construct it with `DiamondCore()` (generated from `#[uniffi::constructor] ffi_new`).
 
