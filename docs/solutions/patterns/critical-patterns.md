@@ -55,8 +55,14 @@ guards is broken. Three instances of the same shape have already bitten this pro
   the system speech prompt on app activation, and 353 green tests could not see it. The fake was the
   proxy; the real call's side effect was the signal
   ([push-to-talk-implicit-exits-and-hidden-prompt-side-effects](../ui-bugs/push-to-talk-implicit-exits-and-hidden-prompt-side-effects.md)).
+- **Parity check built from shared helpers (#177, PR #190)** — `parity.sh` compares the CLI and the
+  replay path, but both sides build their lineups through the same CLI helpers, so the comparison proves
+  the serde round trip, not the Swift-to-UniFFI path the app uses. Its dense `1..N` input syntax also
+  could not express the gapped lineups iOS sends. A check is only as wide as the inputs both sides can
+  differ on ([additive-field-on-a-persisted-event](../best-practices/additive-field-on-a-persisted-event.md)).
 
-**Detection:** a "pass" condition no code path can make fail; a fake for a platform call whose real
+**Detection:** a "pass" condition no code path can make fail; a parity or equivalence check whose two
+sides share the code that builds their input; a fake for a platform call whose real
 implementation prompts, downloads, or persists; an exit-code/HTTP-200 check on a tool
 that succeeds on bad input; a loop trusted by its log rather than verified by reading its output; a
 hard-fail branch with no failing fixture; a "safe"/advisory bucket that never compares the facts it

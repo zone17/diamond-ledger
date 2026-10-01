@@ -42,6 +42,7 @@ the fast path. Add a row when a new P2/P3 learning is compounded.
 | 16 | **Headless-decoupling of an iOS-trapped pipeline:** to make a platform-independent capability (parse/score) invokable from CLI/CI/agent (Art. II parity), (1) extract the pure value types into a Foundation-only SwiftPM target (iOS target `@_exported import`s it), (2) add a `macos-arm64_x86_64` slice to the UniFFI XCFramework, (3) `swift build --product <cli>` so only that closure compiles (iOS-only targets stay out). The parser never needed the ASR engine — only the transcript value. | P2 | [design-patterns/headless-decoupling-of-an-ios-trapped-pipeline](../design-patterns/headless-decoupling-of-an-ios-trapped-pipeline.md) |
 | 17 | **A privacy gate must be keyed to the identity it protects, and must delete what preceded it:** a device-global COPPA answer let one owner's "13 or older" pre-answer the gate for the next person on a shared device (and a child's answer permanently blocked later adults); separately, sign-in necessarily persists `{ownerId, displayName}` BEFORE the age gate can be shown, so an under-13 answer must purge that Keychain item, not just set a flag — otherwise "No under-13 PII stored" is false. Route the blocked branch BEFORE the session branch, or the purge bounces the user off the screen that explains the block. A gate unit-tested against one fresh store cannot reveal a cross-identity leak. | P1 | [logic-errors/privacy-gate-scoped-to-device-not-identity](../logic-errors/privacy-gate-scoped-to-device-not-identity.md) |
 | 18 | **A push-to-talk hold ends through paths that don't look like a release:** iOS can cancel the touch (a `@GestureState` reset, indistinguishable from a lift) BEFORE `scenePhase` reports `.inactive`/`.background`, so "background cancels a held press" scored the partial utterance; app-level resets written before the capture (`exitGameWithoutFinalizing`, `signOut`) reset `pttState` but left the mic open; a readiness fake hid that the real preload shows the speech prompt. Enumerate every end of the hold, both event orders, and every existing reset; generalizes #10. | P2 | [ui-bugs/push-to-talk-implicit-exits-and-hidden-prompt-side-effects](../ui-bugs/push-to-talk-implicit-exits-and-hidden-prompt-side-effects.md) |
+| 19 | **Adding a field to a persisted, append-only event:** capture a fixture with the UNMODIFIED binary before changing code (a fixture written by new code proves nothing); mark new fields `#[serde(default, skip_serializing_if = ...)]` so old files load and empty-field records stay byte-identical for determinism/parity checks; test both directions. Residual risk new code can't fix: an OLDER binary silently drops the new fields when it rewrites a newer file (no `deny_unknown_fields`) — record it, and version the snapshot if old binaries must coexist. | P2 | [best-practices/additive-field-on-a-persisted-event](../best-practices/additive-field-on-a-persisted-event.md) |
 
 ## Checklists (fast path)
 
@@ -72,6 +73,12 @@ through one cleanup like `PushToTalkPipeline.endLivePress`); tag async work with
 (`gameId`) and re-check it before committing a result; read a platform call's real side effects
 (prompts, downloads) before faking it, and gate the call so the side effect cannot fire where it is
 forbidden. Template: `ios/Tests/T176ReviewFixTests.swift`.
+
+**#19 New field on a persisted event or snapshot:** (1) run the OLD binary and save its exact output as a
+fixture before editing; (2) `#[serde(default, skip_serializing_if = "Vec::is_empty"/"Option::is_none")]` on
+every new field; (3) one test restores the old fixture, one proves an empty-field record serializes
+byte-identically to it; (4) write down the old-binary-rewrites-new-file risk. Template:
+`core/tests/lineup_setup.rs` + `core/tests/fixtures/pre-lineup-snapshot.json`.
 
 **#8 Verify generated code:** install the real toolchain locally (`rustup` ~2 min) and run
 `cargo check --workspace --all-targets` + `cargo clippy -- -D clippy::float_arithmetic` before merging —
