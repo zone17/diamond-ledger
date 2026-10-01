@@ -30,14 +30,33 @@ cargo clippy -- -D warnings   # includes the no-float lint (determinism, I6)
 ## Drive a game from the CLI (agent-parity surface)
 
 ```bash
-# the CLI is a thin client over the same primitives an agent/API calls
-dl new-game --home "Hawks" --visitor "Owls"
-dl record-play  --game <id> --text "ground ball to short, threw him out at first"   # → 6-3, needs Confirm
-dl confirm      --game <id> --seq <n>
-dl record-play  --game <id> --text "ball gets by the shortstop, runner safe at first"  # → Judgment (hit/error)
-dl resolve      --game <id> --decision <id> --call error --decider <owner|agent>
-dl finalize     --game <id> --out game.EVN     # human book + reduced-Retrosheet file
+# the CLI is a thin client over the same primitives an agent/API calls; state persists
+# between invocations in $DL_STATE_FILE (default ./.dl-state.json)
+dl new-game Hawks Owls owner-1 \
+    --visitor-roster "Ana Ruiz, Ben Ortiz, Cy Park" --home-roster "1:Dee Lang, 2:Eli Moss, 5:Fay Ng"
+dl setup <game-id>                                        # teams + lineups, read back from the core
+dl record-play <game-id> '<normalized-play-json>' owner-1 # → recorded_seq, needs confirm
+dl confirm-play <game-id> <seq> owner-1
+dl resolve-judgment <game-id> <decision-id> <call-token> <call-label> owner-1
+dl correct-event <game-id> <corrects-seq> '<amended-play-json>' owner-1
+dl finalize <game-id> owner-1
+dl state <game-id>
 ```
+
+The roster flags are optional, and either can be given alone. Each takes a comma-separated list
+(like `dl-score --roster`): names are trimmed, empty entries are dropped, and the names are numbered
+1..N in batting order. To keep gaps (the app's rows 1, 2 and 5, say), number every entry with its
+batting order: `1:Dee Lang, 2:Eli Moss, 5:Fay Ng`. Number all entries or none; a mix, or a number
+that is not an integer 1..255, is a usage error. An entry that starts with digits and a colon is always
+read as numbered, so a name that itself starts that way needs an explicit number (`1:12:30 Club`); any
+other colon stays part of the name (`Ana: The Great`). A name cannot contain a comma. The core
+validates the lineup (at most 20 names, batting orders 1..20 in increasing order, each name at most 60
+characters, no control characters); an invalid one exits non-zero with the core's `invalid_argument`
+error as JSON on stderr and writes nothing. Every command reports a core error that way
+(`{"code":"not_found",...}` after `Error: `), and no error repeats a player's name. The state file
+is created owner-only (`0600`) because it holds player names. `dl setup` prints the game's `GameSetup`
+(`contracts/get_game_setup.md`); a team started without a roster has no `lineup` key. Player names
+stay in the local state file and are not exported (ADR-0020).
 
 Every command emits a structured result (the same `RecordPlayResult` / `FinalizeResult` the app gets) and
 an audit `CapabilityInvocation`. State never advances on an unconfirmed play; a judgment never resolves
@@ -67,9 +86,20 @@ cd evals
 
 ## Determinism check (I6 / FR-003)
 
+The same confirmed inputs must produce byte-identical output. Run one game's commands against two
+fresh state files and compare the finalize results, which include the Retrosheet export:
+
 ```bash
-dl finalize --game <id> --out a.EVN && dl finalize --game <id> --out b.EVN && diff a.EVN b.EVN  # must be empty
+for f in a b; do
+  export DL_STATE_FILE="/tmp/dl-$f.json"; rm -f "$DL_STATE_FILE"
+  dl new-game Hawks Owls owner-1 --visitor-roster "Ana Ruiz, Ben Ortiz" >/dev/null
+  dl finalize 1 owner-1 > "/tmp/finalize-$f.json"
+done
+diff /tmp/finalize-a.json /tmp/finalize-b.json   # must be empty
 ```
+
+`bash evals/runners/parity.sh` is the CI form of the same guarantee: the CLI and the replay path must
+produce identical state and setup for the same operations.
 
 ## What you can demo after Phase B (US1 + US2 + US3 export)
 

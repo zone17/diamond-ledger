@@ -861,3 +861,62 @@ fn export_reflects_corrected_facts_not_original() {
         "must have 3 play records after correction (no exclusions):\n{evn_text}"
     );
 }
+
+/// A stored lineup's real names never reach the export (#177, ADR-0020, R7/FR-029): the
+/// Retrosheet `start` records stay the synthetic placeholders, and the scorebook carries
+/// no names either.
+#[test]
+fn stored_lineup_names_are_not_exported() {
+    use dl_core::ffi::LineupSlot;
+
+    let core = DiamondCore::new();
+    let slot = |batting_order: u8, name: &str| LineupSlot {
+        batting_order,
+        name: name.into(),
+        player_id: None,
+        field_pos: None,
+    };
+    let gid = core
+        .create_game(CreateGameRequest {
+            home: Team {
+                lineup: Some(vec![slot(1, "Cy Park"), slot(2, "Dee Lang")]),
+                ..team("BOS", "Red Sox")
+            },
+            visitor: Team {
+                lineup: Some(vec![slot(1, "Ana Ruiz"), slot(2, "Ben Ortiz"), slot(5, "Eli Moss")]),
+                ..team("NYA", "Yankees")
+            },
+            idempotency_key: "names-create".into(),
+            actor: owner(),
+        })
+        .unwrap()
+        .game_id;
+    // The lineup really is stored, so the export below had names available to leak.
+    assert_eq!(
+        core.get_game_setup(gid).unwrap().visitor.lineup.unwrap()[0].name,
+        "Ana Ruiz"
+    );
+
+    record_confirm(&core, gid, strikeout(0), "n1");
+    record_confirm(&core, gid, groundout_63(1), "n2");
+    record_confirm(&core, gid, flyout_8(2), "n3");
+
+    let result = core
+        .finalize_scorecard(FinalizeRequest {
+            game_id: gid,
+            mode: FinalizeMode::Final,
+            idempotency_key: "names-finalize".into(),
+            actor: owner(),
+        })
+        .expect("finalize_scorecard");
+
+    let evn_text = export_to_text(&result.retrosheet);
+    for placeholder in ["start,vis001,Visitor1,", "start,hom001,Home1,"] {
+        assert!(evn_text.contains(placeholder), "missing {placeholder}:\n{evn_text}");
+    }
+    let everything = serde_json::to_string(&result).unwrap();
+    for name in ["Ana Ruiz", "Ben Ortiz", "Eli Moss", "Cy Park", "Dee Lang"] {
+        assert!(!evn_text.contains(name), "export leaks {name}:\n{evn_text}");
+        assert!(!everything.contains(name), "finalize result leaks {name}: {everything}");
+    }
+}

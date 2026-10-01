@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::ffi::{Actor, FinalizeMode, GameId};
+use crate::ffi::{Actor, FinalizeMode, GameId, LineupSlot};
 use crate::model::{AdvanceTo, Base, BatterEvent, JudgmentKind, NormalizedPlay, Position};
 
 // ---------------------------------------------------------------------------
@@ -48,6 +48,13 @@ pub struct GameStartedPayload {
     pub visitor_team_id: String,
     pub visitor_team_name: String,
     pub idempotency_key: String,
+    /// Validated, trimmed home batting order (ADR-0020). `default` lets pre-#177
+    /// logs load; `skip_serializing_if` keeps a lineup-less game byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub home_lineup: Vec<LineupSlot>,
+    /// Validated, trimmed visitor batting order (same rules as `home_lineup`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub visitor_lineup: Vec<LineupSlot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,6 +374,7 @@ mod tests {
                 home_team_id: "A".into(), home_team_name: "A".into(),
                 visitor_team_id: "B".into(), visitor_team_name: "B".into(),
                 idempotency_key: "ik0".into(),
+                home_lineup: Vec::new(), visitor_lineup: Vec::new(),
             }), None,
         );
         let s1 = log.append(
@@ -416,6 +424,7 @@ mod tests {
                 home_team_id: "NYA".into(), home_team_name: "Yankees".into(),
                 visitor_team_id: "BOS".into(), visitor_team_name: "Red Sox".into(),
                 idempotency_key: "ik-start".into(),
+                home_lineup: Vec::new(), visitor_lineup: Vec::new(),
             }), None);
         let s1 = log.append(gid, dummy_actor(),
             Event::PlayRecorded(PlayRecordedPayload {
@@ -446,6 +455,7 @@ mod tests {
                 home_team_id: "A".into(), home_team_name: "A".into(),
                 visitor_team_id: "B".into(), visitor_team_name: "B".into(),
                 idempotency_key: "ik".into(),
+                home_lineup: Vec::new(), visitor_lineup: Vec::new(),
             }), None);
         assert!(log.get_row(gid, seq).unwrap().confirmed);
     }

@@ -24,10 +24,10 @@ use crate::ffi::{
     AdvanceOutcome, AdvanceRunnerRequest, AdvanceRunnerResult, Call,
     ConfirmPlayRequest, ConfirmPlayResult, CoreApi, CoreResult, CreateGameRequest,
     CreateGameResult, DecisionRef, Error, ErrorCode, FinalizeRequest,
-    FinalizeResult, GameId, GameState, Half, JudgmentDecision, JudgmentStatus, Needs, Play,
+    FinalizeResult, GameId, GameSetup, GameState, Half, JudgmentDecision, JudgmentStatus, LineupSlot, Needs, Play,
     PlayInput, PlayRef, ProofBox, Recommendation, RecordPlayRequest, RecordPlayResult,
     ReisnerScorebook, ResolveJudgmentRequest, ResolveJudgmentResult,
-    Seq, EventSummary, CorrectEventRequest, CorrectEventResult, Unresolved, Version,
+    Seq, EventSummary, CorrectEventRequest, CorrectEventResult, Team, Unresolved, Version,
 };
 use crate::model::{AdvanceTo, Base, Classification, JudgmentKind, NormalizedPlay};
 use crate::reisner::{check_proof_box_balance, compute_proof_box, render_cell};
@@ -132,8 +132,8 @@ impl Default for DiamondCore {
 // call (Art. II parity). Each method delegates 1:1 to the inherent `CoreApi` method
 // and maps the structured `Error` into the throwable `CoreFfiError` (zero info loss:
 // the `code` is preserved). The trait stays plain so the Swift `MockCore` can keep
-// implementing it without the macro (CoreClient.swift T044). The 11 methods are the
-// 7 write/lifecycle primitives + the 4 reads named in the contract.
+// implementing it without the macro (CoreClient.swift T044). The 12 methods are the
+// 7 write/lifecycle primitives + the 5 reads named in the contract.
 #[cfg(feature = "uniffi")]
 #[uniffi::export]
 impl DiamondCore {
@@ -232,6 +232,14 @@ impl DiamondCore {
         half: crate::ffi::Half,
     ) -> crate::ffi::FfiResult<crate::ffi::ProofBox> {
         Ok(<Self as CoreApi>::get_proof_box(self, game_id, inning, half)?)
+    }
+
+    /// See [`CoreApi::get_game_setup`].
+    pub fn ffi_get_game_setup(
+        &self,
+        game_id: crate::ffi::GameId,
+    ) -> crate::ffi::FfiResult<crate::ffi::GameSetup> {
+        Ok(<Self as CoreApi>::get_game_setup(self, game_id)?)
     }
 }
 
@@ -550,6 +558,92 @@ fn downstream_plays_in_same_half(
 }
 
 // ---------------------------------------------------------------------------
+// Lineup validation (ADR-0020 KTD2)
+// ---------------------------------------------------------------------------
+
+/// Most slots a team's lineup may hold (continuous-batting youth lineups).
+const MAX_LINEUP_SLOTS: usize = 20;
+/// Highest batting order a slot may carry. `0` (DH) is deferred with positions.
+const MAX_BATTING_ORDER: u8 = 20;
+/// Longest player name, in Unicode scalar values, after trimming.
+const MAX_PLAYER_NAME_CHARS: usize = 60;
+
+/// Validate one team's lineup and return it with names trimmed (KTD2).
+///
+/// The single lineup check: `create_game` calls it for both teams before any
+/// authority or log write, so the CLI, its replay tool, and the FFI all share it.
+/// Batting orders are `1..=20`, unique and strictly increasing (gaps allowed); at
+/// most 20 slots; each name is trimmed, non-empty, at most 60 characters, and free
+/// of control characters; a present player id is non-empty; a present position is
+/// a valid [`crate::model::Position`]. Any violation is `INVALID_ARGUMENT` with the
+/// `team` (`"home"`/`"visitor"`), the `slot_index` (0-based) and the `field`; a
+/// per-slot violation also carries the slot's `batting_order`, and its message names
+/// that batting order (the row the scorer typed), never the offending name (FR-029).
+/// Names are never de-duplicated across teams (KTD5).
+fn validate_lineup(team: &str, lineup: &[LineupSlot]) -> CoreResult<Vec<LineupSlot>> {
+    let invalid = |slot_index: usize, field: &str, message: String| {
+        Error::new(ErrorCode::InvalidArgument, message)
+            .with_detail("team", team)
+            .with_detail("slot_index", slot_index.to_string())
+            .with_detail("field", field)
+    };
+
+    if lineup.len() > MAX_LINEUP_SLOTS {
+        return Err(invalid(
+            MAX_LINEUP_SLOTS,
+            "lineup",
+            format!("{team} lineup has {} slots; at most {MAX_LINEUP_SLOTS}", lineup.len()),
+        ));
+    }
+
+    let mut previous_order: Option<u8> = None;
+    let mut out = Vec::with_capacity(lineup.len());
+    for (i, slot) in lineup.iter().enumerate() {
+        let order = slot.batting_order;
+        let invalid_slot = |field: &str, problem: String| {
+            invalid(i, field, format!("{team} batting order {order}: {problem}"))
+                .with_detail("batting_order", order.to_string())
+        };
+        if !(1..=MAX_BATTING_ORDER).contains(&order) {
+            return Err(invalid_slot(
+                "batting_order",
+                format!("batting order is outside 1..={MAX_BATTING_ORDER}"),
+            ));
+        }
+        if let Some(prev) = previous_order {
+            if order <= prev {
+                let why = if order == prev { "duplicates" } else { "comes before" };
+                return Err(invalid_slot("batting_order", format!("{why} batting order {prev}")));
+            }
+        }
+        previous_order = Some(order);
+
+        let name = slot.name.trim();
+        if name.is_empty() {
+            return Err(invalid_slot("name", "name is empty".into()));
+        }
+        if name.chars().count() > MAX_PLAYER_NAME_CHARS {
+            return Err(invalid_slot(
+                "name",
+                format!("name is longer than {MAX_PLAYER_NAME_CHARS} characters"),
+            ));
+        }
+        if name.chars().any(char::is_control) {
+            return Err(invalid_slot("name", "name has a control character".into()));
+        }
+        if slot.player_id.as_deref().is_some_and(|id| id.trim().is_empty()) {
+            return Err(invalid_slot("player_id", "player id is empty".into()));
+        }
+        if let Some(pos) = slot.field_pos.filter(|p| !p.is_valid()) {
+            return Err(invalid_slot("field_pos", format!("position {} is outside 0..=9", pos.0)));
+        }
+
+        out.push(LineupSlot { name: name.to_owned(), ..slot.clone() });
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
 // CoreApi implementation
 // ---------------------------------------------------------------------------
 
@@ -559,6 +653,12 @@ impl CoreApi for DiamondCore {
 
         // Authority check (FR-020/I5).
         assert_nontrivial_identity(&req.actor)?;
+
+        // Lineups (ADR-0020 KTD2): validated before any authority or log write, so an
+        // ill-formed lineup is rejected whole and never silently dropped (Art. VII).
+        let home_lineup = validate_lineup("home", req.home.lineup.as_deref().unwrap_or_default())?;
+        let visitor_lineup =
+            validate_lineup("visitor", req.visitor.lineup.as_deref().unwrap_or_default())?;
 
         // Idempotency — check for existing game with this key.
         // For create_game we use a global key (not per-game since the game doesn't exist yet).
@@ -581,6 +681,8 @@ impl CoreApi for DiamondCore {
                 visitor_team_id: req.visitor.id.clone(),
                 visitor_team_name: req.visitor.name.clone(),
                 idempotency_key: req.idempotency_key.clone(),
+                home_lineup,
+                visitor_lineup,
             }),
             None,
         );
@@ -1206,6 +1308,9 @@ impl CoreApi for DiamondCore {
         // Generate synthetic 9-player starters for both teams so cwevent can resolve
         // fielder positions (cwevent segfaults without start records — research.md D4).
         // v1 does not track rosters; these are structural placeholders.
+        // Deliberately NOT the stored `GameStarted` lineup names (#177, ADR-0020): player
+        // names stay local and are never exported (R7/FR-029), and a names-only lineup
+        // has no fielding positions to emit.
         let starters: Vec<StartRecord> = (1u8..=9)
             .map(|i| StartRecord {
                 player_id: format!("vis{:03}", i),
@@ -1325,6 +1430,34 @@ impl CoreApi for DiamondCore {
         Ok(ResolveJudgmentResult {
             decision,
             state: proj.to_game_state(),
+        })
+    }
+
+    fn get_game_setup(&self, game_id: GameId) -> CoreResult<GameSetup> {
+        // Existence check, no authority check — the same convention as every read
+        // (ADR-0020: the local state file is the trust boundary).
+        let inner = self.inner.lock().unwrap();
+        let started = inner
+            .log
+            .all_rows(game_id)
+            .find_map(|r| match &r.event {
+                Event::GameStarted(p) => Some(p),
+                _ => None,
+            })
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "Game not found"))?;
+        let team = |id: &str, name: &str, lineup: &[LineupSlot]| Team {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            lineup: (!lineup.is_empty()).then(|| lineup.to_vec()),
+        };
+        Ok(GameSetup {
+            game_id,
+            home: team(&started.home_team_id, &started.home_team_name, &started.home_lineup),
+            visitor: team(
+                &started.visitor_team_id,
+                &started.visitor_team_name,
+                &started.visitor_lineup,
+            ),
         })
     }
 

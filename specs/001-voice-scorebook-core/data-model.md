@@ -40,7 +40,7 @@ DomainEvent {
 }
 
 EventType =
-  | GameStarted          // FR-001  payload: teams, optional lineups
+  | GameStarted          // FR-001  payload: teams, home_lineup?, visitor_lineup? (ADR-0020; omitted when empty)
   | PlayRecorded         // FR-004/005  payload: NormalizedPlay (+ raw transcript ref, no audio)
   | RunnerAdvanced       // FR-009  payload: advancement delta (confirmed)
   | JudgmentOpened       // FR-010  payload: JudgmentDecision (status=Open, recommendation, alternatives)
@@ -82,6 +82,16 @@ LineupSlot { batting_order: 1..=9|0(DH), player: Player, field_pos: 1..=9|0, sub
 Player { id, name, bats?, throws? }                  // bats/throws optional (cwevent emits '?' if absent)
 Substitution { in: Player, out: Player, at_seq }     // FR-002 mid-game changes
 ```
+
+**As implemented (#177, ADR-0020 KTD1).** The boundary slot is the flattened, names-first form:
+```
+LineupSlot { batting_order: 1..=20, name, player_id?, field_pos?: 0..=9 }
+```
+`name` is the player's name (the `Player.name` above), and `player_id` / `field_pos` are optional so a
+names-only lineup is valid. `create_game` validates each lineup (`contracts/create_game.md`, KTD2) and
+stores it in `GameStarted` as `home_lineup` / `visitor_lineup`; `get_game_setup` reads it back
+(`contracts/get_game_setup.md`). `bats`/`throws`, `subs`, and the DH batting slot `0` are not yet
+carried; fielding positions arrive on the same slot's `field_pos`.
 
 ### GameState (fully queryable at all times — FR-002)
 ```
@@ -180,3 +190,7 @@ authority check (I5/FR-020) runs at **every** primitive before any event is appe
   the engine).
 - Export: a play whose facts fall outside the reduced grammar ⇒ `OutOfFormat`, emitted as a flag, not a
   fabricated `play` record.
+- Lineup (ADR-0020 KTD2): at most 20 slots; `batting_order` in `1..=20`, unique and strictly increasing
+  (gaps allowed); `name` trimmed, non-empty, ≤ 60 Unicode scalar values, no control characters; a present
+  `player_id` non-empty; a present `field_pos` a valid `Position`. Violation ⇒ `INVALID_ARGUMENT` naming
+  the team and slot, and no event is written.
