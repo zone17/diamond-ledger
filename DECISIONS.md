@@ -8,7 +8,7 @@ rather than rewrite. Newest decisions at the top.
 
 ## ADR-0020 — A game's lineup goes through the core: stored in `GameStarted`, read by `get_game_setup` (#177)
 
-**Date:** 2026-09-28 · **Status:** Accepted (pending owner confirmation of the FR-029 exception below) · **Plan:** `docs/plans/2026-09-28-2302-feat-core-game-lineup-parity-plan.md` · **Owner:** Squad A (Core), #177
+**Date:** 2026-09-28 · **Status:** Accepted — FR-029 exception scoped to pre-release builds; #188 blocks release (owner-delegated decision, 2026-09-30) · **Plan:** `docs/plans/2026-09-28-2302-feat-core-game-lineup-parity-plan.md` · **Owner:** Squad A (Core), #177
 
 ### Context
 The batting-order names drive speech biasing and parser name masking, but they lived only in the iOS
@@ -67,8 +67,11 @@ persists player names before that flow exists. The facts, stated so the owner ca
 - `get_game_setup` and the CLI's `dl setup` deliberately let any agent read them, including
   hosted-model agents that send them off the device.
 
-This exception must be confirmed by the owner, with this exposure stated, before merge. Consent for
-players' data is follow-up work (#188).
+**Decision (2026-09-30).** Asked to confirm this exception, the owner delegated the call
+("do what an elite engineering team would do"). It is accepted for **pre-release builds only**: no
+build that collects players' names from real users ships before the consent control in #188 lands.
+#188 carries the `release-blocker` label in the `v1-first-slice` milestone, so the gate is enforced at
+release rather than silently waived.
 
 ### Deferred
 - **`create_game` idempotency.** The core registers the create key but never checks it, so a retried
